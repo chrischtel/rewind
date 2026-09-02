@@ -1,6 +1,7 @@
 #include "rewind/core/app.h"
 
 #include "rewind/core/game_module.h"
+#include "rewind/core/profiler.h"
 #include "rewind/render/renderer2d.h"
 #include "rewind/sim/game.h"
 
@@ -66,6 +67,8 @@ bool App::init_platform() {
         return false;
     }
     renderer_->set_pixel_art(cfg_.pixel_art);
+    renderer_->set_file_watcher(&assets_);
+    audio_.set_file_watcher(&assets_);
 
     if (cfg_.render_width > 0 && cfg_.render_height > 0) {
         target_ = renderer_->create_render_target("__pixel_target", cfg_.render_width, cfg_.render_height);
@@ -263,6 +266,20 @@ void App::poll_hot_reload() {
     }
 }
 
+void App::poll_assets() {
+    const std::vector<std::string> changed = assets_.poll();
+    if (changed.empty()) return;
+    for (const std::string& path : changed) {
+        renderer_->invalidate_file(path);
+        audio_.invalidate_file(path);
+        SDL_Log("asset changed: %s", path.c_str());
+    }
+    RW_PROFILE_SCOPE("load_assets");
+    game_->load_assets(*renderer_, audio_);
+    hot_.asset_reloads += static_cast<u32>(changed.size());
+    hot_.last_asset = changed.back();
+}
+
 void App::apply_requests(const InputFrame& live) {
     if (time_.scrub_request) {
         timeline_.seek(*game_, *time_.scrub_request);
@@ -361,15 +378,22 @@ void App::render_frame(float alpha) {
 
     const bool drawing = renderer_->begin_frame();
     if (target_) renderer_->set_target(target_);
-    game_->render(*renderer_, alpha);
+    {
+        RW_PROFILE_SCOPE("game.render");
+        game_->render(*renderer_, alpha);
+    }
     if (target_) {
         renderer_->set_target(nullptr);
         present_target();
     }
 
-    if (time_.show_overlay) draw_debug_overlay(timeline_, time_, *game_, stats_, hot_);
+    if (time_.show_overlay) {
+        RW_PROFILE_SCOPE("overlay");
+        draw_debug_overlay(timeline_, time_, *game_, stats_, hot_);
+    }
 
     ImGui::Render();
+    RW_PROFILE_SCOPE("submit");
     renderer_->end_frame(drawing ? ImGui::GetDrawData() : nullptr);
 }
 
@@ -407,33 +431,51 @@ int App::loop() {
     double fps_window = 0;
     int fps_frames = 0;
 
+    Profiler& profiler = Profiler::instance();
+
     while (running_) {
+        profiler.begin_frame();
         const u64 now = SDL_GetTicksNS();
         double frame_dt = static_cast<double>(now - prev) / 1e9;
         prev = now;
         frame_dt = std::min(frame_dt, 0.25); // never spiral after a stall
 
-        poll_hot_reload();
-        handle_events();
+        {
+            RW_PROFILE_SCOPE("events");
+            poll_hot_reload();
+            poll_assets();
+            handle_events();
+        }
         const InputFrame live = sample_input();
         apply_requests(live);
 
         const u64 sim_start = SDL_GetTicksNS();
-        simulate(live, frame_dt);
+        {
+            RW_PROFILE_SCOPE("simulate");
+            simulate(live, frame_dt);
+        }
         stats_.sim_ms = static_cast<float>(SDL_GetTicksNS() - sim_start) / 1e6f;
 
-        dispatch_events();
-        audio_.update();
+        {
+            RW_PROFILE_SCOPE("audio");
+            dispatch_events();
+            audio_.update();
+        }
         stats_.audio_voices = audio_.active_voices();
+        hot_.tracked_files = assets_.count();
 
         const u64 render_start = SDL_GetTicksNS();
         const float alpha = time_.mode == TimeMode::Playing
                                 ? static_cast<float>(accumulator_ / timeline_.dt())
                                 : 0.0f;
-        render_frame(alpha);
+        {
+            RW_PROFILE_SCOPE("render");
+            render_frame(alpha);
+        }
         stats_.render_ms = static_cast<float>(SDL_GetTicksNS() - render_start) / 1e6f;
         stats_.draw_calls = renderer_->draw_calls_last_frame();
         stats_.vertices = renderer_->vertices_last_frame();
+        profiler.end_frame();
 
         stats_.frame_ms = static_cast<float>(frame_dt * 1000.0);
         fps_window += frame_dt;

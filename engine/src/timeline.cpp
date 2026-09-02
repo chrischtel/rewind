@@ -1,5 +1,7 @@
 #include "rewind/sim/timeline.h"
 
+#include "rewind/core/profiler.h"
+
 #include <algorithm>
 
 namespace rw {
@@ -19,6 +21,7 @@ void Timeline::reset(Game& game) {
 }
 
 void Timeline::capture(Game& game, bool force_keyframe) {
+    RW_PROFILE_SCOPE("snapshot");
     const bool keyframe = force_keyframe || (head_ % cfg_.keyframe_interval) == 0;
     Record record;
     if (keyframe || cfg_.verify_hashes) {
@@ -43,7 +46,10 @@ void Timeline::drop_future() {
 void Timeline::advance(Game& game, const InputFrame& input, EventQueue* events) {
     drop_future();
     rec(head_).input = input;
-    game.tick(TickContext{head_, dt(), input, events});
+    {
+        RW_PROFILE_SCOPE("tick");
+        game.tick(TickContext{head_, dt(), input, events});
+    }
     ++head_;
     capture(game, false);
     trim();

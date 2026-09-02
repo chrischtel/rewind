@@ -208,6 +208,35 @@ void on_event(const SimEvent& e, Audio& audio) override {
 `Audio` loads WAV files, accepts float samples you generate yourself, plays
 them polyphonically, and is cached by name so hot reloads keep the pointers.
 
+## Asset hot reload
+
+Every file the engine reads for you is watched: PNGs through
+`load_texture`, WAVs through `load_wav`, and `.aseprite` files through the
+sprite sheet and tilemap loaders. Save the file in your image or sound
+editor and the running game picks it up within a second. Under the hood the
+engine marks the changed files and calls your `load_assets()` again; cached
+textures and sounds are refreshed in place, so pointers your game holds stay
+valid even when an image changes size. A file that fails to load keeps its
+last good version. This works in every build, not only under `rewind_run`.
+
+## Profiler
+
+Always on, in every build. The App times events, simulation, audio, render
+and submit; the timeline adds `tick` and `snapshot`; games add their own with
+one line:
+
+```cpp
+void tick(const TickContext& c) override {
+    RW_PROFILE_SCOPE("my.tick");
+    ...
+}
+```
+
+The overlay's Profiler section shows a frame-time graph of the last 240
+frames, a bar timeline of the last frame nested by depth (hover for exact
+times), and totals per region. The cost is one clock read per scope, so
+leaving scopes in shipping code is fine.
+
 ## Hot reload
 
 Every game built with `rewind_add_game(name ...)` also produces `name_hot.dll`.
@@ -295,6 +324,8 @@ The rules that make everything work:
 ```
 engine/include/rewind/
   core/app.h          window, fixed-step loop, pixel mode, gamepad, hotkeys
+  core/file_watcher.h polls tracked files, drives asset hot reload
+  core/profiler.h     RW_PROFILE_SCOPE and the frame profiler
   core/game_module.h  loads a game DLL and hot-swaps it on rebuild
   core/math.h         Vec2, Rect, small float helpers
   core/types.h        integer aliases, Tick
@@ -321,7 +352,7 @@ engine/shaders/       sprite.vert / sprite.frag (SPIR-V) and sprite.hlsl (DXBC)
 tools/runner/         rewind_run, the hot-reload host
 samples/bounce/       shapes, entities, rewind, desync detector
 samples/pixels/       sprites, animation, tilemap, sound, pixel mode, gamepad
-tests/                headless tests: timeline, assets, world, reflect, ecs, hot reload
+tests/                headless tests: core, timeline, assets, world, reflect, ecs, hot reload
 ```
 
 The engine builds as a shared library so that SDL, ImGui, and the engine
@@ -339,7 +370,7 @@ In rough order:
 - **Fixed-point math option** for bit-exact determinism across machines.
 - **Rollback netcode** built on `Timeline::seek` plus remote input frames.
 - **Prefabs and scene composition** on top of the world and the text format.
-- **Always-on frame profiler** in the overlay.
+- **Engine log** with categories and an overlay console.
 - Linux and macOS builds.
 - An editor on top of all of the above.
 

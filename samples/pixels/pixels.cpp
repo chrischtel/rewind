@@ -196,6 +196,7 @@ public:
     }
 
     void tick(const TickContext& c) override {
+        RW_PROFILE_SCOPE("pixels.tick");
         const float dt = c.dt;
         const InputFrame& in = c.input;
         const float move = static_cast<float>(in.axis_x) / 32767.0f;

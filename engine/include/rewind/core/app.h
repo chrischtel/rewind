@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rewind/audio/audio.h"
+#include "rewind/core/file_watcher.h"
 #include "rewind/core/types.h"
 #include "rewind/debug/overlay.h"
 #include "rewind/sim/events.h"
@@ -73,6 +74,7 @@ public:
     TimeControl& time_control() { return time_; }
     Renderer2D& renderer() { return *renderer_; }
     Audio& audio() { return audio_; }
+    FileWatcher& assets() { return assets_; }
 
 private:
     int loop();
@@ -80,6 +82,7 @@ private:
     void shutdown_platform();
     void handle_events();
     void poll_hot_reload();
+    void poll_assets();
     void apply_requests(const InputFrame& live);
     void simulate(const InputFrame& live, double frame_dt);
     void dispatch_events();
@@ -94,6 +97,7 @@ private:
     SDL_Gamepad* gamepad_ = nullptr;
     std::unique_ptr<Renderer2D> renderer_;
     Audio audio_;
+    FileWatcher assets_;
     Timeline timeline_;
     TimeControl time_;
     FrameStats stats_;

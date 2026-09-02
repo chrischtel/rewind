@@ -207,6 +207,7 @@ bool load_aseprite_tilemap(Renderer2D& renderer, const std::string& path, std::s
         if (error) *error = "could not create the tileset texture";
         return false;
     }
+    renderer.track_file(path);
 
     out = TileMap{};
     out.width = layer->width;

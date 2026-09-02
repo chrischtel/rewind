@@ -1,6 +1,7 @@
 #include "rewind/render/renderer2d.h"
 
 #include "debug_font.h"
+#include "rewind/core/file_watcher.h"
 #include "rewind_shaders_spv.h"
 
 #include <SDL3/SDL.h>
@@ -12,6 +13,7 @@
 #include <cstring>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #if defined(_WIN32)
@@ -99,6 +101,8 @@ struct Renderer2D::Impl {
     SDL_GPUSampler* sampler_linear = nullptr;
 
     std::unordered_map<std::string, std::unique_ptr<Texture>> textures;
+    std::unordered_set<std::string> stale_files; ///< loaded from disk, changed since
+    FileWatcher* watcher = nullptr;
     Texture* white = nullptr;
     Texture* font = nullptr;
 
@@ -267,12 +271,17 @@ struct Renderer2D::Impl {
     }
 
     Texture* make_texture(const std::string& name, int width, int height, bool render_target, bool nearest) {
+        Texture* existing = nullptr;
         auto it = textures.find(name);
         if (it != textures.end()) {
-            Texture* t = it->second.get();
-            if (t->width == width && t->height == height && t->render_target == render_target) return t;
-            SDL_ReleaseGPUTexture(device, t->handle);
-            textures.erase(it);
+            existing = it->second.get();
+            if (existing->width == width && existing->height == height && existing->render_target == render_target)
+                return existing;
+            // Size changed (asset edited): swap the GPU texture underneath the
+            // same object so every pointer a game holds stays valid.
+            SDL_WaitForGPUIdle(device);
+            SDL_ReleaseGPUTexture(device, existing->handle);
+            existing->handle = nullptr;
         }
 
         SDL_GPUTextureCreateInfo info{};
@@ -291,6 +300,13 @@ struct Renderer2D::Impl {
         }
         SDL_SetGPUTextureName(device, handle, name.c_str());
 
+        if (existing) {
+            existing->width = width;
+            existing->height = height;
+            existing->handle = handle;
+            existing->render_target = render_target;
+            return existing;
+        }
         auto owned = std::make_unique<Texture>();
         owned->width = width;
         owned->height = height;
@@ -677,18 +693,30 @@ Texture* Renderer2D::create_render_target(const std::string& name, int width, in
 }
 
 Texture* Renderer2D::load_texture(const std::string& path) {
-    if (Texture* existing = find_texture(path)) return existing;
+    Impl& im = *impl_;
+    Texture* existing = find_texture(path);
+    const bool stale = im.stale_files.erase(path) > 0;
+    if (existing && !stale) return existing;
 
     int width = 0, height = 0, channels = 0;
     stbi_uc* pixels = stbi_load(path.c_str(), &width, &height, &channels, 4);
     if (!pixels) {
         SDL_Log("load_texture(%s): %s", path.c_str(), stbi_failure_reason());
-        return nullptr;
+        return existing; // keep showing the last good version
     }
     Texture* texture = create_texture(path, width, height, pixels);
     stbi_image_free(pixels);
+    track_file(path);
     return texture;
 }
+
+void Renderer2D::set_file_watcher(FileWatcher* watcher) { impl_->watcher = watcher; }
+
+void Renderer2D::track_file(const std::string& path) {
+    if (impl_->watcher) impl_->watcher->track(path);
+}
+
+void Renderer2D::invalidate_file(const std::string& path) { impl_->stale_files.insert(path); }
 
 void Renderer2D::draw_sprite(const Texture& texture, const Rect& src, float x, float y, const SpriteOptions& o) {
     if (!texture.handle || texture.width <= 0 || texture.height <= 0) return;

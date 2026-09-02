@@ -13,6 +13,8 @@ struct ImDrawData;
 
 namespace rw {
 
+class FileWatcher;
+
 struct Color {
     u8 r = 255, g = 255, b = 255, a = 255;
 
@@ -89,13 +91,21 @@ public:
     void draw_text(float x, float y, const char* text, Color c, int scale = 1);
 
     // ---- textures -----------------------------------------------------------
-    /// Load a PNG. Cached by path: calling again returns the same texture.
+    /// Load a PNG. Cached by path: calling again returns the same texture,
+    /// unless the file changed on disk, in which case it is re-read into the
+    /// same Texture object. The file is tracked for asset hot reload.
     Texture* load_texture(const std::string& path);
 
     /// Create or update a texture from RGBA8 pixels (row-major, 4 bytes per
-    /// pixel). Cached by name; an existing texture of the same size is
-    /// updated in place, so pointers held by the game stay valid.
+    /// pixel). Cached by name. An existing texture is updated in place, even
+    /// when the size changes, so pointers held by the game stay valid.
     Texture* create_texture(const std::string& name, int width, int height, const u8* rgba);
+
+    /// Asset hot reload plumbing: the watcher that gets told about files this
+    /// renderer reads, and the way to mark one as changed.
+    void set_file_watcher(FileWatcher* watcher);
+    void track_file(const std::string& path);
+    void invalidate_file(const std::string& path);
 
     /// Create a texture that can be drawn into with set_target() and then
     /// drawn like any other. Cached by name.

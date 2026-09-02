@@ -5,11 +5,14 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 struct SDL_AudioStream;
 
 namespace rw {
+
+class FileWatcher;
 
 /// Decoded PCM audio owned by the Audio system. Games hold pointers; they
 /// stay valid until shutdown, which includes across hot reloads.
@@ -41,8 +44,12 @@ public:
     void shutdown();
     bool ready() const { return device_ != 0; }
 
-    /// Load a WAV file. Cached by path.
+    /// Load a WAV file. Cached by path; re-read into the same Sound object
+    /// when the file changed on disk. Tracked for asset hot reload.
     Sound* load_wav(const std::string& path);
+
+    void set_file_watcher(FileWatcher* watcher) { watcher_ = watcher; }
+    void invalidate_file(const std::string& path) { stale_files_.insert(path); }
 
     /// Create (or replace) a sound from 32-bit float samples, interleaved if
     /// `channels` > 1. Cached by name.
@@ -76,6 +83,8 @@ private:
     int max_voices_ = 32;
     std::vector<SDL_AudioStream*> voices_;
     std::unordered_map<std::string, std::unique_ptr<Sound>> sounds_;
+    std::unordered_set<std::string> stale_files_;
+    FileWatcher* watcher_ = nullptr;
 };
 
 } // namespace rw

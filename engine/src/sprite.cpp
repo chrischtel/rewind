@@ -73,6 +73,7 @@ bool load_aseprite_sheet(Renderer2D& renderer, const std::string& path, SpriteSh
         if (error) *error = "could not create texture for " + path;
         return false;
     }
+    renderer.track_file(path); // edits in Aseprite show up in the running game
 
     out = SpriteSheet{};
     out.texture = texture;

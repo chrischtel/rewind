@@ -49,9 +49,11 @@ add_library(rewind SHARED
     src/aseprite.cpp
     src/audio.cpp
     src/debug_font.cpp
+    src/file_watcher.cpp
     src/game_module.cpp
     src/inspector.cpp
     src/overlay.cpp
+    src/profiler.cpp
     src/reflect.cpp
     src/renderer2d.cpp
     src/sprite.cpp

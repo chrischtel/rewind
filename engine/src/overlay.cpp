@@ -1,11 +1,17 @@
 #include "rewind/debug/overlay.h"
 
+#include "rewind/core/profiler.h"
 #include "rewind/debug/inspector.h"
 #include "rewind/sim/game.h"
 #include "rewind/sim/reflect.h"
 #include "rewind/sim/timeline.h"
 
 #include <imgui.h>
+
+#include <algorithm>
+#include <cstring>
+#include <string>
+#include <vector>
 
 namespace rw {
 
@@ -31,6 +37,76 @@ static ImVec4 mode_color(TimeMode mode) {
     case TimeMode::Replaying: return ImVec4(0.85f, 0.6f, 1.0f, 1);
     }
     return ImVec4(1, 1, 1, 1);
+}
+
+static void draw_profiler() {
+    const Profiler& p = Profiler::instance();
+
+    static std::vector<float> history;
+    p.history(history);
+    char overlay_text[64];
+    std::snprintf(overlay_text, sizeof overlay_text, "avg %.2f ms   worst %.2f ms", p.average_ms(), p.worst_ms());
+    if (!history.empty()) {
+        ImGui::PlotLines("##frames", history.data(), static_cast<int>(history.size()), 0, overlay_text, 0.0f,
+                         std::max(20.0f, p.worst_ms()), ImVec2(-1, 60));
+    }
+
+    // Timeline bars: one row per nesting depth, scaled to the frame length.
+    const std::vector<ProfileSample>& samples = p.last_frame();
+    const float frame_ns = static_cast<float>(std::max<u64>(p.last_frame_ns(), 1));
+    int max_depth = 0;
+    for (const ProfileSample& s : samples) max_depth = std::max(max_depth, s.depth);
+
+    const float width = ImGui::GetContentRegionAvail().x;
+    const float row_h = 14.0f;
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImU32 colors[] = {IM_COL32(90, 160, 255, 255), IM_COL32(90, 220, 140, 255), IM_COL32(255, 190, 80, 255),
+                            IM_COL32(230, 110, 110, 255), IM_COL32(190, 130, 255, 255)};
+    for (const ProfileSample& s : samples) {
+        const float x0 = origin.x + width * static_cast<float>(s.begin_ns) / frame_ns;
+        const float x1 = origin.x + width * static_cast<float>(s.end_ns) / frame_ns;
+        const float y0 = origin.y + row_h * static_cast<float>(s.depth);
+        const ImU32 color = colors[static_cast<usize>(s.depth) % 5];
+        dl->AddRectFilled(ImVec2(x0, y0), ImVec2(std::max(x1, x0 + 1.0f), y0 + row_h - 2), color);
+        if (x1 - x0 > 40) dl->AddText(ImVec2(x0 + 3, y0), IM_COL32(0, 0, 0, 255), s.name);
+        if (ImGui::IsMouseHoveringRect(ImVec2(x0, y0), ImVec2(x1, y0 + row_h))) {
+            ImGui::SetTooltip("%s: %.3f ms", s.name, static_cast<float>(s.duration_ns()) / 1e6f);
+        }
+    }
+    ImGui::Dummy(ImVec2(width, row_h * static_cast<float>(max_depth + 1) + 4));
+
+    // Totals per name for the last frame.
+    struct Total {
+        const char* name;
+        u64 ns;
+        int calls;
+    };
+    std::vector<Total> totals;
+    for (const ProfileSample& s : samples) {
+        auto it = std::find_if(totals.begin(), totals.end(), [&](const Total& t) { return std::strcmp(t.name, s.name) == 0; });
+        if (it == totals.end()) totals.push_back(Total{s.name, s.duration_ns(), 1});
+        else {
+            it->ns += s.duration_ns();
+            ++it->calls;
+        }
+    }
+    if (ImGui::BeginTable("##totals", 3, ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("region");
+        ImGui::TableSetupColumn("ms");
+        ImGui::TableSetupColumn("calls");
+        ImGui::TableHeadersRow();
+        for (const Total& t : totals) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(t.name);
+            ImGui::TableSetColumnIndex(1);
+            ImGui::Text("%.3f", static_cast<float>(t.ns) / 1e6f);
+            ImGui::TableSetColumnIndex(2);
+            ImGui::Text("%d", t.calls);
+        }
+        ImGui::EndTable();
+    }
 }
 
 void draw_debug_overlay(Timeline& tl, TimeControl& time, Game& game, const FrameStats& stats,
@@ -117,6 +193,16 @@ void draw_debug_overlay(Timeline& tl, TimeControl& time, Game& game, const Frame
         if (!hot.last_error.empty()) ImGui::TextColored(kBad, "%s", hot.last_error.c_str());
     } else {
         ImGui::TextColored(kDim, "hot reload off: run this game through rewind_run to enable it");
+    }
+    if (hot.asset_reloads > 0) {
+        ImGui::TextColored(kGood, "assets: %zu files watched, %u reloads, last %s", hot.tracked_files,
+                           hot.asset_reloads, hot.last_asset.c_str());
+    } else {
+        ImGui::TextColored(kDim, "assets: %zu files watched, edits reload live", hot.tracked_files);
+    }
+
+    if (ImGui::CollapsingHeader("Profiler")) {
+        draw_profiler();
     }
 
     if (ImGui::CollapsingHeader("Keys")) {

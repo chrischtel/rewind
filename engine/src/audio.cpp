@@ -1,5 +1,7 @@
 #include "rewind/audio/audio.h"
 
+#include "rewind/core/file_watcher.h"
+
 #include <SDL3/SDL.h>
 
 #include <algorithm>
@@ -47,25 +49,30 @@ Sound* Audio::find_sound(const std::string& name) const {
 }
 
 Sound* Audio::load_wav(const std::string& path) {
-    if (Sound* existing = find_sound(path)) return existing;
+    Sound* existing = find_sound(path);
+    const bool stale = stale_files_.erase(path) > 0;
+    if (existing && !stale) return existing;
 
     SDL_AudioSpec spec{};
     u8* buffer = nullptr;
     u32 length = 0;
     if (!SDL_LoadWAV(path.c_str(), &spec, &buffer, &length)) {
         SDL_Log("load_wav(%s): %s", path.c_str(), SDL_GetError());
-        return nullptr;
+        return existing; // keep the last good version
     }
-    auto sound = std::make_unique<Sound>();
+    Sound* sound = existing;
+    if (!sound) {
+        auto owned = std::make_unique<Sound>();
+        sound = owned.get();
+        sounds_[path] = std::move(owned);
+    }
     sound->sample_rate = spec.freq;
     sound->channels = spec.channels;
     sound->format = spec.format;
     sound->data.assign(buffer, buffer + length);
     SDL_free(buffer);
-
-    Sound* result = sound.get();
-    sounds_[path] = std::move(sound);
-    return result;
+    if (watcher_) watcher_->track(path);
+    return sound;
 }
 
 Sound* Audio::create_sound(const std::string& name, int sample_rate, int channels, const float* samples,

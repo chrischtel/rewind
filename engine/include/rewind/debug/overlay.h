@@ -49,6 +49,11 @@ struct HotReloadInfo {
     Tick last_reload_tick = 0;
     bool history_reset = false;
     std::string last_error;
+
+    // Asset hot reload (always on).
+    usize tracked_files = 0;
+    u32 asset_reloads = 0;
+    std::string last_asset;
 };
 
 const char* time_mode_name(TimeMode mode);

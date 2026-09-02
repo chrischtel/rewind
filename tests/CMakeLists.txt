@@ -5,6 +5,7 @@ function(rewind_add_test name)
     add_test(NAME ${name} COMMAND ${name} ${ARGN})
 endfunction()
 
+rewind_add_test(core_test)
 rewind_add_test(timeline_test)
 rewind_add_test(assets_test)
 rewind_add_test(world_test)

@@ -1,0 +1,8 @@
+# Normalize to LF in the repository; keep LF in working copies on every platform.
+* text=auto eol=lf
+
+*.png binary
+*.aseprite binary
+*.ase binary
+*.wav binary
+*.ogg binary
