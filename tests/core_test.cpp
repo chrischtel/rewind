@@ -1,6 +1,7 @@
 // Headless checks for the file watcher and the profiler.
 
 #include <rewind/core/file_watcher.h>
+#include <rewind/core/log.h>
 #include <rewind/core/profiler.h>
 
 #include <chrono>
@@ -153,11 +154,55 @@ void test_profiler() {
     p.set_enabled(true);
 }
 
+void test_log() {
+    log_clear();
+    log_set_echo(false); // keep the test output readable
+    log_set_min_level(LogLevel::Debug);
+    log_set_frame(7);
+    RW_LOG_INFO("test", "hello %d", 42);
+    RW_LOG_WARN("test", "careful");
+    RW_LOG_ERROR("other", "broken: %s", "yes");
+    RW_LOG_DEBUG("test", "noise");
+
+    std::vector<LogEntry> entries;
+    log_snapshot(entries);
+    CHECK(entries.size() == 4);
+    if (entries.size() == 4) {
+        CHECK(entries[0].text == "hello 42" && entries[0].category == "test" && entries[0].level == LogLevel::Info);
+        CHECK(entries[0].frame == 7);
+        CHECK(entries[2].level == LogLevel::Error && entries[2].category == "other");
+        CHECK(entries[3].level == LogLevel::Debug);
+    }
+    CHECK(log_count(LogLevel::Warn) == 2);
+    CHECK(log_count(LogLevel::Error) == 1);
+    CHECK(log_count(LogLevel::Debug) == 4);
+
+    // Below the minimum level nothing is stored.
+    log_set_min_level(LogLevel::Warn);
+    RW_LOG_INFO("test", "dropped");
+    log_snapshot(entries);
+    CHECK(entries.size() == 4);
+    log_set_min_level(LogLevel::Debug);
+
+    // The ring buffer never grows past its capacity.
+    for (usize i = 0; i < log_capacity() + 50; ++i) RW_LOG_DEBUG("flood", "%zu", i);
+    log_snapshot(entries);
+    CHECK(entries.size() == log_capacity());
+    CHECK(entries.back().text == std::to_string(log_capacity() + 49));
+
+    log_clear();
+    log_snapshot(entries);
+    CHECK(entries.empty());
+    CHECK(log_count(LogLevel::Debug) == 0);
+    log_set_echo(true);
+}
+
 } // namespace
 
 int main() {
     test_file_watcher();
     test_profiler();
+    test_log();
 
     if (failures == 0) {
         std::printf("core_test: all checks passed\n");

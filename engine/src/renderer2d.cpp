@@ -1,4 +1,5 @@
 #include "rewind/render/renderer2d.h"
+#include "rewind/core/log.h"
 
 #include "debug_font.h"
 #include "rewind/core/file_watcher.h"
@@ -75,7 +76,7 @@ bool compile_dxbc(const char* source, const char* entry, const char* target, std
     const HRESULT hr = D3DCompile(source, std::strlen(source), "sprite.hlsl", nullptr, nullptr, entry, target,
                                   D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errors);
     if (FAILED(hr)) {
-        SDL_Log("shader %s failed to compile: %s", entry,
+        RW_LOG_ERROR("gpu", "shader %s failed to compile: %s", entry,
                 errors ? static_cast<const char*>(errors->GetBufferPointer()) : "unknown error");
         if (errors) errors->Release();
         return false;
@@ -164,7 +165,7 @@ struct Renderer2D::Impl {
             return SDL_CreateGPUShader(device, &info);
         }
 #endif
-        SDL_Log("no shader format available for this GPU driver (formats 0x%x)", formats);
+        RW_LOG_ERROR("gpu", "no shader format available for this GPU driver (formats 0x%x)", formats);
         return nullptr;
     }
 
@@ -172,7 +173,7 @@ struct Renderer2D::Impl {
         SDL_GPUShader* vs = create_shader(SDL_GPU_SHADERSTAGE_VERTEX);
         SDL_GPUShader* fs = create_shader(SDL_GPU_SHADERSTAGE_FRAGMENT);
         if (!vs || !fs) {
-            SDL_Log("could not create the sprite shaders: %s", SDL_GetError());
+            RW_LOG_ERROR("gpu", "could not create the sprite shaders: %s", SDL_GetError());
             if (vs) SDL_ReleaseGPUShader(device, vs);
             if (fs) SDL_ReleaseGPUShader(device, fs);
             return false;
@@ -215,7 +216,7 @@ struct Renderer2D::Impl {
         SDL_ReleaseGPUShader(device, vs);
         SDL_ReleaseGPUShader(device, fs);
         if (!pipeline) {
-            SDL_Log("could not create the sprite pipeline: %s", SDL_GetError());
+            RW_LOG_ERROR("gpu", "could not create the sprite pipeline: %s", SDL_GetError());
             return false;
         }
         return true;
@@ -295,7 +296,7 @@ struct Renderer2D::Impl {
         info.sample_count = SDL_GPU_SAMPLECOUNT_1;
         SDL_GPUTexture* handle = SDL_CreateGPUTexture(device, &info);
         if (!handle) {
-            SDL_Log("create texture '%s' (%dx%d) failed: %s", name.c_str(), width, height, SDL_GetError());
+            RW_LOG_ERROR("gpu", "create texture '%s' (%dx%d) failed: %s", name.c_str(), width, height, SDL_GetError());
             return nullptr;
         }
         SDL_SetGPUTextureName(device, handle, name.c_str());
@@ -530,11 +531,11 @@ bool Renderer2D::begin_frame() {
 
     im.cmd = SDL_AcquireGPUCommandBuffer(im.device);
     if (!im.cmd) {
-        SDL_Log("SDL_AcquireGPUCommandBuffer: %s", SDL_GetError());
+        RW_LOG_INFO("gpu", "SDL_AcquireGPUCommandBuffer: %s", SDL_GetError());
         return false;
     }
     if (!SDL_WaitAndAcquireGPUSwapchainTexture(im.cmd, im.window, &im.swapchain, &im.swapchain_w, &im.swapchain_h)) {
-        SDL_Log("SDL_WaitAndAcquireGPUSwapchainTexture: %s", SDL_GetError());
+        RW_LOG_INFO("gpu", "SDL_WaitAndAcquireGPUSwapchainTexture: %s", SDL_GetError());
         SDL_SubmitGPUCommandBuffer(im.cmd);
         im.cmd = nullptr;
         return false;
@@ -553,7 +554,7 @@ void Renderer2D::set_target(Texture* target) {
     Impl& im = *impl_;
     if (!im.frame_active) return;
     if (target && !target->render_target) {
-        SDL_Log("set_target: texture is not a render target");
+        RW_LOG_WARN("gpu", "set_target: texture is not a render target");
         target = nullptr;
     }
     if (im.current_target == target && !im.segments.empty()) return;
@@ -677,12 +678,12 @@ Texture* Renderer2D::find_texture(const std::string& name) const {
 
 Texture* Renderer2D::create_texture(const std::string& name, int width, int height, const u8* rgba) {
     if (width <= 0 || height <= 0) {
-        SDL_Log("create_texture(%s): invalid size %dx%d", name.c_str(), width, height);
+        RW_LOG_ERROR("gpu", "create_texture(%s): invalid size %dx%d", name.c_str(), width, height);
         return nullptr;
     }
     Texture* t = impl_->make_texture(name, width, height, false, pixel_art_);
     if (t && rgba && !impl_->upload_pixels(t->handle, width, height, rgba)) {
-        SDL_Log("create_texture(%s): upload failed: %s", name.c_str(), SDL_GetError());
+        RW_LOG_ERROR("gpu", "create_texture(%s): upload failed: %s", name.c_str(), SDL_GetError());
     }
     return t;
 }
@@ -701,7 +702,7 @@ Texture* Renderer2D::load_texture(const std::string& path) {
     int width = 0, height = 0, channels = 0;
     stbi_uc* pixels = stbi_load(path.c_str(), &width, &height, &channels, 4);
     if (!pixels) {
-        SDL_Log("load_texture(%s): %s", path.c_str(), stbi_failure_reason());
+        RW_LOG_INFO("gpu", "load_texture(%s): %s", path.c_str(), stbi_failure_reason());
         return existing; // keep showing the last good version
     }
     Texture* texture = create_texture(path, width, height, pixels);

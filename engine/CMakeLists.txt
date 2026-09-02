@@ -40,7 +40,11 @@ if(REWIND_GLSLC)
         COMMENT "embedding SPIR-V shaders"
         VERBATIM)
 else()
-    message(STATUS "Rewind: glslc not found, no SPIR-V (Direct3D 12 only)")
+    if(WIN32)
+        message(STATUS "Rewind: glslc not found, no SPIR-V (Direct3D 12 only)")
+    else()
+        message(WARNING "Rewind: glslc not found. The engine builds, but rendering needs SPIR-V on this platform; install the Vulkan SDK or the glslc package.")
+    endif()
     file(WRITE ${REWIND_SHADER_HEADER} "#pragma once\n#define REWIND_HAVE_SPIRV 0\n")
 endif()
 
@@ -52,6 +56,7 @@ add_library(rewind SHARED
     src/file_watcher.cpp
     src/game_module.cpp
     src/inspector.cpp
+    src/log.cpp
     src/overlay.cpp
     src/profiler.cpp
     src/reflect.cpp
@@ -74,6 +79,8 @@ target_compile_features(rewind PUBLIC cxx_std_20)
 
 if(WIN32)
     target_link_libraries(rewind PRIVATE d3dcompiler)
+else()
+    target_link_libraries(rewind PRIVATE ${CMAKE_DL_LIBS})
 endif()
 
 set_target_properties(rewind PROPERTIES

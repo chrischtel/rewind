@@ -1,5 +1,6 @@
 #include "rewind/core/game_module.h"
 
+#include "rewind/core/log.h"
 #include "rewind/sim/game.h"
 #include "rewind/sim/serialize.h"
 
@@ -9,6 +10,8 @@
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#else
+#include <dlfcn.h>
 #endif
 
 namespace rw {
@@ -35,6 +38,21 @@ std::string last_error_text() {
     while (!result.empty() && (result.back() == '\n' || result.back() == '\r' || result.back() == ' '))
         result.pop_back();
     return result + " (code " + std::to_string(code) + ")";
+}
+
+void* open_library(const fs::path& path) { return LoadLibraryW(path.c_str()); }
+void close_library(void* handle) { FreeLibrary(static_cast<HMODULE>(handle)); }
+void* find_symbol(void* handle, const char* name) {
+    return reinterpret_cast<void*>(GetProcAddress(static_cast<HMODULE>(handle), name));
+}
+std::string library_error() { return last_error_text(); }
+#else
+void* open_library(const fs::path& path) { return dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL); }
+void close_library(void* handle) { dlclose(handle); }
+void* find_symbol(void* handle, const char* name) { return dlsym(handle, name); }
+std::string library_error() {
+    const char* e = dlerror();
+    return e ? e : "unknown error";
 }
 #endif
 
@@ -137,7 +155,6 @@ GameModule::Reload GameModule::poll() {
 }
 
 bool GameModule::load_copy(u32 generation, Loaded& out) {
-#if defined(_WIN32)
     const fs::path copy = copy_name(path_, generation);
 
     std::error_code ec;
@@ -150,22 +167,22 @@ bool GameModule::load_copy(u32 generation, Loaded& out) {
     copy_failed_ = false;
     out.copy = copy;
 
-    HMODULE handle = LoadLibraryW(copy.c_str());
+    void* handle = open_library(copy);
     if (!handle) {
-        error_ = "LoadLibrary failed for " + copy.filename().string() + ": " + last_error_text();
+        error_ = "could not load " + copy.filename().string() + ": " + library_error();
         fs::remove(copy, ec);
         out.copy.clear();
         return false;
     }
 
-    auto version_fn = reinterpret_cast<u32 (*)()>(GetProcAddress(handle, "rewind_game_api_version"));
-    auto create_fn = reinterpret_cast<Game* (*)()>(GetProcAddress(handle, "rewind_create_game"));
-    auto destroy_fn = reinterpret_cast<void (*)(Game*)>(GetProcAddress(handle, "rewind_destroy_game"));
+    auto version_fn = reinterpret_cast<u32 (*)()>(find_symbol(handle, "rewind_game_api_version"));
+    auto create_fn = reinterpret_cast<Game* (*)()>(find_symbol(handle, "rewind_create_game"));
+    auto destroy_fn = reinterpret_cast<void (*)(Game*)>(find_symbol(handle, "rewind_destroy_game"));
 
     if (!version_fn || !create_fn || !destroy_fn) {
         error_ = path_.filename().string() +
                  " does not export the Rewind game entry points (did you use REWIND_GAME(...)?)";
-        FreeLibrary(handle);
+        close_library(handle);
         fs::remove(copy, ec);
         out.copy.clear();
         return false;
@@ -173,7 +190,7 @@ bool GameModule::load_copy(u32 generation, Loaded& out) {
     if (version_fn() != kGameApiVersion) {
         error_ = "game API version mismatch: module has " + std::to_string(version_fn()) +
                  ", engine expects " + std::to_string(kGameApiVersion);
-        FreeLibrary(handle);
+        close_library(handle);
         fs::remove(copy, ec);
         out.copy.clear();
         return false;
@@ -185,26 +202,18 @@ bool GameModule::load_copy(u32 generation, Loaded& out) {
     out.game = create_fn();
     if (!out.game) {
         error_ = "rewind_create_game() returned null";
-        FreeLibrary(handle);
+        close_library(handle);
         fs::remove(copy, ec);
         out = Loaded{};
         return false;
     }
     return true;
-#else
-    (void)generation;
-    (void)out;
-    error_ = "hot reload is not implemented on this platform yet";
-    return false;
-#endif
 }
 
 void GameModule::unload(Loaded& loaded) {
     if (loaded.game && loaded.destroy) loaded.destroy(loaded.game);
     loaded.game = nullptr;
-#if defined(_WIN32)
-    if (loaded.handle) FreeLibrary(static_cast<HMODULE>(loaded.handle));
-#endif
+    if (loaded.handle) close_library(loaded.handle);
     loaded.handle = nullptr;
     if (!loaded.copy.empty()) {
         std::error_code ec;

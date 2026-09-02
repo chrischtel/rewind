@@ -7,6 +7,7 @@
 #include "rewind/core/app.h"
 #include "rewind/core/file_watcher.h"
 #include "rewind/core/game_module.h"
+#include "rewind/core/log.h"
 #include "rewind/core/math.h"
 #include "rewind/core/profiler.h"
 #include "rewind/core/types.h"

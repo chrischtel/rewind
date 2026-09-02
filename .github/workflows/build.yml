@@ -1,0 +1,35 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake --preset vs2022
+      - name: Build
+        run: cmake --build --preset vs2022-release
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build glslc \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev \
+            libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl-dev libdrm-dev libgbm-dev \
+            libasound2-dev libpulse-dev libdbus-1-dev libudev-dev
+      - name: Configure
+        run: cmake --preset ninja
+      - name: Build
+        run: cmake --build --preset ninja
+      - name: Test
+        run: ctest --test-dir build-ninja --output-on-failure

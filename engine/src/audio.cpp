@@ -1,4 +1,5 @@
 #include "rewind/audio/audio.h"
+#include "rewind/core/log.h"
 
 #include "rewind/core/file_watcher.h"
 
@@ -20,19 +21,19 @@ Audio::~Audio() { shutdown(); }
 bool Audio::init() {
     if (device_) return true;
     if (!SDL_WasInit(SDL_INIT_AUDIO) && !SDL_InitSubSystem(SDL_INIT_AUDIO)) {
-        SDL_Log("audio: SDL_InitSubSystem failed: %s", SDL_GetError());
+        RW_LOG_ERROR("audio", "audio: SDL_InitSubSystem failed: %s", SDL_GetError());
         return false;
     }
     const SDL_AudioSpec want{SDL_AUDIO_F32, 2, 48000};
     device_ = SDL_OpenAudioDevice(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &want);
     if (!device_) {
-        SDL_Log("audio: could not open the default playback device: %s", SDL_GetError());
+        RW_LOG_ERROR("audio", "audio: could not open the default playback device: %s", SDL_GetError());
         return false;
     }
     SDL_AudioSpec got{};
     int frames = 0;
     SDL_GetAudioDeviceFormat(device_, &got, &frames);
-    SDL_Log("audio: %d Hz, %d channels, %d frames per buffer", got.freq, got.channels, frames);
+    RW_LOG_INFO("audio", "audio: %d Hz, %d channels, %d frames per buffer", got.freq, got.channels, frames);
     return true;
 }
 
@@ -57,7 +58,7 @@ Sound* Audio::load_wav(const std::string& path) {
     u8* buffer = nullptr;
     u32 length = 0;
     if (!SDL_LoadWAV(path.c_str(), &spec, &buffer, &length)) {
-        SDL_Log("load_wav(%s): %s", path.c_str(), SDL_GetError());
+        RW_LOG_INFO("audio", "load_wav(%s): %s", path.c_str(), SDL_GetError());
         return existing; // keep the last good version
     }
     Sound* sound = existing;
@@ -109,14 +110,14 @@ void Audio::play(const Sound& sound, float volume) {
 
     SDL_AudioStream* stream = SDL_CreateAudioStream(&src, &dst);
     if (!stream) {
-        SDL_Log("audio: SDL_CreateAudioStream failed: %s", SDL_GetError());
+        RW_LOG_ERROR("audio", "audio: SDL_CreateAudioStream failed: %s", SDL_GetError());
         return;
     }
     SDL_SetAudioStreamGain(stream, std::max(0.0f, volume) * master_);
     SDL_PutAudioStreamData(stream, sound.data.data(), static_cast<int>(sound.data.size()));
     SDL_FlushAudioStream(stream);
     if (!SDL_BindAudioStream(device_, stream)) {
-        SDL_Log("audio: SDL_BindAudioStream failed: %s", SDL_GetError());
+        RW_LOG_ERROR("audio", "audio: SDL_BindAudioStream failed: %s", SDL_GetError());
         SDL_DestroyAudioStream(stream);
         return;
     }

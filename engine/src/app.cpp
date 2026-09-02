@@ -1,4 +1,5 @@
 #include "rewind/core/app.h"
+#include "rewind/core/log.h"
 
 #include "rewind/core/game_module.h"
 #include "rewind/core/profiler.h"
@@ -22,8 +23,9 @@ App::App(AppConfig cfg) : cfg_(std::move(cfg)), timeline_(cfg_.timeline) {
 App::~App() { shutdown_platform(); }
 
 bool App::init_platform() {
+    log_capture_sdl();
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
-        SDL_Log("SDL_Init failed: %s", SDL_GetError());
+        RW_LOG_ERROR("app", "SDL_Init failed: %s", SDL_GetError());
         return false;
     }
 
@@ -31,7 +33,7 @@ bool App::init_platform() {
     if (cfg_.resizable) flags |= SDL_WINDOW_RESIZABLE;
     window_ = SDL_CreateWindow(cfg_.title.c_str(), cfg_.width, cfg_.height, flags);
     if (!window_) {
-        SDL_Log("SDL_CreateWindow failed: %s", SDL_GetError());
+        RW_LOG_ERROR("app", "SDL_CreateWindow failed: %s", SDL_GetError());
         return false;
     }
 
@@ -44,11 +46,11 @@ bool App::init_platform() {
     formats |= SDL_GPU_SHADERFORMAT_SPIRV;
     device_ = SDL_CreateGPUDevice(formats, cfg_.gpu_debug, cfg_.gpu_driver.empty() ? nullptr : cfg_.gpu_driver.c_str());
     if (!device_) {
-        SDL_Log("SDL_CreateGPUDevice failed: %s", SDL_GetError());
+        RW_LOG_ERROR("app", "SDL_CreateGPUDevice failed: %s", SDL_GetError());
         return false;
     }
     if (!SDL_ClaimWindowForGPUDevice(device_, window_)) {
-        SDL_Log("SDL_ClaimWindowForGPUDevice failed: %s", SDL_GetError());
+        RW_LOG_ERROR("app", "SDL_ClaimWindowForGPUDevice failed: %s", SDL_GetError());
         return false;
     }
     SDL_GPUPresentMode present = SDL_GPU_PRESENTMODE_VSYNC;
@@ -59,11 +61,11 @@ bool App::init_platform() {
             present = SDL_GPU_PRESENTMODE_IMMEDIATE;
     }
     SDL_SetGPUSwapchainParameters(device_, window_, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, present);
-    SDL_Log("gpu: %s", SDL_GetGPUDeviceDriver(device_));
+    RW_LOG_INFO("app", "gpu: %s", SDL_GetGPUDeviceDriver(device_));
 
     renderer_ = std::make_unique<Renderer2D>(device_, window_);
     if (!renderer_->ok()) {
-        SDL_Log("the renderer could not be set up");
+        RW_LOG_ERROR("app", "the renderer could not be set up");
         return false;
     }
     renderer_->set_pixel_art(cfg_.pixel_art);
@@ -73,10 +75,10 @@ bool App::init_platform() {
     if (cfg_.render_width > 0 && cfg_.render_height > 0) {
         target_ = renderer_->create_render_target("__pixel_target", cfg_.render_width, cfg_.render_height);
         if (!target_) {
-            SDL_Log("could not create the %dx%d render target", cfg_.render_width, cfg_.render_height);
+            RW_LOG_ERROR("app", "could not create the %dx%d render target", cfg_.render_width, cfg_.render_height);
             return false;
         }
-        SDL_Log("pixel mode: %dx%d, %s scaling", cfg_.render_width, cfg_.render_height,
+        RW_LOG_INFO("app", "pixel mode: %dx%d, %s scaling", cfg_.render_width, cfg_.render_height,
                 cfg_.integer_scale ? "integer" : "fractional");
     }
 
@@ -155,7 +157,7 @@ void App::handle_events() {
         case SDL_EVENT_GAMEPAD_ADDED:
             if (!gamepad_) {
                 gamepad_ = SDL_OpenGamepad(e.gdevice.which);
-                if (gamepad_) SDL_Log("gamepad connected: %s", SDL_GetGamepadName(gamepad_));
+                if (gamepad_) RW_LOG_INFO("app", "gamepad connected: %s", SDL_GetGamepadName(gamepad_));
             }
             break;
 
@@ -163,7 +165,7 @@ void App::handle_events() {
             if (gamepad_ && SDL_GetGamepadID(gamepad_) == e.gdevice.which) {
                 SDL_CloseGamepad(gamepad_);
                 gamepad_ = nullptr;
-                SDL_Log("gamepad disconnected");
+                RW_LOG_INFO("app", "gamepad disconnected");
             }
             break;
 
@@ -238,7 +240,7 @@ void App::poll_hot_reload() {
 
     case GameModule::Reload::Status::Failed:
         if (hot_.last_error != reload.error) {
-            SDL_Log("hot reload failed: %s", reload.error.c_str());
+            RW_LOG_ERROR("app", "hot reload failed: %s", reload.error.c_str());
         }
         hot_.last_error = reload.error;
         break;
@@ -251,7 +253,7 @@ void App::poll_hot_reload() {
         hot_.history_reset = !reload.state_compatible;
         game_->load_assets(*renderer_, audio_);
         if (reload.state_compatible) {
-            SDL_Log("hot reload #%u: new code took over at tick %llu, history kept", hot_.generation,
+            RW_LOG_INFO("app", "hot reload #%u: new code took over at tick %llu, history kept", hot_.generation,
                     static_cast<unsigned long long>(timeline_.head()));
         } else {
             // The new build's state layout differs from what was recorded, so
@@ -259,7 +261,7 @@ void App::poll_hot_reload() {
             game_->init();
             timeline_.reset(*game_);
             accumulator_ = 0;
-            SDL_Log("hot reload #%u: state layout changed, started a fresh timeline",
+            RW_LOG_INFO("app", "hot reload #%u: state layout changed, started a fresh timeline",
                     hot_.generation);
         }
         break;
@@ -272,7 +274,7 @@ void App::poll_assets() {
     for (const std::string& path : changed) {
         renderer_->invalidate_file(path);
         audio_.invalidate_file(path);
-        SDL_Log("asset changed: %s", path.c_str());
+        RW_LOG_INFO("app", "asset changed: %s", path.c_str());
     }
     RW_PROFILE_SCOPE("load_assets");
     game_->load_assets(*renderer_, audio_);
@@ -406,7 +408,7 @@ int App::run(Game& game) {
 
 int App::run(GameModule& module) {
     if (!module.game()) {
-        SDL_Log("App::run: the game module is not loaded (%s)", module.error().c_str());
+        RW_LOG_WARN("app", "App::run: the game module is not loaded (%s)", module.error().c_str());
         return 1;
     }
     game_ = module.game();
@@ -432,8 +434,10 @@ int App::loop() {
     int fps_frames = 0;
 
     Profiler& profiler = Profiler::instance();
+    u32 frame_number = 0;
 
     while (running_) {
+        log_set_frame(++frame_number);
         profiler.begin_frame();
         const u64 now = SDL_GetTicksNS();
         double frame_dt = static_cast<double>(now - prev) / 1e9;

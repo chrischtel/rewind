@@ -12,7 +12,7 @@ rewind_add_test(world_test)
 rewind_add_test(reflect_test)
 rewind_add_test(ecs_test)
 
-if(REWIND_BUILD_SAMPLES AND WIN32)
+if(REWIND_BUILD_SAMPLES)
     rewind_add_test(hot_reload_test $<TARGET_FILE:bounce_hot>)
     add_dependencies(hot_reload_test bounce_hot)
 endif()

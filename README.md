@@ -39,6 +39,13 @@ cmake --build --preset vs2026-release
 Use `vs2022` for Visual Studio 2022, or `ninja` from a developer prompt.
 The sample ends up in `build/bin/Release/bounce.exe`.
 
+Linux: install the X11 or Wayland development packages SDL needs, plus
+`glslc` for the shaders, then `cmake --preset ninja` and
+`cmake --build --preset ninja`. The hot reload loader and the runner use
+`dlopen` there. The GitHub Actions workflow in `.github/workflows` builds and
+tests both platforms; Linux is not yet exercised on a developer machine, so
+expect rough edges the first time.
+
 ## Try it
 
 Run `bounce`. Move the square with the arrow keys or WASD, press Z or Space
@@ -219,6 +226,17 @@ textures and sounds are refreshed in place, so pointers your game holds stay
 valid even when an image changes size. A file that fails to load keeps its
 last good version. This works in every build, not only under `rewind_run`.
 
+## Log and console
+
+`RW_LOG_INFO("mygame", "spawned %d enemies", n)` and its debug, warn and
+error siblings write to stderr, to the debugger output on Windows, and into
+a ring buffer the overlay shows as a console with text filtering, level
+toggles and follow mode. SDL's own messages land there too under the "sdl"
+category. The console header counts warnings and errors so a problem is
+visible even when the section is collapsed. Every entry carries the frame
+number it happened on, which lines up with the timeline when reading a bug
+report.
+
 ## Profiler
 
 Always on, in every build. The App times events, simulation, audio, render
@@ -325,6 +343,7 @@ The rules that make everything work:
 engine/include/rewind/
   core/app.h          window, fixed-step loop, pixel mode, gamepad, hotkeys
   core/file_watcher.h polls tracked files, drives asset hot reload
+  core/log.h          RW_LOG_* macros, ring buffer behind the console
   core/profiler.h     RW_PROFILE_SCOPE and the frame profiler
   core/game_module.h  loads a game DLL and hot-swaps it on rebuild
   core/math.h         Vec2, Rect, small float helpers
@@ -370,8 +389,7 @@ In rough order:
 - **Fixed-point math option** for bit-exact determinism across machines.
 - **Rollback netcode** built on `Timeline::seek` plus remote input frames.
 - **Prefabs and scene composition** on top of the world and the text format.
-- **Engine log** with categories and an overlay console.
-- Linux and macOS builds.
+- Linux verified on a real machine, then macOS.
 - An editor on top of all of the above.
 
 ## License

@@ -1,5 +1,6 @@
 #include "rewind/debug/overlay.h"
 
+#include "rewind/core/log.h"
 #include "rewind/core/profiler.h"
 #include "rewind/debug/inspector.h"
 #include "rewind/sim/game.h"
@@ -109,6 +110,46 @@ static void draw_profiler() {
     }
 }
 
+static void draw_console() {
+    static char filter[64] = "";
+    static bool show_debug = false, show_info = true, show_warn = true, show_error = true;
+    static bool autoscroll = true;
+    static std::vector<LogEntry> entries;
+
+    ImGui::SetNextItemWidth(160);
+    ImGui::InputTextWithHint("##filter", "filter text or category", filter, sizeof filter);
+    ImGui::SameLine();
+    ImGui::Checkbox("debug", &show_debug);
+    ImGui::SameLine();
+    ImGui::Checkbox("info", &show_info);
+    ImGui::SameLine();
+    ImGui::Checkbox("warn", &show_warn);
+    ImGui::SameLine();
+    ImGui::Checkbox("error", &show_error);
+    ImGui::SameLine();
+    ImGui::Checkbox("follow", &autoscroll);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("clear")) log_clear();
+
+    log_snapshot(entries);
+    ImGui::BeginChild("##console", ImVec2(0, 160), ImGuiChildFlags_Borders);
+    for (const LogEntry& e : entries) {
+        const bool visible = (e.level == LogLevel::Debug && show_debug) || (e.level == LogLevel::Info && show_info) ||
+                             (e.level == LogLevel::Warn && show_warn) || (e.level == LogLevel::Error && show_error);
+        if (!visible) continue;
+        if (filter[0] && e.text.find(filter) == std::string::npos && e.category.find(filter) == std::string::npos)
+            continue;
+        ImVec4 color = ImVec4(0.85f, 0.85f, 0.9f, 1);
+        if (e.level == LogLevel::Debug) color = kDim;
+        if (e.level == LogLevel::Warn) color = ImVec4(1.0f, 0.85f, 0.35f, 1);
+        if (e.level == LogLevel::Error) color = kBad;
+        ImGui::TextColored(color, "%6.2fs #%-5u %-6s %s", static_cast<double>(e.time_ms) / 1000.0, e.frame,
+                           e.category.c_str(), e.text.c_str());
+    }
+    if (autoscroll && ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 20) ImGui::SetScrollHereY(1.0f);
+    ImGui::EndChild();
+}
+
 void draw_debug_overlay(Timeline& tl, TimeControl& time, Game& game, const FrameStats& stats,
                         const HotReloadInfo& hot) {
     ImGui::SetNextWindowPos(ImVec2(12, 12), ImGuiCond_FirstUseEver);
@@ -203,6 +244,18 @@ void draw_debug_overlay(Timeline& tl, TimeControl& time, Game& game, const Frame
 
     if (ImGui::CollapsingHeader("Profiler")) {
         draw_profiler();
+    }
+
+    {
+        const u32 errors = log_count(LogLevel::Error);
+        const u32 warnings = log_count(LogLevel::Warn) - errors;
+        char title[64];
+        std::snprintf(title, sizeof title, "Console (%u warnings, %u errors)###console", warnings, errors);
+        if (errors > 0) ImGui::PushStyleColor(ImGuiCol_Text, kBad);
+        else if (warnings > 0) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.35f, 1));
+        const bool open = ImGui::CollapsingHeader(title);
+        if (errors > 0 || warnings > 0) ImGui::PopStyleColor();
+        if (open) draw_console();
     }
 
     if (ImGui::CollapsingHeader("Keys")) {
