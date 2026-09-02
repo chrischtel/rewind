@@ -1,0 +1,27 @@
+#pragma once
+
+// Umbrella header: everything a game needs.
+
+#include "rewind/assets/aseprite.h"
+#include "rewind/audio/audio.h"
+#include "rewind/core/app.h"
+#include "rewind/core/game_module.h"
+#include "rewind/core/math.h"
+#include "rewind/core/types.h"
+#include "rewind/debug/inspector.h"
+#include "rewind/debug/overlay.h"
+#include "rewind/game_entry.h"
+#include "rewind/render/renderer2d.h"
+#include "rewind/render/sprite.h"
+#include "rewind/render/texture.h"
+#include "rewind/sim/animation.h"
+#include "rewind/sim/events.h"
+#include "rewind/sim/game.h"
+#include "rewind/sim/input.h"
+#include "rewind/sim/reflect.h"
+#include "rewind/sim/rng.h"
+#include "rewind/sim/serialize.h"
+#include "rewind/sim/text_format.h"
+#include "rewind/sim/timeline.h"
+#include "rewind/sim/world.h"
+#include "rewind/world/tilemap.h"

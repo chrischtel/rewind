@@ -1,0 +1,81 @@
+#pragma once
+
+#include "rewind/core/types.h"
+
+#include <memory>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+struct SDL_AudioStream;
+
+namespace rw {
+
+/// Decoded PCM audio owned by the Audio system. Games hold pointers; they
+/// stay valid until shutdown, which includes across hot reloads.
+struct Sound {
+    int sample_rate = 48000;
+    int channels = 1;
+    int format = 0;       ///< SDL_AudioFormat
+    std::vector<u8> data; ///< interleaved samples in `format`
+
+    float seconds() const;
+};
+
+/// Small polyphonic sound player over SDL's audio streams. Each play() gets
+/// its own stream; SDL mixes and resamples them. No positional audio yet.
+///
+/// Audio is deliberately not reachable from Game::tick(): emit an event there
+/// and call play() from Game::on_event(), so rewinds and replays stay silent.
+class Audio {
+public:
+    Audio() = default;
+    ~Audio();
+
+    Audio(const Audio&) = delete;
+    Audio& operator=(const Audio&) = delete;
+
+    /// Open the default playback device. Returns false (and logs) on failure;
+    /// every other call is then a harmless no-op.
+    bool init();
+    void shutdown();
+    bool ready() const { return device_ != 0; }
+
+    /// Load a WAV file. Cached by path.
+    Sound* load_wav(const std::string& path);
+
+    /// Create (or replace) a sound from 32-bit float samples, interleaved if
+    /// `channels` > 1. Cached by name.
+    Sound* create_sound(const std::string& name, int sample_rate, int channels, const float* samples,
+                        usize sample_count);
+
+    Sound* find_sound(const std::string& name) const;
+
+    /// Start playing. `volume` is linear, 1 = as recorded.
+    void play(const Sound& sound, float volume = 1.0f);
+    void play(const Sound* sound, float volume = 1.0f) {
+        if (sound) play(*sound, volume);
+    }
+
+    /// Stop every voice at once.
+    void stop_all();
+
+    void set_master_volume(float volume);
+    float master_volume() const { return master_; }
+
+    /// Call once per frame: releases voices that have finished.
+    void update();
+
+    int active_voices() const { return static_cast<int>(voices_.size()); }
+    int max_voices() const { return max_voices_; }
+    void set_max_voices(int n) { max_voices_ = n < 1 ? 1 : n; }
+
+private:
+    u32 device_ = 0;
+    float master_ = 1.0f;
+    int max_voices_ = 32;
+    std::vector<SDL_AudioStream*> voices_;
+    std::unordered_map<std::string, std::unique_ptr<Sound>> sounds_;
+};
+
+} // namespace rw

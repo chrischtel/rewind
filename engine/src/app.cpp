@@ -1,0 +1,452 @@
+#include "rewind/core/app.h"
+
+#include "rewind/core/game_module.h"
+#include "rewind/render/renderer2d.h"
+#include "rewind/sim/game.h"
+
+#include <SDL3/SDL.h>
+#include <imgui.h>
+#include <imgui_impl_sdl3.h>
+#include <imgui_impl_sdlgpu3.h>
+
+#include <algorithm>
+#include <cmath>
+
+namespace rw {
+
+App::App(AppConfig cfg) : cfg_(std::move(cfg)), timeline_(cfg_.timeline) {
+    time_.show_overlay = cfg_.start_with_overlay;
+}
+
+App::~App() { shutdown_platform(); }
+
+bool App::init_platform() {
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
+        SDL_Log("SDL_Init failed: %s", SDL_GetError());
+        return false;
+    }
+
+    SDL_WindowFlags flags = 0;
+    if (cfg_.resizable) flags |= SDL_WINDOW_RESIZABLE;
+    window_ = SDL_CreateWindow(cfg_.title.c_str(), cfg_.width, cfg_.height, flags);
+    if (!window_) {
+        SDL_Log("SDL_CreateWindow failed: %s", SDL_GetError());
+        return false;
+    }
+
+    // Shader formats we can actually supply: SPIR-V when it was embedded at
+    // build time, DXBC compiled at runtime on Windows.
+    SDL_GPUShaderFormat formats = 0;
+#if defined(_WIN32)
+    formats |= SDL_GPU_SHADERFORMAT_DXBC;
+#endif
+    formats |= SDL_GPU_SHADERFORMAT_SPIRV;
+    device_ = SDL_CreateGPUDevice(formats, cfg_.gpu_debug, cfg_.gpu_driver.empty() ? nullptr : cfg_.gpu_driver.c_str());
+    if (!device_) {
+        SDL_Log("SDL_CreateGPUDevice failed: %s", SDL_GetError());
+        return false;
+    }
+    if (!SDL_ClaimWindowForGPUDevice(device_, window_)) {
+        SDL_Log("SDL_ClaimWindowForGPUDevice failed: %s", SDL_GetError());
+        return false;
+    }
+    SDL_GPUPresentMode present = SDL_GPU_PRESENTMODE_VSYNC;
+    if (!cfg_.vsync) {
+        if (SDL_WindowSupportsGPUPresentMode(device_, window_, SDL_GPU_PRESENTMODE_MAILBOX))
+            present = SDL_GPU_PRESENTMODE_MAILBOX;
+        else if (SDL_WindowSupportsGPUPresentMode(device_, window_, SDL_GPU_PRESENTMODE_IMMEDIATE))
+            present = SDL_GPU_PRESENTMODE_IMMEDIATE;
+    }
+    SDL_SetGPUSwapchainParameters(device_, window_, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, present);
+    SDL_Log("gpu: %s", SDL_GetGPUDeviceDriver(device_));
+
+    renderer_ = std::make_unique<Renderer2D>(device_, window_);
+    if (!renderer_->ok()) {
+        SDL_Log("the renderer could not be set up");
+        return false;
+    }
+    renderer_->set_pixel_art(cfg_.pixel_art);
+
+    if (cfg_.render_width > 0 && cfg_.render_height > 0) {
+        target_ = renderer_->create_render_target("__pixel_target", cfg_.render_width, cfg_.render_height);
+        if (!target_) {
+            SDL_Log("could not create the %dx%d render target", cfg_.render_width, cfg_.render_height);
+            return false;
+        }
+        SDL_Log("pixel mode: %dx%d, %s scaling", cfg_.render_width, cfg_.render_height,
+                cfg_.integer_scale ? "integer" : "fractional");
+    }
+
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename = nullptr; // do not litter the working directory
+    ImGui::StyleColorsDark();
+    ImGui_ImplSDL3_InitForSDLGPU(window_);
+    ImGui_ImplSDLGPU3_InitInfo init{};
+    init.Device = device_;
+    init.ColorTargetFormat = SDL_GetGPUSwapchainTextureFormat(device_, window_);
+    init.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
+    ImGui_ImplSDLGPU3_Init(&init);
+    imgui_ready_ = true;
+
+    if (cfg_.audio) audio_.init(); // failure is logged and leaves audio silent
+    return true;
+}
+
+void App::shutdown_platform() {
+    if (!window_) return;
+    audio_.shutdown();
+    if (device_) SDL_WaitForGPUIdle(device_);
+    if (imgui_ready_) {
+        ImGui_ImplSDLGPU3_Shutdown();
+        ImGui_ImplSDL3_Shutdown();
+        ImGui::DestroyContext();
+        imgui_ready_ = false;
+    }
+    target_ = nullptr;
+    renderer_.reset();
+    if (gamepad_) SDL_CloseGamepad(gamepad_);
+    gamepad_ = nullptr;
+    if (device_) {
+        SDL_ReleaseWindowFromGPUDevice(device_, window_);
+        SDL_DestroyGPUDevice(device_);
+        device_ = nullptr;
+    }
+    SDL_DestroyWindow(window_);
+    SDL_Quit();
+    window_ = nullptr;
+}
+
+void App::handle_events() {
+    SDL_Event e;
+    while (SDL_PollEvent(&e)) {
+        ImGui_ImplSDL3_ProcessEvent(&e);
+        switch (e.type) {
+        case SDL_EVENT_QUIT: running_ = false; break;
+
+        case SDL_EVENT_KEY_DOWN:
+            if (e.key.repeat) break;
+            switch (e.key.scancode) {
+            case SDL_SCANCODE_ESCAPE: running_ = false; break;
+            case SDL_SCANCODE_F1: time_.show_overlay = !time_.show_overlay; break;
+            case SDL_SCANCODE_F2:
+                time_.mode = time_.mode == TimeMode::Playing ? TimeMode::Paused : TimeMode::Playing;
+                break;
+            case SDL_SCANCODE_F3:
+                time_.mode = TimeMode::Paused;
+                time_.step_request = true;
+                break;
+            case SDL_SCANCODE_F4: time_.mode = TimeMode::Rewinding; break;
+            case SDL_SCANCODE_F5: time_.replay_request = true; break;
+            default: break;
+            }
+            break;
+
+        case SDL_EVENT_KEY_UP:
+            if (e.key.scancode == SDL_SCANCODE_F4 && time_.mode == TimeMode::Rewinding) {
+                time_.mode = TimeMode::Paused;
+            }
+            break;
+
+        case SDL_EVENT_GAMEPAD_ADDED:
+            if (!gamepad_) {
+                gamepad_ = SDL_OpenGamepad(e.gdevice.which);
+                if (gamepad_) SDL_Log("gamepad connected: %s", SDL_GetGamepadName(gamepad_));
+            }
+            break;
+
+        case SDL_EVENT_GAMEPAD_REMOVED:
+            if (gamepad_ && SDL_GetGamepadID(gamepad_) == e.gdevice.which) {
+                SDL_CloseGamepad(gamepad_);
+                gamepad_ = nullptr;
+                SDL_Log("gamepad disconnected");
+            }
+            break;
+
+        default: break;
+        }
+    }
+}
+
+InputFrame App::sample_input() const {
+    InputFrame in;
+    if (ImGui::GetIO().WantCaptureKeyboard) return in;
+
+    const bool* k = SDL_GetKeyboardState(nullptr);
+    in.set(Button::Up, k[SDL_SCANCODE_UP] || k[SDL_SCANCODE_W]);
+    in.set(Button::Down, k[SDL_SCANCODE_DOWN] || k[SDL_SCANCODE_S]);
+    in.set(Button::Left, k[SDL_SCANCODE_LEFT] || k[SDL_SCANCODE_A]);
+    in.set(Button::Right, k[SDL_SCANCODE_RIGHT] || k[SDL_SCANCODE_D]);
+    in.set(Button::A, k[SDL_SCANCODE_Z] || k[SDL_SCANCODE_J] || k[SDL_SCANCODE_SPACE]);
+    in.set(Button::B, k[SDL_SCANCODE_X] || k[SDL_SCANCODE_K] || k[SDL_SCANCODE_LSHIFT]);
+    in.set(Button::X, k[SDL_SCANCODE_C] || k[SDL_SCANCODE_L]);
+    in.set(Button::Y, k[SDL_SCANCODE_V] || k[SDL_SCANCODE_I]);
+    in.set(Button::L, k[SDL_SCANCODE_Q]);
+    in.set(Button::R, k[SDL_SCANCODE_E]);
+    in.set(Button::Start, k[SDL_SCANCODE_RETURN]);
+    in.set(Button::Select, k[SDL_SCANCODE_BACKSPACE]);
+
+    i32 axis_x = 0;
+    i32 axis_y = 0;
+
+    if (gamepad_) {
+        auto held = [&](SDL_GamepadButton b) { return SDL_GetGamepadButton(gamepad_, b); };
+        auto set_or = [&](Button b, bool on) {
+            if (on) in.set(b, true);
+        };
+        set_or(Button::Up, held(SDL_GAMEPAD_BUTTON_DPAD_UP));
+        set_or(Button::Down, held(SDL_GAMEPAD_BUTTON_DPAD_DOWN));
+        set_or(Button::Left, held(SDL_GAMEPAD_BUTTON_DPAD_LEFT));
+        set_or(Button::Right, held(SDL_GAMEPAD_BUTTON_DPAD_RIGHT));
+        set_or(Button::A, held(SDL_GAMEPAD_BUTTON_SOUTH));
+        set_or(Button::B, held(SDL_GAMEPAD_BUTTON_EAST));
+        set_or(Button::X, held(SDL_GAMEPAD_BUTTON_WEST));
+        set_or(Button::Y, held(SDL_GAMEPAD_BUTTON_NORTH));
+        set_or(Button::L, held(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER));
+        set_or(Button::R, held(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER));
+        set_or(Button::Start, held(SDL_GAMEPAD_BUTTON_START));
+        set_or(Button::Select, held(SDL_GAMEPAD_BUTTON_BACK));
+
+        constexpr i32 kDeadzone = 8000;
+        const i32 sx = SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_LEFTX);
+        const i32 sy = SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_LEFTY);
+        if (std::abs(sx) > kDeadzone) axis_x = std::clamp(sx, -32767, 32767);
+        if (std::abs(sy) > kDeadzone) axis_y = std::clamp(sy, -32767, 32767);
+    }
+
+    // Digital directions always win over the stick so keyboard and d-pad feel exact.
+    const int dx = (in.down(Button::Right) ? 1 : 0) - (in.down(Button::Left) ? 1 : 0);
+    const int dy = (in.down(Button::Down) ? 1 : 0) - (in.down(Button::Up) ? 1 : 0);
+    if (dx != 0) axis_x = dx * 32767;
+    if (dy != 0) axis_y = dy * 32767;
+
+    in.axis_x = static_cast<i16>(axis_x);
+    in.axis_y = static_cast<i16>(axis_y);
+    return in;
+}
+
+void App::poll_hot_reload() {
+    if (!module_) return;
+    const GameModule::Reload reload = module_->poll();
+
+    switch (reload.status) {
+    case GameModule::Reload::Status::NoChange: break;
+
+    case GameModule::Reload::Status::Failed:
+        if (hot_.last_error != reload.error) {
+            SDL_Log("hot reload failed: %s", reload.error.c_str());
+        }
+        hot_.last_error = reload.error;
+        break;
+
+    case GameModule::Reload::Status::Reloaded:
+        game_ = module_->game();
+        hot_.generation = module_->generation();
+        hot_.last_reload_tick = timeline_.head();
+        hot_.last_error.clear();
+        hot_.history_reset = !reload.state_compatible;
+        game_->load_assets(*renderer_, audio_);
+        if (reload.state_compatible) {
+            SDL_Log("hot reload #%u: new code took over at tick %llu, history kept", hot_.generation,
+                    static_cast<unsigned long long>(timeline_.head()));
+        } else {
+            // The new build's state layout differs from what was recorded, so
+            // every snapshot in the timeline is unreadable to it. Start over.
+            game_->init();
+            timeline_.reset(*game_);
+            accumulator_ = 0;
+            SDL_Log("hot reload #%u: state layout changed, started a fresh timeline",
+                    hot_.generation);
+        }
+        break;
+    }
+}
+
+void App::apply_requests(const InputFrame& live) {
+    if (time_.scrub_request) {
+        timeline_.seek(*game_, *time_.scrub_request);
+        time_.scrub_request.reset();
+        time_.mode = TimeMode::Paused;
+        accumulator_ = 0;
+    }
+    if (time_.step_request) {
+        time_.step_request = false;
+        timeline_.step_forward(*game_, live);
+        accumulator_ = 0;
+    }
+    if (time_.replay_request) {
+        time_.replay_request = false;
+        timeline_.clear_desync();
+        timeline_.seek(*game_, timeline_.oldest());
+        time_.mode = TimeMode::Replaying;
+        accumulator_ = 0;
+    }
+}
+
+void App::simulate(const InputFrame& live, double frame_dt) {
+    const double dt = timeline_.dt();
+    switch (time_.mode) {
+    case TimeMode::Playing:
+        accumulator_ += frame_dt;
+        while (accumulator_ >= dt) {
+            timeline_.advance(*game_, live, &events_);
+            accumulator_ -= dt;
+        }
+        break;
+
+    case TimeMode::Rewinding:
+        accumulator_ += frame_dt * time_.rewind_speed;
+        while (accumulator_ >= dt) {
+            accumulator_ -= dt;
+            if (timeline_.head() == timeline_.oldest()) {
+                time_.mode = TimeMode::Paused;
+                accumulator_ = 0;
+                break;
+            }
+            timeline_.seek(*game_, timeline_.head() - 1);
+        }
+        break;
+
+    case TimeMode::Replaying:
+        accumulator_ += frame_dt;
+        while (accumulator_ >= dt) {
+            accumulator_ -= dt;
+            if (timeline_.at_end()) {
+                time_.mode = TimeMode::Paused;
+                accumulator_ = 0;
+                break;
+            }
+            timeline_.resimulate(*game_, timeline_.head() + 1);
+        }
+        break;
+
+    case TimeMode::Paused: accumulator_ = 0; break;
+    }
+}
+
+void App::dispatch_events() {
+    // Only ticks that ran live put anything here; seeks and replays emit into nothing.
+    for (const SimEvent& e : events_.items) game_->on_event(e, audio_);
+    events_.clear();
+}
+
+void App::present_target() {
+    // Scale the low-res target up into the window, centred, black bars around it.
+    const float win_w = static_cast<float>(renderer_->window_width());
+    const float win_h = static_cast<float>(renderer_->window_height());
+    const float rw = static_cast<float>(cfg_.render_width);
+    const float rh = static_cast<float>(cfg_.render_height);
+    if (win_w <= 0 || win_h <= 0) return;
+
+    float scale = std::min(win_w / rw, win_h / rh);
+    if (cfg_.integer_scale) scale = std::max(1.0f, std::floor(scale));
+
+    const Rect dst{std::floor((win_w - rw * scale) * 0.5f), std::floor((win_h - rh * scale) * 0.5f), rw * scale,
+                   rh * scale};
+
+    renderer_->set_camera(Camera{});
+    renderer_->clear(rgb(0, 0, 0));
+    SpriteOptions o;
+    o.scale_x = scale;
+    o.scale_y = scale;
+    renderer_->draw_texture(*target_, dst.x, dst.y, o);
+    renderer_->set_presentation(dst, scale);
+}
+
+void App::render_frame(float alpha) {
+    ImGui_ImplSDLGPU3_NewFrame();
+    ImGui_ImplSDL3_NewFrame();
+    ImGui::NewFrame();
+
+    const bool drawing = renderer_->begin_frame();
+    if (target_) renderer_->set_target(target_);
+    game_->render(*renderer_, alpha);
+    if (target_) {
+        renderer_->set_target(nullptr);
+        present_target();
+    }
+
+    if (time_.show_overlay) draw_debug_overlay(timeline_, time_, *game_, stats_, hot_);
+
+    ImGui::Render();
+    renderer_->end_frame(drawing ? ImGui::GetDrawData() : nullptr);
+}
+
+int App::run(Game& game) {
+    game_ = &game;
+    module_ = nullptr;
+    hot_ = HotReloadInfo{};
+    return loop();
+}
+
+int App::run(GameModule& module) {
+    if (!module.game()) {
+        SDL_Log("App::run: the game module is not loaded (%s)", module.error().c_str());
+        return 1;
+    }
+    game_ = module.game();
+    module_ = &module;
+    hot_ = HotReloadInfo{};
+    hot_.enabled = true;
+    hot_.module_name = module.path().filename().string();
+    hot_.generation = module.generation();
+    return loop();
+}
+
+int App::loop() {
+    if (!init_platform()) return 1;
+
+    game_->load_assets(*renderer_, audio_);
+    game_->init();
+    timeline_.reset(*game_);
+    running_ = true;
+    stats_.gpu_driver = renderer_->driver_name();
+
+    u64 prev = SDL_GetTicksNS();
+    double fps_window = 0;
+    int fps_frames = 0;
+
+    while (running_) {
+        const u64 now = SDL_GetTicksNS();
+        double frame_dt = static_cast<double>(now - prev) / 1e9;
+        prev = now;
+        frame_dt = std::min(frame_dt, 0.25); // never spiral after a stall
+
+        poll_hot_reload();
+        handle_events();
+        const InputFrame live = sample_input();
+        apply_requests(live);
+
+        const u64 sim_start = SDL_GetTicksNS();
+        simulate(live, frame_dt);
+        stats_.sim_ms = static_cast<float>(SDL_GetTicksNS() - sim_start) / 1e6f;
+
+        dispatch_events();
+        audio_.update();
+        stats_.audio_voices = audio_.active_voices();
+
+        const u64 render_start = SDL_GetTicksNS();
+        const float alpha = time_.mode == TimeMode::Playing
+                                ? static_cast<float>(accumulator_ / timeline_.dt())
+                                : 0.0f;
+        render_frame(alpha);
+        stats_.render_ms = static_cast<float>(SDL_GetTicksNS() - render_start) / 1e6f;
+        stats_.draw_calls = renderer_->draw_calls_last_frame();
+        stats_.vertices = renderer_->vertices_last_frame();
+
+        stats_.frame_ms = static_cast<float>(frame_dt * 1000.0);
+        fps_window += frame_dt;
+        ++fps_frames;
+        if (fps_window >= 0.5) {
+            stats_.fps = static_cast<float>(fps_frames / fps_window);
+            fps_window = 0;
+            fps_frames = 0;
+        }
+    }
+
+    shutdown_platform();
+    return 0;
+}
+
+} // namespace rw
