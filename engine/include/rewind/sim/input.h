@@ -22,6 +22,9 @@ enum class Button : u32 {
     R = 1u << 9,
     Start = 1u << 10,
     Select = 1u << 11,
+    MouseLeft = 1u << 12,
+    MouseRight = 1u << 13,
+    MouseMiddle = 1u << 14,
 };
 
 /// Everything the simulation is allowed to know about the player for one tick.
@@ -31,6 +34,8 @@ struct InputFrame {
     u32 buttons = 0;
     i16 axis_x = 0; ///< -32767..32767, left stick or derived from the d-pad
     i16 axis_y = 0;
+    i16 mouse_x = 0; ///< In render-target pixels (pixel mode aware). Negative = outside.
+    i16 mouse_y = 0;
 
     bool down(Button b) const { return (buttons & static_cast<u32>(b)) != 0; }
 
@@ -47,6 +52,8 @@ struct InputFrame {
         v.field("buttons", buttons, {.tooltip = "bitmask, see rw::Button"});
         v.field("axis_x", axis_x, {.min = -32767, .max = 32767});
         v.field("axis_y", axis_y, {.min = -32767, .max = 32767});
+        v.field("mouse_x", mouse_x);
+        v.field("mouse_y", mouse_y);
     }
 };
 

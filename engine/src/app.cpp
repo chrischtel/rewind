@@ -177,9 +177,10 @@ void App::handle_events() {
 
 InputFrame App::sample_input() const {
     InputFrame in;
-    if (ImGui::GetIO().WantCaptureKeyboard) return in;
+    const bool keyboard = !ImGui::GetIO().WantCaptureKeyboard;
 
-    const bool* k = SDL_GetKeyboardState(nullptr);
+    static const bool no_keys[SDL_SCANCODE_COUNT] = {};
+    const bool* k = keyboard ? SDL_GetKeyboardState(nullptr) : no_keys;
     in.set(Button::Up, k[SDL_SCANCODE_UP] || k[SDL_SCANCODE_W]);
     in.set(Button::Down, k[SDL_SCANCODE_DOWN] || k[SDL_SCANCODE_S]);
     in.set(Button::Left, k[SDL_SCANCODE_LEFT] || k[SDL_SCANCODE_A]);
@@ -229,6 +230,18 @@ InputFrame App::sample_input() const {
 
     in.axis_x = static_cast<i16>(axis_x);
     in.axis_y = static_cast<i16>(axis_y);
+
+    // Mouse, mapped into render-target pixels so games in pixel mode see their own coordinates.
+    float mx = 0, my = 0;
+    const SDL_MouseButtonFlags mb = SDL_GetMouseState(&mx, &my);
+    const Vec2 rp = renderer_->window_to_render(mx, my);
+    in.mouse_x = static_cast<i16>(std::clamp(rp.x, -32000.0f, 32000.0f));
+    in.mouse_y = static_cast<i16>(std::clamp(rp.y, -32000.0f, 32000.0f));
+    if (!ImGui::GetIO().WantCaptureMouse) {
+        in.set(Button::MouseLeft, (mb & SDL_BUTTON_LMASK) != 0);
+        in.set(Button::MouseRight, (mb & SDL_BUTTON_RMASK) != 0);
+        in.set(Button::MouseMiddle, (mb & SDL_BUTTON_MMASK) != 0);
+    }
     return in;
 }
 

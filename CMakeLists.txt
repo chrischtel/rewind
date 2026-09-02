@@ -27,6 +27,7 @@ if(REWIND_BUILD_SAMPLES)
     add_subdirectory(samples/bounce)
     add_subdirectory(samples/pixels)
     add_subdirectory(samples/duel)
+    add_subdirectory(samples/towerdefense)
 endif()
 
 if(REWIND_BUILD_TESTS)
