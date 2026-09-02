@@ -26,8 +26,9 @@ Three ideas reinforce each other:
 ## Building
 
 Requirements: CMake 3.24+, a C++20 compiler, git. Everything else (SDL3,
-Dear ImGui, stb_image) is fetched automatically on first configure. The
-Vulkan SDK is optional: with it, shaders are also built for Vulkan.
+Dear ImGui, stb_image, SPIRV-Cross) is fetched automatically on first
+configure. The Vulkan SDK is optional but recommended: its `glslc` builds
+the engine shaders and your materials for both backends.
 
 Windows with Visual Studio 2026:
 
@@ -154,6 +155,34 @@ uploaded once per frame, and one render pass per target.
 - `draw_text` uses a built-in 5x7 pixel font. No font file needed.
 - Render targets are ordinary textures: `create_render_target()` then
   `set_target()`. Pixel mode is built on this.
+
+### Materials
+
+A material is a GLSL fragment shader of your own, applied to any sprites
+and shapes drawn after `set_material()`:
+
+```cmake
+rewind_add_game(mygame SOURCES mygame.cpp SHADERS shaders/palette.frag)
+```
+
+```cpp
+Material* m = renderer.load_material("shaders/palette.frag.spv");   // in load_assets()
+renderer.set_material(m);                                           // in render()
+renderer.set_material_params(Params{0.5f});                         // set 3, binding 0
+renderer.set_material_texture(1, palette);                          // set 2, binding 1
+renderer.draw_sprite(...);
+renderer.set_material(nullptr);
+```
+
+The shader receives the sprite texture at set 2 binding 0, up to three
+extra textures at bindings 1 to 3, an optional uniform block at set 3
+binding 0 (up to 256 bytes), and the interpolated `v_uv` and `v_color`.
+The build compiles it to SPIR-V with glslc. Vulkan loads that directly; on
+Direct3D 12 the engine cross-compiles the SPIR-V to HLSL with SPIRV-Cross
+and then to DXBC at load time, so one shader source serves both backends.
+Save the `.frag` while the game runs and it recompiles live; a shader that
+fails to compile keeps its previous version and reports in the log and in
+`material->error`. The pixels sample's X key cycles palette swaps.
 
 ## Sprites, pixel mode, Aseprite
 
@@ -402,7 +431,9 @@ engine/include/rewind/
   sim/text_format.h   JSON writer/loader over reflection, file helpers
   sim/serialize.h     Writer / Reader / hash_bytes
   sim/rng.h           PCG32, trivially copyable
-  render/renderer2d.h batched GPU drawing: shapes, text, textures, sprites, targets
+  render/renderer2d.h batched GPU drawing: shapes, text, textures, sprites, targets, materials
+  render/material.h   Material: a custom fragment shader
+  render/shader_cross.h SPIR-V reflection and SPIR-V -> HLSL
   render/sprite.h     SpriteSheet, tags, slices, Aseprite loading
   render/texture.h    Texture handle
 engine/shaders/       sprite.vert / sprite.frag (SPIR-V) and sprite.hlsl (DXBC)
@@ -418,7 +449,7 @@ tools/runner/         rewind_run, the hot-reload host
 samples/bounce/       shapes, entities, rewind, desync detector
 samples/pixels/       sprites, animation, tilemap, sound, pixel mode, gamepad
 samples/duel/         two players over rollback netcode
-tests/                headless tests: core, timeline, assets, world, reflect, ecs, net, hot reload
+tests/                headless tests: core, timeline, assets, world, reflect, ecs, net, shader, hot reload
 ```
 
 The engine builds as a shared library so that SDL, ImGui, and the engine
@@ -429,8 +460,8 @@ copy of their own.
 
 In rough order:
 
-- **Custom shaders and materials** on the new GPU backend: palette swaps,
-  lighting, post-processing, with shader hot reload.
+- **Post-processing pass** (full-screen materials over the render target)
+  and 2D lighting on top of materials.
 - **Sub-pixel camera smoothing** for pixel mode.
 - **Positional audio** (pan and distance) on top of the event channel.
 - **Fixed-point math option** for bit-exact determinism across machines,

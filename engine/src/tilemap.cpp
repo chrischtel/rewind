@@ -1,6 +1,7 @@
 #include "rewind/world/tilemap.h"
 
 #include "rewind/assets/aseprite.h"
+#include "rewind/core/paths.h"
 #include "rewind/render/renderer2d.h"
 
 #include <algorithm>
@@ -207,7 +208,7 @@ bool load_aseprite_tilemap(Renderer2D& renderer, const std::string& path, std::s
         if (error) *error = "could not create the tileset texture";
         return false;
     }
-    renderer.track_file(path);
+    renderer.track_file(resolve_asset_path(path));
 
     out = TileMap{};
     out.width = layer->width;

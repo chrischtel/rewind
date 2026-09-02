@@ -2,6 +2,7 @@
 #include "rewind/core/log.h"
 
 #include "rewind/core/file_watcher.h"
+#include "rewind/core/paths.h"
 
 #include <SDL3/SDL.h>
 
@@ -57,7 +58,8 @@ Sound* Audio::load_wav(const std::string& path) {
     SDL_AudioSpec spec{};
     u8* buffer = nullptr;
     u32 length = 0;
-    if (!SDL_LoadWAV(path.c_str(), &spec, &buffer, &length)) {
+    const std::string file = resolve_asset_path(path);
+    if (!SDL_LoadWAV(file.c_str(), &spec, &buffer, &length)) {
         RW_LOG_INFO("audio", "load_wav(%s): %s", path.c_str(), SDL_GetError());
         return existing; // keep the last good version
     }
@@ -72,7 +74,8 @@ Sound* Audio::load_wav(const std::string& path) {
     sound->format = spec.format;
     sound->data.assign(buffer, buffer + length);
     SDL_free(buffer);
-    if (watcher_) watcher_->track(path);
+    if (watcher_) watcher_->track(file);
+    if (file != path) aliases_[file] = path;
     return sound;
 }
 

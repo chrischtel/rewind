@@ -1,8 +1,11 @@
 #include "rewind/render/renderer2d.h"
-#include "rewind/core/log.h"
 
 #include "debug_font.h"
 #include "rewind/core/file_watcher.h"
+#include "rewind/core/log.h"
+#include "rewind/core/paths.h"
+#include "rewind/render/material.h"
+#include "rewind/render/shader_cross.h"
 #include "rewind_shaders_spv.h"
 
 #include <SDL3/SDL.h>
@@ -11,7 +14,9 @@
 #include <stb_image.h>
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -27,6 +32,10 @@ namespace rw {
 
 namespace {
 
+constexpr u32 kMaxExtraTextures = 3;
+constexpr usize kMaxParamsBytes = 256;
+
+// Fallback for Windows builds made without glslc: the sprite shader as HLSL.
 const char kSpriteHlsl[] = R"HLSL(
 cbuffer Uniforms : register(b0, space1) { float2 scale; float2 offset; };
 struct VSIn { float2 pos : TEXCOORD0; float2 uv : TEXCOORD1; float4 color : TEXCOORD2; };
@@ -55,8 +64,14 @@ struct Uniforms {
 };
 
 struct Batch {
+    SDL_GPUGraphicsPipeline* pipeline;
     SDL_GPUTexture* texture;
     SDL_GPUSampler* sampler;
+    SDL_GPUTexture* extra_tex[kMaxExtraTextures];
+    SDL_GPUSampler* extra_smp[kMaxExtraTextures];
+    u32 extra_count;
+    u32 params_offset;
+    u32 params_size;
     u32 first_index;
     u32 index_count;
 };
@@ -69,15 +84,34 @@ struct Segment {
     usize batch_count = 0;
 };
 
+bool read_file(const std::string& path, std::vector<u8>& out) {
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    out.clear();
+    u8 buffer[16 * 1024];
+    usize n;
+    while ((n = std::fread(buffer, 1, sizeof buffer, f)) > 0) out.insert(out.end(), buffer, buffer + n);
+    std::fclose(f);
+    return true;
+}
+
+std::string read_text(const std::string& path) {
+    std::vector<u8> bytes;
+    if (!read_file(path, bytes)) return {};
+    std::string s(bytes.begin(), bytes.end());
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ')) s.pop_back();
+    return s;
+}
+
 #if defined(_WIN32)
-bool compile_dxbc(const char* source, const char* entry, const char* target, std::vector<u8>& out) {
+bool compile_dxbc(const char* source, const char* entry, const char* target, std::vector<u8>& out,
+                  std::string& error) {
     ID3DBlob* code = nullptr;
     ID3DBlob* errors = nullptr;
-    const HRESULT hr = D3DCompile(source, std::strlen(source), "sprite.hlsl", nullptr, nullptr, entry, target,
+    const HRESULT hr = D3DCompile(source, std::strlen(source), "shader.hlsl", nullptr, nullptr, entry, target,
                                   D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errors);
     if (FAILED(hr)) {
-        RW_LOG_ERROR("gpu", "shader %s failed to compile: %s", entry,
-                errors ? static_cast<const char*>(errors->GetBufferPointer()) : "unknown error");
+        error = errors ? static_cast<const char*>(errors->GetBufferPointer()) : "unknown D3DCompile error";
         if (errors) errors->Release();
         return false;
     }
@@ -89,6 +123,37 @@ bool compile_dxbc(const char* source, const char* entry, const char* target, std
 }
 #endif
 
+/// Run glslc on a material source. Returns false with the compiler's output in `log`.
+bool run_glslc(const std::string& source, const std::string& output, std::string& log) {
+#if defined(REWIND_GLSLC_PATH)
+    std::string command = std::string("\"") + REWIND_GLSLC_PATH + "\" -O \"" + source + "\" -o \"" + output + "\" 2>&1";
+#if defined(_WIN32)
+    command = "\"" + command + "\""; // cmd.exe quoting: wrap the whole line once more
+    std::FILE* pipe = _popen(command.c_str(), "r");
+#else
+    std::FILE* pipe = popen(command.c_str(), "r");
+#endif
+    if (!pipe) {
+        log = "could not start glslc";
+        return false;
+    }
+    log.clear();
+    char buffer[512];
+    while (std::fgets(buffer, sizeof buffer, pipe)) log += buffer;
+#if defined(_WIN32)
+    const int status = _pclose(pipe);
+#else
+    const int status = pclose(pipe);
+#endif
+    return status == 0;
+#else
+    (void)source;
+    (void)output;
+    log = "glslc was not available when the engine was built";
+    return false;
+#endif
+}
+
 } // namespace
 
 struct Renderer2D::Impl {
@@ -97,12 +162,15 @@ struct Renderer2D::Impl {
     bool ok = false;
 
     SDL_GPUTextureFormat target_format = SDL_GPU_TEXTUREFORMAT_INVALID;
+    SDL_GPUShader* sprite_vs = nullptr;
     SDL_GPUGraphicsPipeline* pipeline = nullptr;
     SDL_GPUSampler* sampler_nearest = nullptr;
     SDL_GPUSampler* sampler_linear = nullptr;
 
     std::unordered_map<std::string, std::unique_ptr<Texture>> textures;
+    std::unordered_map<std::string, std::unique_ptr<Material>> materials;
     std::unordered_set<std::string> stale_files; ///< loaded from disk, changed since
+    std::unordered_map<std::string, std::string> aliases; ///< resolved path -> name the game used
     FileWatcher* watcher = nullptr;
     Texture* white = nullptr;
     Texture* font = nullptr;
@@ -112,11 +180,16 @@ struct Renderer2D::Impl {
     std::vector<u32> indices;
     std::vector<Batch> batches;
     std::vector<Segment> segments;
+    std::vector<u8> params_blob;
     SDL_GPUCommandBuffer* cmd = nullptr;
     SDL_GPUTexture* swapchain = nullptr;
     u32 swapchain_w = 0, swapchain_h = 0;
     bool frame_active = false;
     Texture* current_target = nullptr;
+    Material* current_material = nullptr;
+    u8 current_params[kMaxParamsBytes] = {};
+    u32 current_params_size = 0;
+    Texture* extra[kMaxExtraTextures] = {};
     int stat_draw_calls = 0;
     int stat_vertices = 0;
     int last_draw_calls = 0;
@@ -130,55 +203,78 @@ struct Renderer2D::Impl {
     u32 index_capacity = 0;
     u32 transfer_capacity = 0;
 
-    // ---- setup ------------------------------------------------------------
+    // ---- shaders and pipelines --------------------------------------------
 
-    SDL_GPUShader* create_shader(SDL_GPUShaderStage stage) {
+    /// Create a shader from SPIR-V on any backend: directly on Vulkan, through
+    /// HLSL and DXBC on Direct3D 12.
+    SDL_GPUShader* shader_from_spirv(const u8* spv, usize size, SDL_GPUShaderStage stage, u32 samplers,
+                                     u32 uniforms, std::string& error) {
         const SDL_GPUShaderFormat formats = SDL_GetGPUShaderFormats(device);
         SDL_GPUShaderCreateInfo info{};
         info.stage = stage;
-        info.num_samplers = stage == SDL_GPU_SHADERSTAGE_FRAGMENT ? 1 : 0;
-        info.num_uniform_buffers = stage == SDL_GPU_SHADERSTAGE_VERTEX ? 1 : 0;
+        info.num_samplers = samplers;
+        info.num_uniform_buffers = uniforms;
+        info.entrypoint = "main";
 
-#if REWIND_HAVE_SPIRV
         if (formats & SDL_GPU_SHADERFORMAT_SPIRV) {
             info.format = SDL_GPU_SHADERFORMAT_SPIRV;
-            info.entrypoint = "main";
-            if (stage == SDL_GPU_SHADERSTAGE_VERTEX) {
-                info.code = sprite_vert_spv;
-                info.code_size = sprite_vert_spv_size;
-            } else {
-                info.code = sprite_frag_spv;
-                info.code_size = sprite_frag_spv_size;
-            }
-            return SDL_CreateGPUShader(device, &info);
+            info.code = spv;
+            info.code_size = size;
+            SDL_GPUShader* s = SDL_CreateGPUShader(device, &info);
+            if (!s) error = SDL_GetError();
+            return s;
         }
-#endif
 #if defined(_WIN32)
         if (formats & SDL_GPU_SHADERFORMAT_DXBC) {
+            std::string hlsl;
+            if (!spirv_to_hlsl(spv, size, hlsl, error)) return nullptr;
             std::vector<u8> code;
-            const bool vs = stage == SDL_GPU_SHADERSTAGE_VERTEX;
-            if (!compile_dxbc(kSpriteHlsl, vs ? "vs_main" : "ps_main", vs ? "vs_5_1" : "ps_5_1", code)) return nullptr;
+            const bool vertex = stage == SDL_GPU_SHADERSTAGE_VERTEX;
+            if (!compile_dxbc(hlsl.c_str(), "main", vertex ? "vs_5_1" : "ps_5_1", code, error)) return nullptr;
             info.format = SDL_GPU_SHADERFORMAT_DXBC;
-            info.entrypoint = vs ? "vs_main" : "ps_main";
             info.code = code.data();
             info.code_size = code.size();
-            return SDL_CreateGPUShader(device, &info);
+            SDL_GPUShader* s = SDL_CreateGPUShader(device, &info);
+            if (!s) error = SDL_GetError();
+            return s;
         }
 #endif
-        RW_LOG_ERROR("gpu", "no shader format available for this GPU driver (formats 0x%x)", formats);
+        error = "no usable shader format on this GPU driver";
         return nullptr;
     }
 
-    bool create_pipeline() {
-        SDL_GPUShader* vs = create_shader(SDL_GPU_SHADERSTAGE_VERTEX);
-        SDL_GPUShader* fs = create_shader(SDL_GPU_SHADERSTAGE_FRAGMENT);
-        if (!vs || !fs) {
-            RW_LOG_ERROR("gpu", "could not create the sprite shaders: %s", SDL_GetError());
-            if (vs) SDL_ReleaseGPUShader(device, vs);
-            if (fs) SDL_ReleaseGPUShader(device, fs);
-            return false;
+    /// The engine's sprite shaders: embedded SPIR-V when available, else the HLSL twin.
+    SDL_GPUShader* sprite_shader(SDL_GPUShaderStage stage, std::string& error) {
+        const bool vertex = stage == SDL_GPU_SHADERSTAGE_VERTEX;
+#if REWIND_HAVE_SPIRV
+        return shader_from_spirv(vertex ? sprite_vert_spv : sprite_frag_spv,
+                                 vertex ? sprite_vert_spv_size : sprite_frag_spv_size, stage, vertex ? 0 : 1,
+                                 vertex ? 1 : 0, error);
+#else
+#if defined(_WIN32)
+        if (SDL_GetGPUShaderFormats(device) & SDL_GPU_SHADERFORMAT_DXBC) {
+            std::vector<u8> code;
+            if (!compile_dxbc(kSpriteHlsl, vertex ? "vs_main" : "ps_main", vertex ? "vs_5_1" : "ps_5_1", code, error))
+                return nullptr;
+            SDL_GPUShaderCreateInfo info{};
+            info.stage = stage;
+            info.num_samplers = vertex ? 0 : 1;
+            info.num_uniform_buffers = vertex ? 1 : 0;
+            info.entrypoint = vertex ? "vs_main" : "ps_main";
+            info.format = SDL_GPU_SHADERFORMAT_DXBC;
+            info.code = code.data();
+            info.code_size = code.size();
+            SDL_GPUShader* s = SDL_CreateGPUShader(device, &info);
+            if (!s) error = SDL_GetError();
+            return s;
         }
+#endif
+        error = "engine built without SPIR-V and no Direct3D available";
+        return nullptr;
+#endif
+    }
 
+    SDL_GPUGraphicsPipeline* make_pipeline(SDL_GPUShader* vs, SDL_GPUShader* fs, std::string& error) {
         SDL_GPUVertexBufferDescription vb{};
         vb.slot = 0;
         vb.pitch = sizeof(Vertex);
@@ -212,11 +308,27 @@ struct Renderer2D::Impl {
         info.target_info.color_target_descriptions = &color;
         info.target_info.num_color_targets = 1;
 
-        pipeline = SDL_CreateGPUGraphicsPipeline(device, &info);
-        SDL_ReleaseGPUShader(device, vs);
+        SDL_GPUGraphicsPipeline* p = SDL_CreateGPUGraphicsPipeline(device, &info);
+        if (!p) error = SDL_GetError();
+        return p;
+    }
+
+    bool create_sprite_pipeline() {
+        std::string error;
+        sprite_vs = sprite_shader(SDL_GPU_SHADERSTAGE_VERTEX, error);
+        if (!sprite_vs) {
+            RW_LOG_ERROR("gpu", "sprite vertex shader: %s", error.c_str());
+            return false;
+        }
+        SDL_GPUShader* fs = sprite_shader(SDL_GPU_SHADERSTAGE_FRAGMENT, error);
+        if (!fs) {
+            RW_LOG_ERROR("gpu", "sprite fragment shader: %s", error.c_str());
+            return false;
+        }
+        pipeline = make_pipeline(sprite_vs, fs, error);
         SDL_ReleaseGPUShader(device, fs);
         if (!pipeline) {
-            RW_LOG_ERROR("gpu", "could not create the sprite pipeline: %s", SDL_GetError());
+            RW_LOG_ERROR("gpu", "sprite pipeline: %s", error.c_str());
             return false;
         }
         return true;
@@ -236,6 +348,58 @@ struct Renderer2D::Impl {
         info.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_LINEAR;
         sampler_linear = SDL_CreateGPUSampler(device, &info);
         return sampler_nearest && sampler_linear;
+    }
+
+    /// (Re)build a material's pipeline from its .spv file. Keeps the old
+    /// pipeline when anything fails so the game keeps rendering.
+    bool build_material(Material& m, const std::string& file) {
+        std::vector<u8> spv;
+        if (!read_file(file, spv)) {
+            m.error = "could not read " + file + " (was it built? SHADERS in rewind_add_game needs glslc)";
+            return false;
+        }
+        ShaderInfo info;
+        std::string error;
+        if (!reflect_spirv(spv.data(), spv.size(), info, error)) {
+            m.error = error;
+            return false;
+        }
+        if (info.vertex) {
+            m.error = "materials are fragment shaders, this is a vertex shader";
+            return false;
+        }
+        if (info.samplers < 1 || info.samplers > 1 + kMaxExtraTextures) {
+            m.error = "a material needs 1 to " + std::to_string(1 + kMaxExtraTextures) + " samplers, this one has " +
+                      std::to_string(info.samplers);
+            return false;
+        }
+        if (info.uniform_buffers > 1) {
+            m.error = "a material may declare at most one uniform block (set 3, binding 0)";
+            return false;
+        }
+        SDL_GPUShader* fs = shader_from_spirv(spv.data(), spv.size(), SDL_GPU_SHADERSTAGE_FRAGMENT, info.samplers,
+                                              info.uniform_buffers, error);
+        if (!fs) {
+            m.error = error;
+            return false;
+        }
+        SDL_GPUGraphicsPipeline* p = make_pipeline(sprite_vs, fs, error);
+        SDL_ReleaseGPUShader(device, fs);
+        if (!p) {
+            m.error = error;
+            return false;
+        }
+        if (m.pipeline) {
+            SDL_WaitForGPUIdle(device);
+            SDL_ReleaseGPUGraphicsPipeline(device, m.pipeline);
+        }
+        m.pipeline = p;
+        m.sampler_count = info.samplers;
+        m.uniform_buffers = info.uniform_buffers;
+        m.ok = true;
+        m.error.clear();
+        ++m.generation;
+        return true;
     }
 
     // ---- textures ---------------------------------------------------------
@@ -410,7 +574,6 @@ struct Renderer2D::Impl {
 
             SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &target, 1, nullptr);
             if (seg.batch_count > 0) {
-                SDL_BindGPUGraphicsPipeline(pass, pipeline);
                 SDL_GPUBufferBinding vbind{vertex_buffer, 0};
                 SDL_BindGPUVertexBuffers(pass, 0, &vbind, 1);
                 SDL_GPUBufferBinding ibind{index_buffer, 0};
@@ -419,10 +582,19 @@ struct Renderer2D::Impl {
                 const Uniforms u{2.0f / static_cast<float>(w), -2.0f / static_cast<float>(h), -1.0f, 1.0f};
                 SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof u);
 
+                SDL_GPUGraphicsPipeline* bound = nullptr;
                 for (usize b = seg.first_batch; b < seg.first_batch + seg.batch_count; ++b) {
                     const Batch& batch = batches[b];
-                    SDL_GPUTextureSamplerBinding tbind{batch.texture, batch.sampler};
-                    SDL_BindGPUFragmentSamplers(pass, 0, &tbind, 1);
+                    if (batch.pipeline != bound) {
+                        SDL_BindGPUGraphicsPipeline(pass, batch.pipeline);
+                        bound = batch.pipeline;
+                    }
+                    if (batch.params_size > 0)
+                        SDL_PushGPUFragmentUniformData(cmd, 0, params_blob.data() + batch.params_offset, batch.params_size);
+                    SDL_GPUTextureSamplerBinding bindings[1 + kMaxExtraTextures];
+                    bindings[0] = {batch.texture, batch.sampler};
+                    for (u32 i = 0; i < batch.extra_count; ++i) bindings[1 + i] = {batch.extra_tex[i], batch.extra_smp[i]};
+                    SDL_BindGPUFragmentSamplers(pass, 0, bindings, 1 + batch.extra_count);
                     SDL_DrawGPUIndexedPrimitives(pass, batch.index_count, 1, batch.first_index, 0, 0);
                     ++stat_draw_calls;
                 }
@@ -437,22 +609,60 @@ struct Renderer2D::Impl {
         indices.clear();
         batches.clear();
         segments.clear();
+        params_blob.clear();
         cmd = nullptr;
         swapchain = nullptr;
         frame_active = false;
         current_target = nullptr;
+        current_material = nullptr;
+        current_params_size = 0;
+        for (Texture*& t : extra) t = nullptr;
     }
 
     // ---- geometry helpers -------------------------------------------------
 
     Batch& batch_for(const Texture& t) {
         SDL_GPUSampler* sampler = sampler_for(t);
+        Material* m = current_material && current_material->ok ? current_material : nullptr;
+        SDL_GPUGraphicsPipeline* pipe = m ? m->pipeline : pipeline;
+        const u32 extra_count = m ? m->sampler_count - 1 : 0;
+        const u32 params_size = m && m->uniform_buffers > 0 ? current_params_size : 0;
+
+        SDL_GPUTexture* ex_tex[kMaxExtraTextures] = {};
+        SDL_GPUSampler* ex_smp[kMaxExtraTextures] = {};
+        for (u32 i = 0; i < extra_count; ++i) {
+            const Texture* e = extra[i] ? extra[i] : white;
+            ex_tex[i] = e->handle;
+            ex_smp[i] = sampler_for(*e);
+        }
+
         Segment& seg = segments.back();
         if (seg.batch_count > 0) {
             Batch& last = batches.back();
-            if (last.texture == t.handle && last.sampler == sampler) return last;
+            bool same = last.pipeline == pipe && last.texture == t.handle && last.sampler == sampler &&
+                        last.extra_count == extra_count && last.params_size == params_size;
+            for (u32 i = 0; same && i < extra_count; ++i)
+                same = last.extra_tex[i] == ex_tex[i] && last.extra_smp[i] == ex_smp[i];
+            if (same && params_size > 0)
+                same = std::memcmp(params_blob.data() + last.params_offset, current_params, params_size) == 0;
+            if (same) return last;
         }
-        batches.push_back(Batch{t.handle, sampler, static_cast<u32>(indices.size()), 0});
+
+        Batch b{};
+        b.pipeline = pipe;
+        b.texture = t.handle;
+        b.sampler = sampler;
+        b.extra_count = extra_count;
+        for (u32 i = 0; i < extra_count; ++i) {
+            b.extra_tex[i] = ex_tex[i];
+            b.extra_smp[i] = ex_smp[i];
+        }
+        b.params_size = params_size;
+        b.params_offset = static_cast<u32>(params_blob.size());
+        if (params_size > 0) params_blob.insert(params_blob.end(), current_params, current_params + params_size);
+        b.first_index = static_cast<u32>(indices.size());
+        b.index_count = 0;
+        batches.push_back(b);
         ++seg.batch_count;
         return batches.back();
     }
@@ -488,7 +698,7 @@ Renderer2D::Renderer2D(SDL_GPUDevice* device, SDL_Window* window) : impl_(std::m
     impl_->window = window;
     impl_->target_format = SDL_GetGPUSwapchainTextureFormat(device, window);
 
-    if (!impl_->create_samplers() || !impl_->create_pipeline()) return;
+    if (!impl_->create_samplers() || !impl_->create_sprite_pipeline()) return;
 
     const u8 white_pixel[4] = {255, 255, 255, 255};
     impl_->white = create_texture("__white", 1, 1, white_pixel);
@@ -506,10 +716,13 @@ Renderer2D::~Renderer2D() {
     SDL_WaitForGPUIdle(im.device);
     for (auto& [name, t] : im.textures)
         if (t->handle) SDL_ReleaseGPUTexture(im.device, t->handle);
+    for (auto& [name, m] : im.materials)
+        if (m->pipeline) SDL_ReleaseGPUGraphicsPipeline(im.device, m->pipeline);
     if (im.vertex_buffer) SDL_ReleaseGPUBuffer(im.device, im.vertex_buffer);
     if (im.index_buffer) SDL_ReleaseGPUBuffer(im.device, im.index_buffer);
     if (im.transfer) SDL_ReleaseGPUTransferBuffer(im.device, im.transfer);
     if (im.pipeline) SDL_ReleaseGPUGraphicsPipeline(im.device, im.pipeline);
+    if (im.sprite_vs) SDL_ReleaseGPUShader(im.device, im.sprite_vs);
     if (im.sampler_nearest) SDL_ReleaseGPUSampler(im.device, im.sampler_nearest);
     if (im.sampler_linear) SDL_ReleaseGPUSampler(im.device, im.sampler_linear);
 }
@@ -531,11 +744,11 @@ bool Renderer2D::begin_frame() {
 
     im.cmd = SDL_AcquireGPUCommandBuffer(im.device);
     if (!im.cmd) {
-        RW_LOG_INFO("gpu", "SDL_AcquireGPUCommandBuffer: %s", SDL_GetError());
+        RW_LOG_ERROR("gpu", "SDL_AcquireGPUCommandBuffer: %s", SDL_GetError());
         return false;
     }
     if (!SDL_WaitAndAcquireGPUSwapchainTexture(im.cmd, im.window, &im.swapchain, &im.swapchain_w, &im.swapchain_h)) {
-        RW_LOG_INFO("gpu", "SDL_WaitAndAcquireGPUSwapchainTexture: %s", SDL_GetError());
+        RW_LOG_ERROR("gpu", "SDL_WaitAndAcquireGPUSwapchainTexture: %s", SDL_GetError());
         SDL_SubmitGPUCommandBuffer(im.cmd);
         im.cmd = nullptr;
         return false;
@@ -699,15 +912,17 @@ Texture* Renderer2D::load_texture(const std::string& path) {
     const bool stale = im.stale_files.erase(path) > 0;
     if (existing && !stale) return existing;
 
+    const std::string file = resolve_asset_path(path);
     int width = 0, height = 0, channels = 0;
-    stbi_uc* pixels = stbi_load(path.c_str(), &width, &height, &channels, 4);
+    stbi_uc* pixels = stbi_load(file.c_str(), &width, &height, &channels, 4);
     if (!pixels) {
-        RW_LOG_INFO("gpu", "load_texture(%s): %s", path.c_str(), stbi_failure_reason());
+        RW_LOG_ERROR("gpu", "load_texture(%s): %s", path.c_str(), stbi_failure_reason());
         return existing; // keep showing the last good version
     }
     Texture* texture = create_texture(path, width, height, pixels);
     stbi_image_free(pixels);
-    track_file(path);
+    track_file(file);
+    if (file != path) im.aliases[file] = path;
     return texture;
 }
 
@@ -717,7 +932,12 @@ void Renderer2D::track_file(const std::string& path) {
     if (impl_->watcher) impl_->watcher->track(path);
 }
 
-void Renderer2D::invalidate_file(const std::string& path) { impl_->stale_files.insert(path); }
+void Renderer2D::invalidate_file(const std::string& path) {
+    impl_->stale_files.insert(path);
+    // The watcher reports resolved paths; games ask by the name they used.
+    auto alias = impl_->aliases.find(path);
+    if (alias != impl_->aliases.end()) impl_->stale_files.insert(alias->second);
+}
 
 void Renderer2D::draw_sprite(const Texture& texture, const Rect& src, float x, float y, const SpriteOptions& o) {
     if (!texture.handle || texture.width <= 0 || texture.height <= 0) return;
@@ -760,6 +980,76 @@ void Renderer2D::draw_sprite(const Texture& texture, const Rect& src, float x, f
 
 void Renderer2D::draw_texture(const Texture& texture, float x, float y, const SpriteOptions& o) {
     draw_sprite(texture, Rect{0, 0, static_cast<float>(texture.width), static_cast<float>(texture.height)}, x, y, o);
+}
+
+// ---- materials ------------------------------------------------------------------
+
+Material* Renderer2D::find_material(const std::string& path) const {
+    auto it = impl_->materials.find(path);
+    return it == impl_->materials.end() ? nullptr : it->second.get();
+}
+
+Material* Renderer2D::load_material(const std::string& path) {
+    Impl& im = *impl_;
+    Material* m = find_material(path);
+    const bool spv_stale = im.stale_files.erase(path) > 0;
+    const bool source_stale = m && !m->source_path.empty() && im.stale_files.erase(m->source_path) > 0;
+    if (m && !spv_stale && !source_stale) return m;
+
+    if (!m) {
+        auto owned = std::make_unique<Material>();
+        owned->path = path;
+        m = owned.get();
+        im.materials[path] = std::move(owned);
+    }
+    // The .spv may only exist next to the executable; the sidecar names the source.
+    const std::string file = resolve_asset_path(path);
+    if (m->source_path.empty()) m->source_path = read_text(file + ".src");
+    if (file != path) {
+        im.aliases[file] = path;
+        // The .spv might not exist yet (glslc missing): still watch the path we resolved to.
+    }
+    track_file(file);
+    if (!m->source_path.empty()) track_file(m->source_path);
+
+    if (source_stale) {
+        // The GLSL changed: rebuild the SPIR-V with the same compiler the build uses.
+        std::string log;
+        if (!run_glslc(m->source_path, file, log)) {
+            m->error = log.empty() ? "glslc failed" : log;
+            RW_LOG_ERROR("gpu", "material %s: %s", std::filesystem::path(m->source_path).filename().string().c_str(),
+                         m->error.c_str());
+            return m; // keep the previous pipeline
+        }
+        im.stale_files.erase(path); // the watcher will report the fresh .spv too; already handled
+        im.stale_files.erase(file);
+    }
+
+    if (im.build_material(*m, file)) {
+        RW_LOG_INFO("gpu", "material %s ready (%u samplers%s)", std::filesystem::path(path).filename().string().c_str(),
+                    m->sampler_count, m->uniform_buffers ? ", params" : "");
+    } else {
+        RW_LOG_ERROR("gpu", "material %s: %s", path.c_str(), m->error.c_str());
+    }
+    return m;
+}
+
+void Renderer2D::set_material(Material* material) { impl_->current_material = material; }
+
+void Renderer2D::set_material_params(const void* data, usize size) {
+    Impl& im = *impl_;
+    if (!data || size == 0) {
+        im.current_params_size = 0;
+        return;
+    }
+    if (size > kMaxParamsBytes) size = kMaxParamsBytes;
+    std::memcpy(im.current_params, data, size);
+    im.current_params_size = static_cast<u32>(size);
+}
+
+void Renderer2D::set_material_texture(u32 slot, Texture* texture) {
+    if (slot < 1 || slot > kMaxExtraTextures) return;
+    impl_->extra[slot - 1] = texture;
 }
 
 // ---- camera and coordinates -----------------------------------------------------

@@ -61,9 +61,11 @@ add_library(rewind SHARED
     src/net_session.cpp
     src/net_udp.cpp
     src/overlay.cpp
+    src/paths.cpp
     src/profiler.cpp
     src/reflect.cpp
     src/renderer2d.cpp
+    src/shader_cross.cpp
     src/sprite.cpp
     src/stb_impl.cpp
     src/text_format.cpp
@@ -77,8 +79,13 @@ add_library(rewind::rewind ALIAS rewind)
 target_include_directories(rewind
     PUBLIC include ${REWIND_IMGUI_INCLUDE_DIRS}
     PRIVATE ${REWIND_STB_INCLUDE_DIR} ${REWIND_GENERATED_DIR})
-target_link_libraries(rewind PRIVATE SDL3::SDL3)
+target_link_libraries(rewind PRIVATE SDL3::SDL3 spirv-cross-core spirv-cross-glsl spirv-cross-hlsl)
 target_compile_features(rewind PUBLIC cxx_std_20)
+
+if(REWIND_GLSLC)
+    # Lets the engine recompile GLSL materials live when their source changes.
+    target_compile_definitions(rewind PRIVATE "REWIND_GLSLC_PATH=\"${REWIND_GLSLC}\"")
+endif()
 
 if(WIN32)
     target_link_libraries(rewind PRIVATE d3dcompiler ws2_32)

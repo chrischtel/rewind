@@ -1,5 +1,7 @@
 #include "rewind/assets/aseprite.h"
 
+#include "rewind/core/paths.h"
+
 #include <stb_image.h>
 
 #include <cstdio>
@@ -576,7 +578,7 @@ bool parse_aseprite(const u8* data, usize size, AseDocument& out, std::string& e
 }
 
 bool load_aseprite(const std::string& path, AseDocument& out, std::string& error) {
-    std::FILE* file = std::fopen(path.c_str(), "rb");
+    std::FILE* file = std::fopen(resolve_asset_path(path).c_str(), "rb");
     if (!file) {
         error = "could not open " + path;
         return false;

@@ -14,6 +14,7 @@ struct ImDrawData;
 namespace rw {
 
 class FileWatcher;
+struct Material;
 
 struct Color {
     u8 r = 255, g = 255, b = 255, a = 255;
@@ -123,6 +124,27 @@ public:
 
     /// Draw the whole texture with its origin at world (x, y).
     void draw_texture(const Texture& texture, float x, float y, const SpriteOptions& options = {});
+
+    // ---- materials ----------------------------------------------------------
+    /// Load a fragment shader (.spv built by rewind_add_game SHADERS) as a
+    /// material. Cached by path; a changed file or source is reloaded into the
+    /// same Material object. A failed load keeps the previous pipeline and
+    /// reports in `material->error`.
+    Material* load_material(const std::string& spv_path);
+    Material* find_material(const std::string& spv_path) const;
+
+    /// Use `material` for the sprites and shapes drawn from now on in this
+    /// frame; nullptr restores the default shader. Reset at every begin_frame().
+    void set_material(Material* material);
+
+    /// Fragment uniform data (set 3, binding 0) for subsequent draws, at most
+    /// 256 bytes. Cleared by begin_frame().
+    void set_material_params(const void* data, usize size);
+    template <class T> void set_material_params(const T& params) { set_material_params(&params, sizeof params); }
+
+    /// Extra sampled texture for subsequent draws: `slot` 1..3 maps to
+    /// binding 1..3 of set 2. nullptr unbinds.
+    void set_material_texture(u32 slot, Texture* texture);
 
     // ---- camera and coordinates ---------------------------------------------
     void set_camera(const Camera& cam) { camera_ = cam; }

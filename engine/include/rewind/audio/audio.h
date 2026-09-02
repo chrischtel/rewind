@@ -49,7 +49,11 @@ public:
     Sound* load_wav(const std::string& path);
 
     void set_file_watcher(FileWatcher* watcher) { watcher_ = watcher; }
-    void invalidate_file(const std::string& path) { stale_files_.insert(path); }
+    void invalidate_file(const std::string& path) {
+        stale_files_.insert(path);
+        auto alias = aliases_.find(path);
+        if (alias != aliases_.end()) stale_files_.insert(alias->second);
+    }
 
     /// Create (or replace) a sound from 32-bit float samples, interleaved if
     /// `channels` > 1. Cached by name.
@@ -84,6 +88,7 @@ private:
     std::vector<SDL_AudioStream*> voices_;
     std::unordered_map<std::string, std::unique_ptr<Sound>> sounds_;
     std::unordered_set<std::string> stale_files_;
+    std::unordered_map<std::string, std::string> aliases_; ///< resolved path -> name the game used
     FileWatcher* watcher_ = nullptr;
 };
 

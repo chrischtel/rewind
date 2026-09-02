@@ -12,6 +12,8 @@ rewind_add_test(world_test)
 rewind_add_test(reflect_test)
 rewind_add_test(ecs_test)
 rewind_add_test(net_test)
+rewind_add_test(shader_test)
+target_include_directories(shader_test PRIVATE ${CMAKE_BINARY_DIR}/generated)
 
 if(REWIND_BUILD_SAMPLES)
     rewind_add_test(hot_reload_test $<TARGET_FILE:bounce_hot>)

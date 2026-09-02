@@ -1,1 +1,3 @@
-rewind_add_game(pixels SOURCES pixels.cpp)
+rewind_add_game(pixels
+    SOURCES pixels.cpp
+    SHADERS shaders/palette.frag)

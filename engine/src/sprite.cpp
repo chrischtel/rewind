@@ -1,6 +1,7 @@
 #include "rewind/render/sprite.h"
 
 #include "rewind/assets/aseprite.h"
+#include "rewind/core/paths.h"
 #include "rewind/render/renderer2d.h"
 
 #include <cmath>
@@ -73,7 +74,7 @@ bool load_aseprite_sheet(Renderer2D& renderer, const std::string& path, SpriteSh
         if (error) *error = "could not create texture for " + path;
         return false;
     }
-    renderer.track_file(path); // edits in Aseprite show up in the running game
+    renderer.track_file(resolve_asset_path(path)); // edits in Aseprite show up in the running game
 
     out = SpriteSheet{};
     out.texture = texture;

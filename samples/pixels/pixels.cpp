@@ -169,6 +169,20 @@ public:
         moon.rect(7, 6, 3, 2, rgb(210, 200, 170));
         moon_ = r.create_texture("moon", moon.w, moon.h, moon.px.data());
 
+        // Palette swap material: a GLSL fragment shader compiled by the build
+        // (see CMakeLists SHADERS) plus a 4x1 palette texture per look.
+        palette_material_ = r.load_material("shaders/palette.frag.spv");
+        const Color palettes[kPaletteCount][4] = {
+            {rgb(40, 20, 60), rgb(120, 60, 140), rgb(220, 120, 200), rgb(255, 230, 250)},   // dusk
+            {rgb(10, 40, 30), rgb(30, 120, 80), rgb(90, 220, 120), rgb(230, 255, 200)},     // toxic
+            {rgb(60, 20, 10), rgb(180, 60, 20), rgb(255, 160, 40), rgb(255, 240, 180)},     // ember
+        };
+        for (int p = 0; p < kPaletteCount; ++p) {
+            Canvas strip(4, 1);
+            for (int i = 0; i < 4; ++i) strip.put(i, 0, palettes[p][i]);
+            palette_tex_[p] = r.create_texture("palette" + std::to_string(p), 4, 1, strip.px.data());
+        }
+
         // Sounds, synthesized so the repository stays free of binary assets.
         const std::vector<float> jump = synth(0.14f, 320, 760, 0.05f, 1);
         const std::vector<float> land = synth(0.08f, 140, 60, 0.6f, 2);
@@ -193,6 +207,7 @@ public:
         }
         anim_ = AnimState{};
         anim_play(anim_, sheet_, "idle");
+        palette_ = 1; // start with the "dusk" palette so the material is visible right away
     }
 
     void tick(const TickContext& c) override {
@@ -216,6 +231,7 @@ public:
             ++jumps_;
             c.emit(kEvJump);
         }
+        if (pressed(in, prev_input_, Button::B)) palette_ = (palette_ + 1) % (kPaletteCount + 1); // 0 = off
         if (!in.down(Button::A) && vy_ < -60.0f) vy_ = -60.0f;
         prev_input_ = in;
 
@@ -277,6 +293,8 @@ public:
         v.field("anim", anim_);
         v.field("rng", rng_);
         v.field("stars", stars_);
+        v.field("palette", palette_, {.min = 0, .max = kPaletteCount});
+        v.field("palette_mix", palette_mix_, {.min = 0, .max = 1, .transient = true});
     }
 
     void render(Renderer2D& r, float /*alpha*/) override {
@@ -301,11 +319,22 @@ public:
 
         draw_tilemap(r, map_);
 
-        // Hero.
+        // Hero, through the palette material when a palette is selected.
         if (sheet_.valid()) {
             SpriteOptions o;
             o.flip_x = facing_left_;
+            const bool swapped = palette_ > 0 && palette_material_ && palette_material_->ok;
+            if (swapped) {
+                struct Params {
+                    float mix_amount;
+                    float steps;
+                } params{palette_mix_, 4.0f};
+                r.set_material(palette_material_);
+                r.set_material_params(params);
+                r.set_material_texture(1, palette_tex_[palette_ - 1]);
+            }
             r.draw_sprite(*sheet_.texture, anim_frame(anim_, sheet_).src, std::floor(x_), std::floor(y_), o);
+            if (swapped) r.set_material(nullptr);
             if (show_hitbox_) {
                 const Rect hb = hitbox();
                 r.draw_rect(std::floor(x_) + hb.x, std::floor(y_) + hb.y, hb.w, hb.h, rgba(255, 80, 80, 200));
@@ -314,7 +343,8 @@ public:
 
         r.set_camera(Camera{});
         r.draw_text(4, 4, "stick/arrows: run  Z/A: jump", rgb(200, 200, 220));
-        r.draw_text(4, 14, "hold F4: rewind", rgb(140, 140, 170));
+        r.draw_text(4, 14, "X/B: palette   hold F4: rewind", rgb(140, 140, 170));
+        if (palette_material_ && !palette_material_->ok) r.draw_text(4, 24, "palette shader failed (see log)", rgb(255, 90, 90));
         char buf[64];
         std::snprintf(buf, sizeof buf, "jumps %u", jumps_);
         r.draw_text(4, kViewH - 12, buf, rgb(140, 140, 170));
@@ -325,6 +355,12 @@ public:
                     on_ground_ ? "grounded" : "airborne");
         ImGui::Text("anim tag %u frame %u (%u us)", anim_.tag, anim_.frame, anim_.elapsed_us);
         ImGui::Checkbox("show hitbox slice", &show_hitbox_);
+        ImGui::SliderFloat("palette mix", &palette_mix_, 0.0f, 1.0f);
+        if (palette_material_) {
+            ImGui::Text("material build #%u %s", palette_material_->generation,
+                        palette_material_->ok ? "ok" : palette_material_->error.c_str());
+            ImGui::TextWrapped("edit samples/pixels/shaders/palette.frag and save: it recompiles live.");
+        }
     }
 
 private:
@@ -335,10 +371,15 @@ private:
         return hb;
     }
 
+    static constexpr int kPaletteCount = 3;
+
     // Assets and level (rebuilt in load_assets, never part of the saved state).
     SpriteSheet sheet_;
     TileMap map_;
     Texture* moon_ = nullptr;
+    Material* palette_material_ = nullptr;
+    Texture* palette_tex_[kPaletteCount] = {};
+    float palette_mix_ = 1.0f;
     Sound* snd_jump_ = nullptr;
     Sound* snd_land_ = nullptr;
     Sound* snd_bump_ = nullptr;
@@ -353,6 +394,7 @@ private:
     AnimState anim_;
     Rng rng_;
     std::vector<Star> stars_;
+    i32 palette_ = 0; ///< 0 = original colours, else palette index + 1
 };
 
 REWIND_GAME(Pixels)

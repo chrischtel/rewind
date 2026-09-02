@@ -29,7 +29,24 @@ FetchContent_Declare(stb
     GIT_TAG        2c980bb59875b0d32144a71867fbdebb2f77cd20
     GIT_SHALLOW    TRUE)
 
-FetchContent_MakeAvailable(SDL3 imgui stb)
+# ---- SPIRV-Cross (shader reflection; SPIR-V -> HLSL for Direct3D 12) -------
+set(SPIRV_CROSS_CLI OFF CACHE BOOL "" FORCE)
+set(SPIRV_CROSS_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+set(SPIRV_CROSS_ENABLE_GLSL ON CACHE BOOL "" FORCE)
+set(SPIRV_CROSS_ENABLE_HLSL ON CACHE BOOL "" FORCE)
+set(SPIRV_CROSS_ENABLE_MSL OFF CACHE BOOL "" FORCE)
+set(SPIRV_CROSS_ENABLE_CPP OFF CACHE BOOL "" FORCE)
+set(SPIRV_CROSS_ENABLE_REFLECT OFF CACHE BOOL "" FORCE)
+set(SPIRV_CROSS_ENABLE_C_API OFF CACHE BOOL "" FORCE)
+set(SPIRV_CROSS_ENABLE_UTIL OFF CACHE BOOL "" FORCE)
+set(SPIRV_CROSS_SKIP_INSTALL ON CACHE BOOL "" FORCE)
+
+FetchContent_Declare(spirv_cross
+    GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Cross.git
+    GIT_TAG        vulkan-sdk-1.4.357.0
+    GIT_SHALLOW    TRUE)
+
+FetchContent_MakeAvailable(SDL3 imgui stb spirv_cross)
 
 set(REWIND_STB_INCLUDE_DIR ${stb_SOURCE_DIR})
 
