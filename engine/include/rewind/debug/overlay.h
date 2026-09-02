@@ -9,6 +9,9 @@ namespace rw {
 
 class Game;
 class Timeline;
+namespace net {
+struct SessionStats;
+}
 
 enum class TimeMode {
     Playing,   ///< Normal: simulate with live input.
@@ -38,6 +41,7 @@ struct FrameStats {
     int draw_calls = 0;
     int vertices = 0;
     const char* gpu_driver = "";
+    const net::SessionStats* net = nullptr; ///< Set while a rollback session drives the game.
 };
 
 /// What the overlay shows about hot reload. Filled in by App when the game

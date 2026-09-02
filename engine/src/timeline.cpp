@@ -20,10 +20,10 @@ void Timeline::reset(Game& game) {
     capture(game, true);
 }
 
-void Timeline::capture(Game& game, bool force_keyframe) {
-    RW_PROFILE_SCOPE("snapshot");
-    const bool keyframe = force_keyframe || (head_ % cfg_.keyframe_interval) == 0;
-    Record record;
+void Timeline::fill(Record& record, Game& game, bool keyframe) {
+    memory_ -= record.snapshot.size();
+    record.snapshot.clear();
+    record.hash = 0;
     if (keyframe || cfg_.verify_hashes) {
         scratch_.clear();
         game.save(scratch_);
@@ -33,7 +33,13 @@ void Timeline::capture(Game& game, bool force_keyframe) {
             memory_ += record.snapshot.size();
         }
     }
-    records_.push_back(std::move(record));
+}
+
+void Timeline::capture(Game& game, bool force_keyframe) {
+    RW_PROFILE_SCOPE("snapshot");
+    const bool keyframe = force_keyframe || (head_ % cfg_.keyframe_interval) == 0;
+    records_.emplace_back();
+    fill(records_.back(), game, keyframe);
 }
 
 void Timeline::drop_future() {
@@ -43,12 +49,12 @@ void Timeline::drop_future() {
     }
 }
 
-void Timeline::advance(Game& game, const InputFrame& input, EventQueue* events) {
+void Timeline::advance(Game& game, const InputSet& inputs, EventQueue* events) {
     drop_future();
-    rec(head_).input = input;
+    rec(head_).inputs = inputs;
     {
         RW_PROFILE_SCOPE("tick");
-        game.tick(TickContext{head_, dt(), input, events});
+        game.tick(TickContext{head_, dt(), inputs.players[0], events, inputs});
     }
     ++head_;
     capture(game, false);
@@ -85,17 +91,24 @@ void Timeline::seek(Game& game, Tick target) {
     resimulate(game, target);
 }
 
-void Timeline::resimulate(Game& game, Tick target) {
+void Timeline::resimulate(Game& game, Tick target, bool rewrite) {
     if (records_.empty()) return;
     target = std::clamp(target, head_, newest());
 
     while (head_ < target) {
-        game.tick(TickContext{head_, dt(), rec(head_).input});
+        const InputSet& inputs = rec(head_).inputs;
+        game.tick(TickContext{head_, dt(), inputs.players[0], nullptr, inputs});
         ++head_;
-        if (rec(head_).edited && !rec(head_).snapshot.empty()) {
+        Record& r = rec(head_);
+        if (rewrite) {
+            r.edited = false;
+            fill(r, game, (head_ % cfg_.keyframe_interval) == 0 || !r.snapshot.empty());
+            continue;
+        }
+        if (r.edited && !r.snapshot.empty()) {
             // Someone changed the state by hand at this tick. History from
             // here on was recorded from the edited state, so restore it.
-            Reader reader(rec(head_).snapshot);
+            Reader reader(r.snapshot);
             game.load(reader);
             continue;
         }
@@ -103,12 +116,27 @@ void Timeline::resimulate(Game& game, Tick target) {
             scratch_.clear();
             game.save(scratch_);
             const u64 actual = hash_bytes(scratch_.bytes());
-            const u64 expected = rec(head_).hash;
+            const u64 expected = r.hash;
             if (expected != 0 && actual != expected && !desync_) {
                 desync_ = DesyncInfo{head_, expected, actual};
             }
         }
     }
+}
+
+void Timeline::set_inputs(Tick tick, const InputSet& inputs) {
+    if (!in_history(tick) || tick >= newest()) return;
+    rec(tick).inputs = inputs;
+}
+
+u32 Timeline::rollback(Game& game, Tick from) {
+    if (records_.empty() || from >= head_) return 0;
+    from = std::max(from, oldest());
+    const Tick target = head_;
+    seek(game, from);
+    const Tick started = head_;
+    resimulate(game, target, true);
+    return static_cast<u32>(target - started);
 }
 
 void Timeline::step_forward(Game& game, const InputFrame& live_input) {
@@ -122,13 +150,8 @@ void Timeline::recapture(Game& game) {
     if (records_.empty()) return;
     drop_future();
     Record& r = rec(head_);
-    memory_ -= r.snapshot.size();
-    scratch_.clear();
-    game.save(scratch_);
-    r.hash = hash_bytes(scratch_.bytes());
-    r.snapshot = scratch_.bytes();
+    fill(r, game, true);
     r.edited = true;
-    memory_ += r.snapshot.size();
 }
 
 usize Timeline::keyframe_count() const {

@@ -13,7 +13,7 @@
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: rewind_run <game dll>\n");
+        std::fprintf(stderr, "usage: rewind_run <game dll> [game arguments...]\n");
         return 2;
     }
 
@@ -24,6 +24,7 @@ int main(int argc, char** argv) {
     }
 
     rw::AppConfig config;
+    for (int i = 2; i < argc; ++i) config.args.push_back(argv[i]);
     module.game()->configure(config);
 
     rw::App app(config);

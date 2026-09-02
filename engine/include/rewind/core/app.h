@@ -10,6 +10,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 struct SDL_Window;
 struct SDL_GPUDevice;
@@ -21,9 +22,13 @@ class Game;
 class GameModule;
 class Renderer2D;
 struct Texture;
+namespace net {
+class Session;
+}
 
 struct AppConfig {
     std::string title = "Rewind";
+    std::vector<std::string> args; ///< Command line, without the program name.
     int width = 1280;
     int height = 720;
     bool vsync = true;
@@ -70,6 +75,11 @@ public:
 
     void quit() { running_ = false; }
 
+    /// Drive the simulation through a rollback session instead of directly.
+    /// The session must outlive the App loop; pass nullptr to detach.
+    void set_session(net::Session* session) { session_ = session; }
+    net::Session* session() const { return session_; }
+
     Timeline& timeline() { return timeline_; }
     TimeControl& time_control() { return time_; }
     Renderer2D& renderer() { return *renderer_; }
@@ -105,6 +115,7 @@ private:
     EventQueue events_;
     Game* game_ = nullptr;
     GameModule* module_ = nullptr;
+    net::Session* session_ = nullptr;
     bool running_ = false;
     bool imgui_ready_ = false;
     double accumulator_ = 0;

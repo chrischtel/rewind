@@ -3,6 +3,7 @@
 #include "rewind/core/log.h"
 #include "rewind/core/profiler.h"
 #include "rewind/debug/inspector.h"
+#include "rewind/net/session.h"
 #include "rewind/sim/game.h"
 #include "rewind/sim/reflect.h"
 #include "rewind/sim/timeline.h"
@@ -240,6 +241,21 @@ void draw_debug_overlay(Timeline& tl, TimeControl& time, Game& game, const Frame
                            hot.asset_reloads, hot.last_asset.c_str());
     } else {
         ImGui::TextColored(kDim, "assets: %zu files watched, edits reload live", hot.tracked_files);
+    }
+
+    if (stats.net) {
+        const net::SessionStats& n = *stats.net;
+        ImGui::Separator();
+        if (n.desync) {
+            ImGui::TextColored(kBad, "NETWORK DESYNC at tick %llu: the peers' states differ",
+                               static_cast<unsigned long long>(n.desync_tick));
+        } else if (!n.connected) {
+            ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.35f, 1), "network: waiting for the peer");
+        } else {
+            ImGui::TextColored(kGood, "network: connected   rtt %.0f ms", n.rtt_ms);
+        }
+        ImGui::Text("rollbacks %u (%u ticks)   predicting %u ticks   stalls %u   pkts %u/%u", n.rollbacks,
+                    n.rolled_back_ticks, n.predicted_ticks, n.stalled_frames, n.packets_sent, n.packets_received);
     }
 
     if (ImGui::CollapsingHeader("Profiler")) {

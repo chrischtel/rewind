@@ -26,6 +26,7 @@ add_subdirectory(tools/runner)
 if(REWIND_BUILD_SAMPLES)
     add_subdirectory(samples/bounce)
     add_subdirectory(samples/pixels)
+    add_subdirectory(samples/duel)
 endif()
 
 if(REWIND_BUILD_TESTS)

@@ -57,6 +57,9 @@ add_library(rewind SHARED
     src/game_module.cpp
     src/inspector.cpp
     src/log.cpp
+    src/net_loopback.cpp
+    src/net_session.cpp
+    src/net_udp.cpp
     src/overlay.cpp
     src/profiler.cpp
     src/reflect.cpp
@@ -78,7 +81,7 @@ target_link_libraries(rewind PRIVATE SDL3::SDL3)
 target_compile_features(rewind PUBLIC cxx_std_20)
 
 if(WIN32)
-    target_link_libraries(rewind PRIVATE d3dcompiler)
+    target_link_libraries(rewind PRIVATE d3dcompiler ws2_32)
 else()
     target_link_libraries(rewind PRIVATE ${CMAKE_DL_LIBS})
 endif()

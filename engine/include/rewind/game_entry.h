@@ -30,9 +30,10 @@ constexpr u32 kGameApiVersion = 1;
 #else
 
 #define REWIND_GAME(GameType)                                                                  \
-    int main(int, char**) {                                                                    \
+    int main(int argc, char** argv) {                                                          \
         GameType game;                                                                         \
         rw::AppConfig config;                                                                  \
+        for (int i = 1; i < argc; ++i) config.args.push_back(argv[i]);                         \
         game.configure(config);                                                                \
         return rw::App(config).run(game);                                                      \
     }

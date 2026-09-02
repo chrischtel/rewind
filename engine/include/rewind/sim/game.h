@@ -8,6 +8,7 @@
 
 namespace rw {
 
+class App;
 class Audio;
 class Renderer2D;
 struct AppConfig;
@@ -17,8 +18,16 @@ struct AppConfig;
 struct TickContext {
     Tick tick;                      ///< Index of the state being advanced. Starts at 0.
     float dt;                       ///< Fixed step length in seconds, always the same value.
-    InputFrame input;               ///< Player input for this tick.
+    InputFrame input;               ///< Player 0's input for this tick.
     EventQueue* events = nullptr;   ///< Null while re-simulating; use emit(), never touch directly.
+    InputSet inputs{};              ///< Every player's input (multiplayer). inputs[0] == input.
+
+    /// Input of player `i`. Players beyond `inputs.count` read as idle.
+    const InputFrame& player(u32 i) const {
+        static const InputFrame idle{};
+        return i < inputs.count ? inputs.players[i] : idle;
+    }
+    u32 player_count() const { return inputs.count; }
 
     /// Announce something for Game::on_event(). Safe to call at any time.
     void emit(u32 id, float a = 0, float b = 0) const {
@@ -51,6 +60,10 @@ public:
     /// Called once before the window exists. Set title, size, tick rate,
     /// history length. Not called again on hot reload.
     virtual void configure(AppConfig&) {}
+
+    /// Called once the App exists, before assets and init. The place to
+    /// attach a network session or anything else that needs the App.
+    virtual void start(App&) {}
 
     /// Called once the renderer and audio device exist, and again after every
     /// hot reload. Load textures, sprite sheets and sounds here. Both caches

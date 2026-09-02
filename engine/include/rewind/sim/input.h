@@ -52,6 +52,24 @@ struct InputFrame {
 
 static_assert(std::is_trivially_copyable_v<InputFrame>);
 
+constexpr u32 kMaxPlayers = 4;
+
+/// Input of every player for one tick. Player 0 is the only one in a
+/// single-player game; a networked session fills in the others.
+struct InputSet {
+    InputFrame players[kMaxPlayers]{};
+    u8 count = 1;
+
+    InputSet() = default;
+    explicit InputSet(const InputFrame& single) : count(1) { players[0] = single; }
+
+    const InputFrame& operator[](usize i) const { return players[i < kMaxPlayers ? i : 0]; }
+    InputFrame& operator[](usize i) { return players[i < kMaxPlayers ? i : 0]; }
+    bool operator==(const InputSet&) const = default;
+};
+
+static_assert(std::is_trivially_copyable_v<InputSet>);
+
 /// Buttons that are down in `now` but were not in `prev`.
 inline u32 pressed(const InputFrame& now, const InputFrame& prev) {
     return now.buttons & ~prev.buttons;

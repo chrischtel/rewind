@@ -20,7 +20,7 @@ Three ideas reinforce each other:
 | Idea | What it gives you now | What it enables later |
 |------|-----------------------|-----------------------|
 | Deterministic fixed-step simulation | Reproducible bugs from a tiny input log | Rollback netcode, replays, ghost racers |
-| Timeline of inputs + snapshots | Rewind, scrub, step, replay | Hot reload without losing state |
+| Timeline of inputs + snapshots | Rewind, scrub, step, replay, rollback netcode | Hot reload without losing state |
 | Per-tick state fingerprint | Instant "DESYNC at tick N" when anything is non-deterministic | Cross-machine sync verification |
 
 ## Building
@@ -255,6 +255,49 @@ frames, a bar timeline of the last frame nested by depth (hover for exact
 times), and totals per region. The cost is one clock read per scope, so
 leaving scopes in shipping code is fine.
 
+## Rollback netcode
+
+Multiplayer that feels local, built on the timeline. Run the `duel` sample
+twice:
+
+```bash
+build/bin/Release/duel.exe --host 7777
+```
+
+```bash
+build/bin/Release/duel.exe --connect 127.0.0.1:7777
+```
+
+How it works: every tick needs every player's input. The local player's
+input is known a few ticks ahead thanks to a small input delay. The remote
+player's input is predicted (they keep doing what they did last) until the
+real one arrives over UDP. When the truth contradicts the guess, the session
+corrects the recorded tick and the timeline re-simulates from there with
+history rewritten, which is the same code path as rewinding. Inputs are sent
+redundantly, so lost packets need no retransmission. Confirmed states are
+fingerprinted and compared between peers, so a determinism bug shows up as a
+desync warning in the overlay with the exact tick.
+
+In game code, nothing is network-aware. `tick()` reads `ctx.player(0)` and
+`ctx.player(1)`; the session fills them in. Attach one in `Game::start()`:
+
+```cpp
+void start(App& app) override {
+    udp.open(7777);                       // or udp.open(0, "192.168.1.5", 7777)
+    net::SessionConfig cfg;
+    cfg.local_player = 0;
+    cfg.input_delay = 2;
+    session = std::make_unique<net::Session>(cfg, udp);
+    app.set_session(session.get());
+}
+```
+
+The overlay shows connection state, round trip time, rollbacks, how many
+ticks are currently running on prediction, and stalls. The loopback
+transport in `net/transport.h` simulates latency, jitter and loss with a
+virtual clock, which is how the tests drive two sessions against each other
+headlessly.
+
 ## Hot reload
 
 Every game built with `rewind_add_game(name ...)` also produces `name_hot.dll`.
@@ -364,6 +407,9 @@ engine/include/rewind/
   render/texture.h    Texture handle
 engine/shaders/       sprite.vert / sprite.frag (SPIR-V) and sprite.hlsl (DXBC)
   world/tilemap.h     TileMap, tilemap_move collision, drawing, loading
+  net/session.h       rollback Session, packet format
+  net/transport.h     Transport interface, LoopbackPair for tests
+  net/udp.h           UdpTransport
   audio/audio.h       Sound and the polyphonic Audio player
   assets/aseprite.h   the .aseprite parser (sprites, tilesets, tilemaps)
   debug/overlay.h     ImGui overlay and TimeControl
@@ -371,7 +417,8 @@ engine/shaders/       sprite.vert / sprite.frag (SPIR-V) and sprite.hlsl (DXBC)
 tools/runner/         rewind_run, the hot-reload host
 samples/bounce/       shapes, entities, rewind, desync detector
 samples/pixels/       sprites, animation, tilemap, sound, pixel mode, gamepad
-tests/                headless tests: core, timeline, assets, world, reflect, ecs, hot reload
+samples/duel/         two players over rollback netcode
+tests/                headless tests: core, timeline, assets, world, reflect, ecs, net, hot reload
 ```
 
 The engine builds as a shared library so that SDL, ImGui, and the engine
@@ -386,8 +433,9 @@ In rough order:
   lighting, post-processing, with shader hot reload.
 - **Sub-pixel camera smoothing** for pixel mode.
 - **Positional audio** (pan and distance) on top of the event channel.
-- **Fixed-point math option** for bit-exact determinism across machines.
-- **Rollback netcode** built on `Timeline::seek` plus remote input frames.
+- **Fixed-point math option** for bit-exact determinism across machines,
+  which internet play between different CPUs will eventually need.
+- **More than two players** and a lobby handshake for the session.
 - **Prefabs and scene composition** on top of the world and the text format.
 - Linux verified on a real machine, then macOS.
 - An editor on top of all of the above.

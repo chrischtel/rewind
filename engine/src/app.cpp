@@ -3,6 +3,7 @@
 
 #include "rewind/core/game_module.h"
 #include "rewind/core/profiler.h"
+#include "rewind/net/session.h"
 #include "rewind/render/renderer2d.h"
 #include "rewind/sim/game.h"
 
@@ -308,6 +309,15 @@ void App::simulate(const InputFrame& live, double frame_dt) {
     switch (time_.mode) {
     case TimeMode::Playing:
         accumulator_ += frame_dt;
+        if (session_) {
+            // The session decides how far we may run; stalls leave time in
+            // the accumulator, capped so a long stall does not turn into a sprint.
+            const u32 wanted = static_cast<u32>(accumulator_ / dt);
+            const u32 advanced = session_->step(timeline_, *game_, live, wanted, &events_, SDL_GetTicks());
+            accumulator_ -= advanced * dt;
+            accumulator_ = std::min(accumulator_, dt * 2.0);
+            break;
+        }
         while (accumulator_ >= dt) {
             timeline_.advance(*game_, live, &events_);
             accumulator_ -= dt;
@@ -423,6 +433,7 @@ int App::run(GameModule& module) {
 int App::loop() {
     if (!init_platform()) return 1;
 
+    game_->start(*this);
     game_->load_assets(*renderer_, audio_);
     game_->init();
     timeline_.reset(*game_);
@@ -479,6 +490,7 @@ int App::loop() {
         stats_.render_ms = static_cast<float>(SDL_GetTicksNS() - render_start) / 1e6f;
         stats_.draw_calls = renderer_->draw_calls_last_frame();
         stats_.vertices = renderer_->vertices_last_frame();
+        stats_.net = session_ ? &session_->stats() : nullptr;
         profiler.end_frame();
 
         stats_.frame_ms = static_cast<float>(frame_dt * 1000.0);
