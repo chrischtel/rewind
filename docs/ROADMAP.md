@@ -46,9 +46,10 @@ later, nothing depends on them): asset references with a picker, importers
 for audio, fonts and shaders, archives for shipping, undo on top of timeline
 edits.
 
-## Next: generic engine tools for curve-based top-down games
+## Next: generic engine functionality
 
-Engine-level only, never game-specific (no car model, no lane pathfinding).
+Rendering, geometry, spatial queries, editor interaction and simulation
+building blocks that any game uses. Engine-level only, never game-specific.
 
 1. Mesh drawing (triangle lists with texture, UVs, vertex color), polyline
    and ribbon builders with joins, caps and dashes, draw layers and sort keys.
