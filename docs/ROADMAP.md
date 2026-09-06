@@ -45,6 +45,9 @@ Engine-level only, never game-specific (no car model, no lane pathfinding).
 
 1. Mesh drawing (triangle lists with texture, UVs, vertex color), polyline
    and ribbon builders with joins, caps and dashes, draw layers and sort keys.
+   Built 3D-ready from the start: positions with z, 4x4 transforms, optional
+   depth-tested passes, so the later 3D and isometric work extends it
+   instead of replacing it.
 2. Curves: Bezier and Catmull-Rom, arcs, arc length, tangents, offset,
    split and join, closest point. Polygon triangulation and offset.
 3. Camera with smooth zoom and pan, level-of-detail hint, spatial index
@@ -56,6 +59,11 @@ Engine-level only, never game-specific (no car model, no lane pathfinding).
    and state machines.
 
 ## Later
+
+**3D and isometric 3D tools** (a stated goal): 3D camera and projection,
+depth passes, vertex shaders in materials, transform hierarchies, glTF
+import, lighting and shadows, 3D picking and gizmos. SDL GPU covers all of
+this; NVRHI becomes relevant only for ray tracing, mesh shaders or bindless.
 
 Post-processing and 2D lighting, more than two network players and a
 lobby, fixed-point math option, Linux on a real machine, macOS, editor
