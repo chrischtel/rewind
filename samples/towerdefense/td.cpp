@@ -707,6 +707,8 @@ public:
         }
     }
 
+    World* world() override { return &world_; }
+
     void debug_ui() override {
         ImGui::Text("enemies %zu  towers %zu  projectiles %zu  particles %zu", world_.count<Enemy>(),
                     world_.count<Tower>(), world_.count<Projectile>(), world_.count<Particle>());

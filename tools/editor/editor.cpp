@@ -34,6 +34,9 @@ struct EditorState {
     fs::path state_file;
     rw::AppConfig settings;   ///< edited in the Project panel
     rw::AppConfig defaults;   ///< what the game's configure() asked for
+    rw::PrefabLibrary prefabs;
+    std::string scene_name = "scene";
+    std::string scene_warnings;
     bool settings_dirty = false;
     bool layout_done = false;
     bool show_scene = true, show_timeline = true, show_inspector = true, show_console = true, show_profiler = true,
@@ -111,6 +114,60 @@ void load_state(rw::App& app) {
     RW_LOG_INFO("editor", "%s", g_editor.status.c_str());
 }
 
+fs::path scene_path(const std::string& name) {
+    std::string file = name;
+    if (file.size() < 5 || file.compare(file.size() - 5, 5, ".json") != 0) file += ".json";
+    return g_editor.project.scene_dir() / file;
+}
+
+void reload_prefabs() {
+    g_editor.prefabs = rw::PrefabLibrary{};
+    g_editor.prefabs.load_dir((g_editor.project.scene_dir() / "prefabs").string());
+}
+
+void save_scene(rw::App& app) {
+    rw::World* world = app.game().world();
+    if (!world) {
+        g_editor.status = "this game has no world to save";
+        return;
+    }
+    const rw::Scene scene = rw::capture_scene(*world, g_editor.scene_name, &g_editor.prefabs);
+    std::string error;
+    std::error_code ec;
+    fs::create_directories(g_editor.project.scene_dir(), ec);
+    if (rw::save_scene(scene_path(g_editor.scene_name).string(), scene, &error)) {
+        g_editor.status = "scene saved: " + g_editor.scene_name + " (" + std::to_string(scene.entities.size()) + " entities)";
+        RW_LOG_INFO("editor", "%s", g_editor.status.c_str());
+    } else {
+        g_editor.status = error;
+        RW_LOG_ERROR("editor", "%s", error.c_str());
+    }
+}
+
+void load_scene_into(rw::App& app, const std::string& name) {
+    rw::World* world = app.game().world();
+    if (!world) {
+        g_editor.status = "this game has no world to load into";
+        return;
+    }
+    rw::Scene scene;
+    std::string error;
+    if (!rw::load_scene(scene_path(name).string(), scene, &error)) {
+        g_editor.status = error;
+        RW_LOG_ERROR("editor", "%s", error.c_str());
+        return;
+    }
+    reload_prefabs();
+    rw::SceneWarnings warnings;
+    rw::apply_scene(scene, *world, &g_editor.prefabs, &warnings);
+    app.timeline().recapture(app.game());
+    g_editor.scene_name = name;
+    g_editor.scene_warnings.clear();
+    for (const std::string& w : warnings.items) g_editor.scene_warnings += w + "\n";
+    g_editor.status = "scene loaded: " + name + (warnings.empty() ? "" : " (with warnings, see console)");
+    RW_LOG_INFO("editor", "%s", g_editor.status.c_str());
+}
+
 void cook_assets(bool force) {
     if (!g_editor.assets) return;
     g_editor.assets->scan();
@@ -131,6 +188,16 @@ void draw_menu(rw::App& app) {
         if (g_editor.has_project && ImGui::MenuItem("Cook changed assets")) cook_assets(false);
         if (g_editor.has_project && ImGui::MenuItem("Cook all assets")) cook_assets(true);
         ImGui::Separator();
+        if (g_editor.has_project) {
+            static char name[64] = "scene";
+            ImGui::SetNextItemWidth(160);
+            if (ImGui::InputText("scene name", name, sizeof name)) g_editor.scene_name = name;
+            const bool has_world = app.game().world() != nullptr;
+            if (ImGui::MenuItem("Save scene", nullptr, false, has_world)) save_scene(app);
+            if (ImGui::MenuItem("Load scene", nullptr, false, has_world)) load_scene_into(app, g_editor.scene_name);
+            if (ImGui::MenuItem("Reload prefabs")) reload_prefabs();
+            ImGui::Separator();
+        }
         if (ImGui::MenuItem("Save state as JSON")) save_state(app);
         if (ImGui::MenuItem("Load state from JSON")) load_state(app);
         ImGui::Separator();
@@ -408,5 +475,11 @@ int main(int argc, char** argv) {
 
     rw::App app(config);
     app.set_ui_callback(editor_ui);
+    if (g_editor.has_project) {
+        reload_prefabs();
+        app.set_start_callback([](rw::App& a) {
+            if (!g_editor.project.startup_scene.empty()) load_scene_into(a, g_editor.project.startup_scene);
+        });
+    }
     return app.run(module);
 }

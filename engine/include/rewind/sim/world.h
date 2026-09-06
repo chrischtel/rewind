@@ -136,10 +136,81 @@ public:
         for (auto& p : pools_) p->clear();
     }
 
+    /// Bring an entity back with exactly this handle (scene loading). Fails
+    /// if the slot is already alive.
+    bool create_with(Entity handle) {
+        if (handle.is_null()) return false;
+        if (handle.index >= slots_.size()) slots_.resize(static_cast<usize>(handle.index) + 1);
+        Slot& s = slots_[handle.index];
+        if (s.alive) return false;
+        s.generation = handle.generation;
+        s.alive = true;
+        ++alive_count_;
+        rebuild_free_list();
+        return true;
+    }
+
+    void rebuild_free_list() {
+        free_.clear();
+        for (u32 i = static_cast<u32>(slots_.size()); i-- > 0;)
+            if (!slots_[i].alive) free_.push_back(i);
+    }
+
+    // ---- components by name (tools, scenes, prefabs) -----------------------------
+    bool has_pool(std::string_view name) const { return pool_named(name) != nullptr; }
+    bool has_component(Entity e, std::string_view name) const {
+        const IPool* p = pool_named(name);
+        return p && alive(e) && p->has(e.index);
+    }
+    /// Add a default-constructed component of the pool called `name`.
+    bool add_component(Entity e, std::string_view name) {
+        IPool* p = pool_named(name);
+        if (!p || !alive(e)) return false;
+        p->add_default(e.index);
+        return true;
+    }
+    bool remove_component(Entity e, std::string_view name) {
+        IPool* p = pool_named(name);
+        if (!p || !alive(e)) return false;
+        p->remove(e.index);
+        return true;
+    }
+    /// Visit one component of one entity.
+    bool reflect_component(Entity e, std::string_view name, Visitor& v) {
+        IPool* p = pool_named(name);
+        if (!p || !alive(e) || !p->has(e.index)) return false;
+        p->reflect_component(e.index, v);
+        return true;
+    }
+    /// Names of the components this entity has, in pool order.
+    std::vector<std::string> component_names(Entity e) const {
+        std::vector<std::string> names;
+        if (!alive(e)) return names;
+        for (const auto& p : pools_)
+            if (p->has(e.index)) names.push_back(p->name);
+        return names;
+    }
+    /// Visit every component of one entity as a struct named after its pool.
+    void visit_entity(Entity e, Visitor& v) {
+        if (!alive(e)) return;
+        for (auto& p : pools_) {
+            if (!p->has(e.index)) continue;
+            if (v.begin_struct(p->name, {})) {
+                p->reflect_component(e.index, v);
+                v.end_struct();
+            }
+        }
+    }
+
     // ---- introspection --------------------------------------------------------
     usize pool_count() const { return pools_.size(); }
     std::string_view pool_name(usize i) const { return pools_[i]->name; }
     usize pool_size(usize i) const { return pools_[i]->size(); }
+    std::vector<std::string> pool_names() const {
+        std::vector<std::string> names;
+        for (const auto& p : pools_) names.push_back(p->name);
+        return names;
+    }
 
     void reflect(Visitor& v) {
         v.field("slots", slots_);
@@ -166,7 +237,20 @@ private:
         virtual usize size() const = 0;
         virtual void clear() = 0;
         virtual void reflect(Visitor& v) = 0;
+        virtual void add_default(u32 index) = 0;
+        virtual void reflect_component(u32 index, Visitor& v) = 0;
     };
+
+    IPool* pool_named(std::string_view name) {
+        for (auto& p : pools_)
+            if (p->name == name) return p.get();
+        return nullptr;
+    }
+    const IPool* pool_named(std::string_view name) const {
+        for (const auto& p : pools_)
+            if (p->name == name) return p.get();
+        return nullptr;
+    }
 
     /// Sparse set: dense component array + owner per dense slot + entity
     /// index -> dense slot lookup. Only `data` and `owners` are state; the
@@ -217,6 +301,17 @@ private:
             v.field("components", data);
             v.field("owners", owners);
             rebuild_sparse();
+        }
+
+        void add_default(u32 index) override {
+            if (!has(index)) add(index, T{});
+        }
+
+        void reflect_component(u32 index, Visitor& v) override {
+            T* c = get(index);
+            if (!c) return;
+            if constexpr (Reflectable<T>) c->reflect(v); // the component's fields become the struct's fields
+            else v.field("value", *c);
         }
 
         void rebuild_sparse() {

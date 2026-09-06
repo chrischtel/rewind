@@ -9,6 +9,7 @@
 #include <rewind/core/app.h>
 #include <rewind/core/game_module.h>
 #include <rewind/project/project.h>
+#include <rewind/project/scene.h>
 #include <rewind/sim/game.h>
 
 #include <cstdio>
@@ -50,5 +51,22 @@ int main(int argc, char** argv) {
     if (has_project) rw::apply_project_app(project, config);
 
     rw::App app(config);
+    if (has_project && !project.startup_scene.empty()) {
+        app.set_start_callback([&project](rw::App& a) {
+            rw::World* world = a.game().world();
+            if (!world) return;
+            std::string file = project.startup_scene;
+            if (file.size() < 5 || file.compare(file.size() - 5, 5, ".json") != 0) file += ".json";
+            rw::Scene scene;
+            std::string error;
+            if (!rw::load_scene((project.scene_dir() / file).string(), scene, &error)) {
+                std::fprintf(stderr, "rewind_run: startup scene: %s\n", error.c_str());
+                return;
+            }
+            rw::PrefabLibrary prefabs;
+            prefabs.load_dir((project.scene_dir() / "prefabs").string());
+            rw::apply_scene(scene, *world, &prefabs);
+        });
+    }
     return app.run(module);
 }

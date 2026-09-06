@@ -120,6 +120,10 @@ public:
     /// Called every frame between ImGui::NewFrame() and ImGui::Render().
     void set_ui_callback(UiCallback callback) { ui_ = std::move(callback); }
 
+    /// Called once after Game::init() and before the timeline records tick 0:
+    /// the place for a host to load a startup scene into the game's world.
+    void set_start_callback(UiCallback callback) { start_ = std::move(callback); }
+
     /// The texture the game was drawn into this frame, sized by set_view_size().
     Texture* view_texture() const { return view_; }
 
@@ -180,6 +184,7 @@ private:
     HotReloadInfo hot_;
     EventQueue events_;
     UiCallback ui_;
+    UiCallback start_;
     Game* game_ = nullptr;
     GameModule* module_ = nullptr;
     net::Session* session_ = nullptr;

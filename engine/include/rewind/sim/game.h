@@ -11,6 +11,7 @@ namespace rw {
 class App;
 class Audio;
 class Renderer2D;
+class World;
 struct AppConfig;
 
 /// Everything a tick is allowed to depend on, plus the one way it may talk
@@ -106,6 +107,10 @@ public:
 
     /// Optional: draw Dear ImGui widgets inside the engine's debug overlay.
     virtual void debug_ui() {}
+
+    /// The entity world the game keeps, if any. Tools use it for scenes,
+    /// prefabs and the entity list. Nullptr means the game has no world.
+    virtual World* world() { return nullptr; }
 };
 
 } // namespace rw

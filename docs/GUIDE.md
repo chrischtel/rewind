@@ -336,9 +336,39 @@ build/bin/Release/rewind.exe cook mygame
   a project folder directly. The editor's Assets panel shows the same
   database and cooks from a button.
 
-Next in this area: scene and prefab files, asset references as properties
-with a picker, more importers, and packing cooked files into archives for
-shipping.
+### Scenes and prefabs
+
+A scene file in `scenes/` lists entities with their components by name, as
+JSON, plus a free-form settings block:
+
+```cpp
+Scene scene = capture_scene(world, "level1", &prefabs);   // snapshot
+save_scene("scenes/level1.json", scene);
+load_scene("scenes/level1.json", scene);
+apply_scene(scene, world, &prefabs, &warnings);            // replaces the world
+```
+
+Entity handles are restored exactly, so references between entities stay
+valid after a round trip. Unknown component names and missing prefabs are
+reported as warnings and skipped rather than failing the load. A settings
+block carries whatever the game declares: `set_scene_settings(scene, my)`
+and `scene_settings(scene, my)` go through reflection.
+
+Prefabs are entity templates in `scenes/prefabs/*.json`, made with
+`make_prefab(world, entity, id, name)` and spawned with `spawn_prefab`. An
+instance carries a `PrefabLink` component (register it in your world), and
+a scene stores only the fields an instance changed plus any components it
+removed; editing the prefab therefore changes every instance that did not
+override that field.
+
+The editor's File menu saves and loads scenes for games that expose their
+world through `Game::world()`, and `startup_scene` in `project.json` loads
+one at start in both the editor and the runner. The world also gained
+per-entity, by-name component access (`component_names`, `add_component`,
+`reflect_component`, `visit_entity`) for tools.
+
+Still deferred in this area: asset references as properties with a picker,
+more importers, and packing cooked files into archives for shipping.
 
 ## Editor
 
@@ -548,7 +578,8 @@ engine/shaders/       sprite.vert / sprite.frag (SPIR-V) and sprite.hlsl (DXBC)
   assets/png.h        tiny PNG encoder for templates, tests and screenshots
   project/project.h   Project file and layout, path setup
   project/asset_db.h  AssetDatabase: sidecars, ids, hashing, cooking
-  project/cooked.h    cooked texture and sheet formats (sprites, tilesets, tilemaps)
+  project/cooked.h    cooked texture and sheet formats
+  project/scene.h     Scene, Prefab, PrefabLibrary, capture/apply, files (sprites, tilesets, tilemaps)
   debug/overlay.h     ImGui overlay and TimeControl
   debug/inspector.h   InspectorVisitor: reflected state as ImGui widgets
 tools/runner/         rewind_run, the hot-reload host
@@ -558,7 +589,7 @@ samples/bounce/       shapes, entities, rewind, desync detector
 samples/pixels/       sprites, animation, tilemap, sound, pixel mode, gamepad
 samples/duel/         two players over rollback netcode
 samples/towerdefense/ Rewind Defense: waves, towers, economy, mouse input
-tests/                headless tests: core, timeline, assets, world, reflect, ecs, net, shader, text, project, hot reload
+tests/                headless tests: core, timeline, assets, world, reflect, ecs, net, shader, text, project, scene, hot reload
 ```
 
 The engine builds as a shared library so that SDL, ImGui, and the engine

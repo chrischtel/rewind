@@ -522,6 +522,7 @@ int App::loop() {
     game_->start(*this);
     game_->load_assets(*renderer_, audio_);
     game_->init();
+    if (start_) start_(*this);
     timeline_.reset(*game_);
     running_ = true;
     stats_.gpu_driver = renderer_->driver_name();

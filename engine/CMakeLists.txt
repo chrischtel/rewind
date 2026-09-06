@@ -70,6 +70,7 @@ add_library(rewind SHARED
     src/project.cpp
     src/reflect.cpp
     src/renderer2d.cpp
+    src/scene.cpp
     src/shader_cross.cpp
     src/sprite.cpp
     src/stb_impl.cpp

@@ -144,6 +144,8 @@ public:
         r.draw_text(12, kHeight - 28, "F1: toggle overlay   Esc: quit", rgb(160, 160, 180));
     }
 
+    World* world() override { return &world_; }
+
     void debug_ui() override {
         ImGui::Text("entities %zu   bounces %u", world_.entity_count(), bounces_);
         ImGui::SliderFloat("gravity", &gravity_, 0.0f, 2000.0f, "%.0f");

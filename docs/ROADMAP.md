@@ -12,7 +12,8 @@ project file with settings overrides, asset database, content-hash cooking,
 
 Remaining, in order:
 
-1. **Scenes and prefabs.**
+1. **Scenes and prefabs.** Done: `project/scene.h`, scene_test, editor
+   File menu, startup scene in runner and editor.
    - A scene file is JSON in `scenes/`: scene name, the reflected `World`,
      and a free-form settings block for the game (spawn points, ambient
      values) that the game declares with `reflect`.
