@@ -21,6 +21,7 @@ struct Color {
     u8 r = 255, g = 255, b = 255, a = 255;
 
     void reflect(Visitor& v) {
+        v.hint(Widget::Color);
         v.field("r", r, {.min = 0, .max = 255});
         v.field("g", g, {.min = 0, .max = 255});
         v.field("b", b, {.min = 0, .max = 255});

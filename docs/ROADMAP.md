@@ -26,7 +26,13 @@ Remaining, in order:
      override, missing prefab handled.
    - Editor: File menu save/load scene, startup scene from `project.json`.
 
-2. **Entity list and basic property widgets.**
+2. **Entity list and basic property widgets.** Done: Entities panel
+   (select, create, destroy, spawn prefab, make prefab), per-entity
+   components in the Inspector with add and remove, widget hints (color
+   picker, Vec2, Rect, entity links with select), names for enum fields.
+
+**This list is parked.** Everything below in "deferred" stays deferred until
+the next list is done.
    - `World` gets `visit_entity(Entity, Visitor&)` to reflect one entity's
      components by pool name.
    - Editor Entities panel: list, select, per-entity components in the

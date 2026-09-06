@@ -72,7 +72,10 @@ constexpr TowerSpec kTowers[kTowerKinds] = {
     {"Frost", 90, 80, 5, 0.55f, 380, 0, 1.8f, rgb(130, 230, 255)},
 };
 
+constexpr const char* kTowerNames[kTowerKinds] = {"Arrow", "Cannon", "Frost"};
+
 enum class EnemyKind : u8 { Grunt = 0, Runner = 1, Tank = 2, Boss = 3 };
+constexpr const char* kEnemyNames[4] = {"Grunt", "Runner", "Tank", "Boss"};
 
 struct EnemySpec {
     float hp;
@@ -110,7 +113,7 @@ struct Enemy {
     float slow = 0;   ///< seconds of slow remaining
     float travelled = 0; ///< distance along the path, for "first" targeting
     void reflect(Visitor& v) {
-        v.field("kind", kind, {.min = 0, .max = 3});
+        v.field("kind", kind, {.names = kEnemyNames, .name_count = 4});
         v.field("hp", hp);
         v.field("max_hp", max_hp);
         v.field("waypoint", waypoint);
@@ -125,7 +128,7 @@ struct Tower {
     float cooldown = 0;
     i32 invested = 0; ///< gold spent, for selling
     void reflect(Visitor& v) {
-        v.field("kind", kind, {.min = 0, .max = kTowerKinds - 1});
+        v.field("kind", kind, {.names = kTowerNames, .name_count = kTowerKinds});
         v.field("level", level, {.min = 1, .max = 3});
         v.field("cooldown", cooldown);
         v.field("invested", invested);

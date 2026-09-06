@@ -28,6 +28,7 @@ struct Entity {
     bool operator==(const Entity&) const = default;
 
     void reflect(Visitor& v) {
+        v.hint(Widget::Entity);
         v.field("index", index);
         v.field("generation", generation);
     }

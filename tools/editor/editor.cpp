@@ -37,6 +37,8 @@ struct EditorState {
     rw::PrefabLibrary prefabs;
     std::string scene_name = "scene";
     std::string scene_warnings;
+    rw::Entity selected;
+    bool show_entities = true;
     bool settings_dirty = false;
     bool layout_done = false;
     bool show_scene = true, show_timeline = true, show_inspector = true, show_console = true, show_profiler = true,
@@ -57,7 +59,9 @@ void default_layout(ImGuiID dockspace) {
     const ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.28f, nullptr, &center);
     const ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.32f, nullptr, &center);
 
+    const ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.2f, nullptr, &center);
     ImGui::DockBuilderDockWindow("Scene", center);
+    ImGui::DockBuilderDockWindow("Entities", left);
     ImGui::DockBuilderDockWindow("Inspector", right);
     ImGui::DockBuilderDockWindow("Project", right);
     ImGui::DockBuilderDockWindow("Timeline", bottom);
@@ -217,6 +221,7 @@ void draw_menu(rw::App& app) {
     }
     if (ImGui::BeginMenu("View")) {
         ImGui::MenuItem("Scene", nullptr, &g_editor.show_scene);
+        ImGui::MenuItem("Entities", nullptr, &g_editor.show_entities);
         ImGui::MenuItem("Timeline", nullptr, &g_editor.show_timeline);
         ImGui::MenuItem("Inspector", nullptr, &g_editor.show_inspector);
         ImGui::MenuItem("Assets", nullptr, &g_editor.show_assets, g_editor.has_project);
@@ -315,7 +320,136 @@ void draw_assets() {
     ImGui::End();
 }
 
+/// Entities panel: every live entity, selection, create and destroy, prefabs.
+void draw_entities(rw::App& app) {
+    if (!g_editor.show_entities) return;
+    rw::World* world = app.game().world();
+    if (!ImGui::Begin("Entities", &g_editor.show_entities)) {
+        ImGui::End();
+        return;
+    }
+    if (!world) {
+        ImGui::TextDisabled("this game exposes no world (override Game::world())");
+        ImGui::End();
+        return;
+    }
+    if (const auto link = rw::InspectorVisitor::take_link_request()) g_editor.selected = *link;
+
+    bool edited = false;
+    if (ImGui::Button("Create")) {
+        g_editor.selected = world->create();
+        edited = true;
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!world->alive(g_editor.selected));
+    if (ImGui::Button("Destroy")) {
+        world->destroy(g_editor.selected);
+        g_editor.selected = rw::Entity::null();
+        edited = true;
+    }
+    ImGui::EndDisabled();
+    if (g_editor.has_project && g_editor.prefabs.size() > 0) {
+        ImGui::SameLine();
+        if (ImGui::BeginCombo("##spawn", "Spawn prefab")) {
+            for (const auto& [id, prefab] : g_editor.prefabs.all()) {
+                if (ImGui::Selectable((prefab.name + " (" + id + ")").c_str())) {
+                    g_editor.selected = rw::spawn_prefab(*world, prefab);
+                    edited = true;
+                }
+            }
+            ImGui::EndCombo();
+        }
+    }
+    ImGui::Text("%zu entities", world->entity_count());
+    ImGui::Separator();
+
+    ImGui::BeginChild("##list", ImVec2(0, 0));
+    world->each_entity([&](rw::Entity e) {
+        std::string line = "#" + std::to_string(e.index);
+        for (const std::string& c : world->component_names(e)) line += " " + c;
+        line += "##e" + std::to_string(e.index);
+        if (ImGui::Selectable(line.c_str(), e == g_editor.selected)) g_editor.selected = e;
+    });
+    ImGui::EndChild();
+    ImGui::End();
+
+    if (edited) {
+        app.timeline().recapture(app.game());
+        if (app.time_control().mode != rw::TimeMode::Playing) app.time_control().mode = rw::TimeMode::Paused;
+    }
+}
+
+/// The selected entity's components, each editable and removable, plus adding new ones.
+void draw_selected_entity(rw::App& app) {
+    rw::World* world = app.game().world();
+    if (!world) return;
+    const rw::Entity e = g_editor.selected;
+    if (!world->alive(e)) {
+        ImGui::TextDisabled("select an entity in the Entities panel");
+        return;
+    }
+    ImGui::Text("entity #%u (gen %u)", e.index, e.generation);
+    bool edited = false;
+
+    // Add a component the entity does not have yet.
+    if (ImGui::BeginCombo("##add", "Add component")) {
+        for (const std::string& name : world->pool_names()) {
+            if (world->has_component(e, name)) continue;
+            if (ImGui::Selectable(name.c_str())) {
+                world->add_component(e, name);
+                edited = true;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    if (g_editor.has_project) {
+        ImGui::SameLine();
+        static char prefab_name[48] = "";
+        ImGui::SetNextItemWidth(120);
+        ImGui::InputTextWithHint("##pname", "prefab name", prefab_name, sizeof prefab_name);
+        ImGui::SameLine();
+        if (ImGui::Button("Make prefab") && prefab_name[0]) {
+            const rw::Prefab p = rw::make_prefab(*world, e, rw::AssetDatabase::new_id(), prefab_name);
+            std::error_code ec;
+            std::filesystem::create_directories(g_editor.project.scene_dir() / "prefabs", ec);
+            std::string error;
+            const std::string file = (g_editor.project.scene_dir() / "prefabs" / (std::string(prefab_name) + ".json")).string();
+            if (rw::save_prefab(file, p, &error)) {
+                g_editor.status = "prefab saved: " + std::string(prefab_name);
+                reload_prefabs();
+            } else {
+                g_editor.status = error;
+            }
+        }
+    }
+
+    std::string remove;
+    for (const std::string& name : world->component_names(e)) {
+        ImGui::PushID(name.c_str());
+        const bool open = ImGui::CollapsingHeader(name.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 20);
+        if (ImGui::SmallButton("x")) remove = name;
+        if (open) {
+            rw::InspectorVisitor inspector;
+            world->reflect_component(e, name, inspector);
+            edited = edited || inspector.changed();
+        }
+        ImGui::PopID();
+    }
+    if (!remove.empty()) {
+        world->remove_component(e, remove);
+        edited = true;
+    }
+    if (edited) {
+        app.timeline().recapture(app.game());
+        if (app.time_control().mode == rw::TimeMode::Replaying || app.time_control().mode == rw::TimeMode::Rewinding)
+            app.time_control().mode = rw::TimeMode::Paused;
+    }
+}
+
 void draw_panels(rw::App& app) {
+    draw_entities(app);
+
     if (g_editor.show_timeline) {
         if (ImGui::Begin("Timeline", &g_editor.show_timeline)) {
             rw::draw_timeline_panel(app.timeline(), app.time_control(), app.stats());
@@ -331,9 +465,9 @@ void draw_panels(rw::App& app) {
 
     if (g_editor.show_inspector) {
         if (ImGui::Begin("Inspector", &g_editor.show_inspector)) {
+            if (ImGui::CollapsingHeader("Entity", ImGuiTreeNodeFlags_DefaultOpen)) draw_selected_entity(app);
             if (ImGui::CollapsingHeader("Game", ImGuiTreeNodeFlags_DefaultOpen)) app.game().debug_ui();
-            if (ImGui::CollapsingHeader("State", ImGuiTreeNodeFlags_DefaultOpen))
-                rw::draw_state_panel(app.timeline(), app.time_control(), app.game());
+            if (ImGui::CollapsingHeader("State")) rw::draw_state_panel(app.timeline(), app.time_control(), app.game());
         }
         ImGui::End();
     }

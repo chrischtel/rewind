@@ -2,10 +2,12 @@
 // nested structs and vectors, bulk arrays, enums, the text dump, and the
 // default Game::save/load built on reflect().
 
+#include <rewind/core/math.h>
 #include <rewind/sim/game.h>
 #include <rewind/sim/reflect.h>
 #include <rewind/sim/rng.h>
 #include <rewind/sim/serialize.h>
+#include <rewind/sim/text_format.h>
 
 #include <cstdio>
 #include <string>
@@ -171,6 +173,65 @@ void test_dump() {
     CHECK(t.find("showing first 2") != std::string::npos);
 }
 
+/// Widget hints reach visitors and never disturb data visitors.
+struct HintCounter final : Visitor {
+    int hints = 0;
+    Widget last = Widget::Default;
+    void hint(Widget w) override {
+        ++hints;
+        last = w;
+    }
+    void visit(std::string_view, bool&, const FieldMeta&) override {}
+    void visit(std::string_view, i8&, const FieldMeta&) override {}
+    void visit(std::string_view, i16&, const FieldMeta&) override {}
+    void visit(std::string_view, i32&, const FieldMeta&) override {}
+    void visit(std::string_view, i64&, const FieldMeta&) override {}
+    void visit(std::string_view, u8&, const FieldMeta&) override {}
+    void visit(std::string_view, u16&, const FieldMeta&) override {}
+    void visit(std::string_view, u32&, const FieldMeta&) override {}
+    void visit(std::string_view, u64&, const FieldMeta&) override {}
+    void visit(std::string_view, float&, const FieldMeta&) override {}
+    void visit(std::string_view, double&, const FieldMeta&) override {}
+    void visit(std::string_view, std::string&, const FieldMeta&) override {}
+    bool begin_struct(std::string_view, const FieldMeta&) override { return true; }
+    void end_struct() override {}
+    bool begin_array(std::string_view, usize&, const FieldMeta&) override { return true; }
+    void end_array() override {}
+    bool begin_element(usize) override { return true; }
+    void end_element() override {}
+};
+
+struct Painted {
+    Vec2 at{1, 2};
+    Rect box{0, 0, 3, 4};
+    u8 kind = 1;
+    void reflect(Visitor& v) {
+        static const char* const names[] = {"a", "b"};
+        v.field("at", at);
+        v.field("box", box);
+        v.field("kind", kind, {.names = names, .name_count = 2});
+    }
+};
+
+void test_hints() {
+    Painted p;
+    HintCounter counter;
+    p.reflect(counter);
+    CHECK(counter.hints == 2 && counter.last == Widget::Rect);
+
+    // Data visitors are unaffected by hints and names.
+    Writer out;
+    save_reflected(p, out);
+    Painted q;
+    q.at = {};
+    q.kind = 0;
+    Reader in(out.bytes());
+    load_reflected(q, in);
+    CHECK(q.at.x == 1 && q.box.h == 4 && q.kind == 1);
+    const std::string json = to_json(p);
+    CHECK(json.find("\"at\"") != std::string::npos && json.find("\"kind\": 1") != std::string::npos);
+}
+
 /// A game that only implements reflect(): save/load must come for free.
 struct ReflectedGame final : Game {
     World world;
@@ -203,6 +264,7 @@ int main() {
     test_load_resizes_vectors();
     test_truncated_stream_is_safe();
     test_dump();
+    test_hints();
     test_default_game_save_load();
 
     if (failures == 0) {

@@ -19,7 +19,16 @@ struct FieldMeta {
     const char* tooltip = nullptr;
     bool transient = false; ///< Shown in the inspector but not saved or hashed.
     bool read_only = false;
+    /// Names for an integer or enum field: value 0 = names[0], drawn as a
+    /// dropdown. `{.names = kKinds, .name_count = 3}`.
+    const char* const* names = nullptr;
+    u32 name_count = 0;
 };
+
+/// How a struct wants to be shown. Engine types announce this themselves
+/// at the start of their reflect(), so a Color is a color picker wherever
+/// it appears and nobody has to annotate the field.
+enum class Widget : u8 { Default, Color, Vec2, Rect, Entity };
 
 /// A type that can describe its fields: `void reflect(rw::Visitor&)`.
 template <class T>
@@ -76,6 +85,10 @@ public:
         (void)element_size;
         return false;
     }
+
+    /// Called by a struct right after its begin_struct, to say how it wants
+    /// to be drawn. Data visitors ignore it.
+    virtual void hint(Widget) {}
 
     // ---- dispatch -----------------------------------------------------------
     template <class T> void field(std::string_view name, T& value, const FieldMeta& meta = {}) {

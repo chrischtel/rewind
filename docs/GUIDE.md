@@ -92,6 +92,18 @@ That one description drives:
 `transient` fields are shown but never saved, which is how the bounce sample
 exposes its gravity knob while keeping it out of the state on purpose.
 
+Property widgets: a struct announces how it wants to be drawn with
+`v.hint(Widget::Color)` at the top of its `reflect`, which `Color`, `Vec2`,
+`Rect` and `Entity` already do, so they appear as a color picker, compact
+float rows and entity links with a select button wherever they are used.
+Integer and enum fields with `{.names = kNames, .name_count = n}` draw as
+dropdowns. Data visitors ignore both.
+
+The editor's Entities panel lists every entity with its component names;
+selecting one shows its components in the Inspector, each editable and
+removable, with a dropdown to add more, and buttons to create, destroy,
+spawn a prefab or turn the selection into one.
+
 ## Entities and components
 
 `World` holds entities and dense, typed component pools. Components are
