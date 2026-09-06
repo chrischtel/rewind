@@ -30,6 +30,8 @@ Item heap_pop(std::vector<Item>& h) {
 u32 Graph::add_node(Vec2 pos, u32 tag) {
     nodes_.push_back(GraphNode{pos, true, tag});
     out_.emplace_back();
+    in_.emplace_back();
+    ++version_;
     return static_cast<u32>(nodes_.size() - 1);
 }
 
@@ -38,18 +40,51 @@ void Graph::remove_node(u32 node) {
     nodes_[node].alive = false;
     for (GraphEdge& e : edges_)
         if (e.from == node || e.to == node) e.enabled = false;
+    ++version_;
 }
 
 u32 Graph::add_edge(u32 from, u32 to, float cost, bool directed) {
     if (from >= nodes_.size() || to >= nodes_.size()) return kNone;
     const u32 id = static_cast<u32>(edges_.size());
     edges_.push_back(GraphEdge{from, to, cost, true});
+    penalties_.push_back(0);
     out_[from].push_back(id);
+    in_[to].push_back(id);
     if (!directed) {
         edges_.push_back(GraphEdge{to, from, cost, true});
+        penalties_.push_back(0);
         out_[to].push_back(id + 1);
+        in_[from].push_back(id + 1);
     }
+    ++version_;
     return id;
+}
+
+void Graph::remove_edge(u32 edge) {
+    if (edge < edges_.size()) {
+        edges_[edge].enabled = false;
+        ++version_;
+    }
+}
+
+void Graph::set_edge_cost(u32 edge, float cost) {
+    if (edge < edges_.size()) {
+        edges_[edge].cost = cost;
+        ++version_;
+    }
+}
+
+void Graph::set_edge_penalty(u32 edge, float penalty) {
+    if (edge >= edges_.size()) return;
+    if (penalties_.size() < edges_.size()) penalties_.resize(edges_.size(), 0.0f);
+    if (penalties_[edge] == penalty) return;
+    penalties_[edge] = penalty;
+    ++version_;
+}
+
+void Graph::clear_penalties() {
+    penalties_.assign(edges_.size(), 0.0f);
+    ++version_;
 }
 
 u32 Graph::connect(u32 from, u32 to, bool directed) {
@@ -61,6 +96,9 @@ void Graph::clear() {
     nodes_.clear();
     edges_.clear();
     out_.clear();
+    in_.clear();
+    penalties_.clear();
+    ++version_;
 }
 
 Graph Graph::grid(u32 w, u32 h, float cell, bool diagonals, const std::function<bool(u32, u32)>& passable, Vec2 origin) {
@@ -90,6 +128,11 @@ Graph Graph::grid(u32 w, u32 h, float cell, bool diagonals, const std::function<
 const std::vector<u32>& Graph::edges_from(u32 node) const {
     static const std::vector<u32> none;
     return node < out_.size() ? out_[node] : none;
+}
+
+const std::vector<u32>& Graph::edges_into(u32 node) const {
+    static const std::vector<u32> none;
+    return node < in_.size() ? in_[node] : none;
 }
 
 u32 Graph::find_edge(u32 from, u32 to) const {
@@ -137,7 +180,7 @@ GraphPath Graph::shortest_path(u32 from, u32 to, float heuristic_weight,
             const GraphEdge& e = edges_[ei];
             if (!e.enabled || !nodes_[e.to].alive || closed[e.to]) continue;
             if (passable && !passable(e.to)) continue;
-            const float cost = g[u] + std::max(e.cost, 0.0f);
+            const float cost = g[u] + std::max(edge_cost(ei), 0.0f);
             if (cost < g[e.to]) {
                 g[e.to] = cost;
                 came[e.to] = u;
@@ -167,7 +210,7 @@ std::vector<float> Graph::distances_from(u32 from, float max_cost) const {
         for (u32 ei : out_[it.node]) {
             const GraphEdge& e = edges_[ei];
             if (!e.enabled || !nodes_[e.to].alive) continue;
-            const float cost = dist[it.node] + std::max(e.cost, 0.0f);
+            const float cost = dist[it.node] + std::max(edge_cost(ei), 0.0f);
             if (cost <= max_cost && cost < dist[e.to]) {
                 dist[e.to] = cost;
                 heap_push(open, {cost, e.to});
@@ -196,8 +239,152 @@ std::vector<Vec2> Graph::positions(const GraphPath& path) const {
 
 void Graph::rebuild_adjacency() {
     out_.assign(nodes_.size(), {});
-    for (u32 i = 0; i < edges_.size(); ++i)
+    in_.assign(nodes_.size(), {});
+    for (u32 i = 0; i < edges_.size(); ++i) {
         if (edges_[i].from < nodes_.size()) out_[edges_[i].from].push_back(i);
+        if (edges_[i].to < nodes_.size()) in_[edges_[i].to].push_back(i);
+    }
+    penalties_.assign(edges_.size(), 0.0f);
+    ++version_;
+}
+
+GraphPath Graph::bidirectional_path(u32 from, u32 to, const std::function<bool(u32)>& passable) const {
+    GraphPath result;
+    if (!valid(from) || !valid(to)) return result;
+    if (passable && (!passable(from) || !passable(to))) return result;
+    if (from == to) {
+        result.found = true;
+        result.nodes.push_back(from);
+        return result;
+    }
+    const usize n = nodes_.size();
+    std::vector<float> gf(n, kInf), gb(n, kInf);
+    std::vector<u32> came_f(n, kNone), came_b(n, kNone); // came_b: next node towards the goal
+    std::vector<bool> closed_f(n, false), closed_b(n, false);
+    std::vector<Item> open_f, open_b;
+    gf[from] = 0;
+    gb[to] = 0;
+    heap_push(open_f, {0, from});
+    heap_push(open_b, {0, to});
+    float best = kInf;
+    u32 meet = kNone;
+    auto consider = [&](u32 node) {
+        if (gf[node] < kInf && gb[node] < kInf) {
+            const float total = gf[node] + gb[node];
+            if (total < best || (total == best && node < meet)) {
+                best = total;
+                meet = node;
+            }
+        }
+    };
+    while (!open_f.empty() && !open_b.empty()) {
+        // Stop once neither frontier can improve on the best meeting point.
+        if (open_f.front().cost + open_b.front().cost >= best) break;
+        // Alternate, smaller frontier first for balance.
+        if (open_f.size() <= open_b.size()) {
+            const Item it = heap_pop(open_f);
+            const u32 u = it.node;
+            if (closed_f[u]) continue;
+            closed_f[u] = true;
+            for (u32 ei : out_[u]) {
+                const GraphEdge& e = edges_[ei];
+                if (!e.enabled || !nodes_[e.to].alive || closed_f[e.to]) continue;
+                if (passable && !passable(e.to)) continue;
+                const float cost = gf[u] + std::max(edge_cost(ei), 0.0f);
+                if (cost < gf[e.to]) {
+                    gf[e.to] = cost;
+                    came_f[e.to] = u;
+                    heap_push(open_f, {cost, e.to});
+                    consider(e.to);
+                }
+            }
+        } else {
+            const Item it = heap_pop(open_b);
+            const u32 u = it.node;
+            if (closed_b[u]) continue;
+            closed_b[u] = true;
+            for (u32 ei : in_[u]) {
+                const GraphEdge& e = edges_[ei];
+                if (!e.enabled || !nodes_[e.from].alive || closed_b[e.from]) continue;
+                if (passable && !passable(e.from)) continue;
+                const float cost = gb[u] + std::max(edge_cost(ei), 0.0f);
+                if (cost < gb[e.from]) {
+                    gb[e.from] = cost;
+                    came_b[e.from] = u;
+                    heap_push(open_b, {cost, e.from});
+                    consider(e.from);
+                }
+            }
+        }
+    }
+    if (meet == kNone) return result;
+    result.found = true;
+    result.cost = best;
+    for (u32 cur = meet; cur != kNone; cur = came_f[cur]) result.nodes.push_back(cur);
+    std::reverse(result.nodes.begin(), result.nodes.end());
+    for (u32 cur = came_b[meet]; cur != kNone; cur = came_b[cur]) result.nodes.push_back(cur);
+    return result;
+}
+
+Graph::FlowField Graph::flow_to(u32 goal, float max_cost) const {
+    FlowField f;
+    f.goal = goal;
+    f.version = version_;
+    f.next_edge.assign(nodes_.size(), kNone);
+    f.distance.assign(nodes_.size(), kInf);
+    if (!valid(goal)) return f;
+    std::vector<bool> closed(nodes_.size(), false);
+    std::vector<Item> open;
+    f.distance[goal] = 0;
+    heap_push(open, {0, goal});
+    while (!open.empty()) {
+        const Item it = heap_pop(open);
+        if (closed[it.node]) continue;
+        closed[it.node] = true;
+        for (u32 ei : in_[it.node]) {
+            const GraphEdge& e = edges_[ei];
+            if (!e.enabled || !nodes_[e.from].alive) continue;
+            const float cost = f.distance[it.node] + std::max(edge_cost(ei), 0.0f);
+            if (cost <= max_cost && cost < f.distance[e.from]) {
+                f.distance[e.from] = cost;
+                f.next_edge[e.from] = ei;
+                heap_push(open, {cost, e.from});
+            }
+        }
+    }
+    return f;
+}
+
+// ---- route cache -------------------------------------------------------------------------
+
+const GraphPath* RouteCache::find(u32 from, u32 to, u64 version) {
+    auto it = entries_.find(key(from, to));
+    if (it == entries_.end() || it->second.version != version) {
+        ++misses_;
+        return nullptr;
+    }
+    ++hits_;
+    return &it->second.path;
+}
+
+const GraphPath& RouteCache::store(u32 from, u32 to, u64 version, GraphPath path) {
+    const u64 k = key(from, to);
+    if (!entries_.contains(k)) {
+        order_.push_back(k);
+        while (order_.size() > capacity_) {
+            entries_.erase(order_.front());
+            order_.pop_front();
+        }
+    }
+    Entry& e = entries_[k];
+    e.version = version;
+    e.path = std::move(path);
+    return e.path;
+}
+
+void RouteCache::clear() {
+    entries_.clear();
+    order_.clear();
 }
 
 } // namespace rw

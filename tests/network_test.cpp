@@ -203,7 +203,49 @@ void test_reflection() {
 
 } // namespace
 
+void test_penalties_and_staleness() {
+    // Two ways from west to east: straight through the centre, or around via north.
+    CurveNetwork net = make_cross();
+    const TrackRef west_in{0, 1}, east_out{1, 0};
+    Route direct = net.route(west_in, east_out);
+    CHECK(direct.found && direct.steps.size() == 3);
+    CHECK(!net.route_affected(direct));
+    const u64 v = net.version();
+
+    // Closing the east arm's outbound track leaves no other way there; a
+    // penalty on the connector's target makes the route pricier, not gone.
+    net.set_track_penalty(east_out, 500);
+    CHECK(net.version() > v);
+    CHECK(near(net.track_penalty(east_out), 500));
+    CHECK(net.route_affected(direct)); // one of its tracks changed after planning
+    Route pricey = net.route(west_in, east_out);
+    CHECK(pricey.found && pricey.cost > direct.cost + 400);
+    CHECK(!net.route_affected(pricey));
+
+    // A route that never touches the penalised track stays valid.
+    Route north = net.route(west_in, TrackRef{2, 0});
+    net.set_track_penalty(TrackRef{3, 0}, 50);
+    CHECK(!net.route_affected(north));
+    // A rebuild invalidates everything planned before it.
+    net.rebuild();
+    CHECK(net.route_affected(north) && net.route_affected(pricey));
+    CHECK(near(net.track_penalty(east_out), 500)); // penalties survive the rebuild
+    net.clear_track_penalties();
+    CHECK(near(net.route(west_in, east_out).cost, direct.cost, 1e-3f));
+
+    // The cache serves repeated questions; bidirectional gives the same answers.
+    net.cache().clear();
+    net.route(west_in, east_out);
+    net.route(west_in, east_out);
+    CHECK(net.cache().hits() >= 1);
+    net.bidirectional = true;
+    net.rebuild();
+    Route bi = net.route(west_in, east_out);
+    CHECK(bi.found && near(bi.cost, direct.cost, 1e-3f) && bi.steps.size() == 3);
+}
+
 int main() {
+    test_penalties_and_staleness();
     test_tracks_and_connectors();
     test_routing();
     test_links_and_changes();

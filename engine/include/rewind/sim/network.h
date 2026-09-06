@@ -124,6 +124,7 @@ struct RouteStep {
 struct Route {
     bool found = false;
     float cost = 0;
+    u64 version = 0;              ///< network version it was planned on
     std::vector<RouteStep> steps; ///< alternating tracks and connectors/changes, starting on the start track
 };
 
@@ -150,6 +151,18 @@ public:
     void set_connect_filter(ConnectFilter filter) { filter_ = std::move(filter); }
     /// Extra cost added to sideways track changes when routing.
     float change_penalty = 4;
+    /// Runtime cost added to entering a track (congestion, closure, wear).
+    /// Kept across rebuild(); not reflected: set it again from your state.
+    void set_track_penalty(TrackRef track, float penalty);
+    float track_penalty(TrackRef track) const;
+    void clear_track_penalties();
+    /// Bumps on rebuild() and on every penalty change.
+    u64 version() const { return version_; }
+    /// True when something a route runs over changed since it was planned:
+    /// the structure was rebuilt, or a penalty on one of its tracks moved.
+    bool route_affected(const Route& r) const;
+    /// Big graphs: meet-in-the-middle search instead of A* from one end.
+    bool bidirectional = false;
     /// Recompute the derived data after any edit. Cheap enough per edit.
     void rebuild();
     void clear();
@@ -199,6 +212,7 @@ public:
     TrackRef track_ref(u32 index) const { return index < track_refs_.size() ? track_refs_[index] : TrackRef{}; }
     usize track_count() const { return track_refs_.size(); }
     const Graph& route_graph() const { return route_graph_; }
+    RouteCache& cache() { return cache_; }
 
     void reflect(Visitor& v) {
         v.field("nodes", nodes_);
@@ -214,6 +228,7 @@ private:
     void build_links();
     void build_route_graph();
     void build_conflicts();
+    void apply_penalties();
     Path connector_path(TrackRef from, TrackRef to) const;
 
     std::vector<NetNode> nodes_;
@@ -230,6 +245,11 @@ private:
     std::vector<Conflict> conflicts_;
     Graph route_graph_;                    ///< nodes = tracks; edges = connectors and links
     std::vector<i32> route_edge_kind_;     ///< per graph edge: >= 0 connector index, < 0 -(link index + 1)
+    std::vector<std::pair<TrackRef, float>> penalties_;
+    std::vector<u64> track_changed_;       ///< per track index: version of its last penalty change
+    u64 version_ = 1;
+    u64 rebuilt_version_ = 1;
+    mutable RouteCache cache_{512};
 };
 
 } // namespace rw

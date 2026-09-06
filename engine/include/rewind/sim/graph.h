@@ -10,7 +10,9 @@
 #include "rewind/core/types.h"
 #include "rewind/sim/reflect.h"
 
+#include <deque>
 #include <functional>
+#include <unordered_map>
 #include <vector>
 
 namespace rw {
@@ -59,9 +61,20 @@ public:
     u32 add_edge(u32 from, u32 to, float cost, bool directed = false);
     /// Edge cost from the node positions.
     u32 connect(u32 from, u32 to, bool directed = false);
-    void remove_edge(u32 edge) { if (edge < edges_.size()) edges_[edge].enabled = false; }
-    void set_edge_cost(u32 edge, float cost) { if (edge < edges_.size()) edges_[edge].cost = cost; }
+    void remove_edge(u32 edge);
+    void set_edge_cost(u32 edge, float cost);
     void clear();
+
+    /// Runtime extra on top of the authored cost (congestion, closures,
+    /// wear). Not reflected: derived from the simulation, set it again on
+    /// load. Searches use cost + penalty.
+    void set_edge_penalty(u32 edge, float penalty);
+    float edge_penalty(u32 edge) const { return edge < penalties_.size() ? penalties_[edge] : 0.0f; }
+    void clear_penalties();
+    float edge_cost(u32 edge) const { return edges_[edge].cost + edge_penalty(edge); }
+    /// Bumps on every change to nodes, edges, costs or penalties, so cached
+    /// routes can tell when they went stale.
+    u64 version() const { return version_; }
 
     /// Regular grid of w x h nodes spaced `cell` apart, 4- or 8-connected.
     /// `passable(x, y)` (optional) leaves cells out; node id = y * w + x.
@@ -77,6 +90,8 @@ public:
     bool valid(u32 id) const { return id < nodes_.size() && nodes_[id].alive; }
     /// Edge indices leaving `node` (including disabled ones).
     const std::vector<u32>& edges_from(u32 node) const;
+    /// Edge indices arriving at `node` (including disabled ones).
+    const std::vector<u32>& edges_into(u32 node) const;
     /// Enabled edge from a to b, or kNone.
     u32 find_edge(u32 from, u32 to) const;
     u32 nearest_node(Vec2 p, float max_distance = 1e30f) const;
@@ -86,6 +101,23 @@ public:
     /// plain Dijkstra with weight 0. Optional `passable(node)` filter.
     GraphPath shortest_path(u32 from, u32 to, float heuristic_weight = 1,
                             const std::function<bool(u32)>& passable = nullptr) const;
+    /// Bidirectional Dijkstra: meets in the middle, so long routes on big
+    /// graphs explore far less than shortest_path(). Same result, same
+    /// tie-breaking rules.
+    GraphPath bidirectional_path(u32 from, u32 to, const std::function<bool(u32)>& passable = nullptr) const;
+
+    /// One search that answers "which way to `goal`" for every node at
+    /// once: the edge to take next and the remaining cost. For crowds
+    /// heading to the same place, or for re-routing without a new search.
+    struct FlowField {
+        u32 goal = kNone;
+        u64 version = 0;
+        std::vector<u32> next_edge; ///< per node: edge index to take, kNone when unreachable (or at the goal)
+        std::vector<float> distance; ///< per node: cost to the goal, 1e30 when unreachable
+        bool reachable(u32 node) const { return node < distance.size() && distance[node] < 1e30f; }
+    };
+    FlowField flow_to(u32 goal, float max_cost = 1e30f) const;
+
     /// Dijkstra flood: cost to reach every node from `from` (1e30 = unreachable), stopping at `max_cost`.
     std::vector<float> distances_from(u32 from, float max_cost = 1e30f) const;
     /// Nodes reachable within `max_cost`, nearest first.
@@ -105,6 +137,41 @@ private:
     std::vector<GraphNode> nodes_;
     std::vector<GraphEdge> edges_;
     std::vector<std::vector<u32>> out_; ///< per node: edge indices; derived
+    std::vector<std::vector<u32>> in_;
+    std::vector<float> penalties_;
+    u64 version_ = 1;
+};
+
+/// Remembers routes by (from, to) and the graph version they were found
+/// on. Ask before searching; a stale or missing entry means search and
+/// store. Fixed capacity, oldest entries go first.
+class RouteCache {
+public:
+    explicit RouteCache(usize capacity = 512) : capacity_(capacity) {}
+
+    const GraphPath* find(u32 from, u32 to, u64 version);
+    const GraphPath& store(u32 from, u32 to, u64 version, GraphPath path);
+    /// find(), else search with `compute` and store.
+    template <class F> const GraphPath& get(u32 from, u32 to, u64 version, F&& compute) {
+        if (const GraphPath* hit = find(from, to, version)) return *hit;
+        return store(from, to, version, compute());
+    }
+    void clear();
+    usize size() const { return entries_.size(); }
+    u32 hits() const { return hits_; }
+    u32 misses() const { return misses_; }
+
+private:
+    struct Entry {
+        u64 version;
+        GraphPath path;
+    };
+    static u64 key(u32 from, u32 to) { return (static_cast<u64>(from) << 32) | to; }
+    usize capacity_;
+    std::unordered_map<u64, Entry> entries_;
+    std::deque<u64> order_;
+    u32 hits_ = 0;
+    u32 misses_ = 0;
 };
 
 } // namespace rw

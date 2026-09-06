@@ -117,6 +117,57 @@ void CurveNetwork::rebuild() {
     build_links();
     build_route_graph();
     build_conflicts();
+    ++version_;
+    rebuilt_version_ = version_;
+    track_changed_.assign(track_refs_.size(), version_);
+    apply_penalties();
+    cache_.clear();
+}
+
+void CurveNetwork::apply_penalties() {
+    for (const auto& [track, penalty] : penalties_) {
+        const u32 i = track_index(track);
+        if (i == kNone) continue;
+        for (u32 ge : route_graph_.edges_into(i)) route_graph_.set_edge_penalty(ge, penalty);
+    }
+}
+
+void CurveNetwork::set_track_penalty(TrackRef track, float penalty) {
+    bool found = false;
+    for (auto& [t, p] : penalties_)
+        if (t == track) {
+            if (p == penalty) return;
+            p = penalty;
+            found = true;
+        }
+    if (!found) penalties_.emplace_back(track, penalty);
+    const u32 i = track_index(track);
+    ++version_;
+    if (i == kNone) return;
+    for (u32 ge : route_graph_.edges_into(i)) route_graph_.set_edge_penalty(ge, penalty);
+    track_changed_[i] = version_;
+}
+
+float CurveNetwork::track_penalty(TrackRef track) const {
+    for (const auto& [t, p] : penalties_)
+        if (t == track) return p;
+    return 0.0f;
+}
+
+void CurveNetwork::clear_track_penalties() {
+    if (penalties_.empty()) return;
+    penalties_.clear();
+    route_graph_.clear_penalties();
+    ++version_;
+    track_changed_.assign(track_refs_.size(), version_);
+}
+
+bool CurveNetwork::route_affected(const Route& r) const {
+    if (!r.found) return true;
+    if (r.version < rebuilt_version_) return true;
+    for (const RouteStep& s : r.steps)
+        if (s.kind == RouteStep::Kind::Track && s.index < track_changed_.size() && track_changed_[s.index] > r.version) return true;
+    return false;
 }
 
 void CurveNetwork::build_tracks() {
@@ -352,6 +403,7 @@ bool CurveNetwork::locate(Vec2 p, Location& out, float max_distance) const {
 
 Route CurveNetwork::route(TrackRef from, TrackRef to) const {
     Route r;
+    r.version = version_;
     const u32 a = track_index(from), b = track_index(to);
     if (a == kNone || b == kNone) return r;
     r.steps.push_back(RouteStep{RouteStep::Kind::Track, a});
@@ -359,7 +411,9 @@ Route CurveNetwork::route(TrackRef from, TrackRef to) const {
         r.found = true;
         return r;
     }
-    const GraphPath gp = route_graph_.shortest_path(a, b);
+    const GraphPath gp = cache_.get(a, b, version_, [&] {
+        return bidirectional ? route_graph_.bidirectional_path(a, b) : route_graph_.shortest_path(a, b);
+    });
     if (!gp.found) return r;
     r.found = true;
     r.cost = gp.cost;

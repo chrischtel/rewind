@@ -287,7 +287,15 @@ fsm.tick(dt); if (fsm.is(Mood::Idle) && fsm.time_in_state > 2) fsm.change(Mood::
 ```
 
 Graph searches break ties by node id, so every machine finds the same
-route. `seek`, `flee`, `pursue`, `keep_distance`, `separation` and `limit`
+route. For many agents on big graphs: `set_edge_penalty(edge, x)` adds
+runtime cost (congestion, closures) without touching the authored cost
+and bumps `version()`; `bidirectional_path()` meets in the middle;
+`flow_to(goal)` answers "which edge next" for every node in one search,
+so a crowd heading to the same place needs no per-agent search;
+`RouteCache` hands back routes until the version moves. A
+`CurveNetwork` wraps the same ideas as `set_track_penalty`,
+`route_affected(route)` (re-plan only when a track on the route changed
+or the network was rebuilt) and a built-in cache. `seek`, `flee`, `pursue`, `keep_distance`, `separation` and `limit`
 are the other steering helpers. The state machine is data only (current,
 previous, time in state, transitions, a one-tick `entered` flag); the
 logic is a switch in your tick, and the names show up in the inspector.

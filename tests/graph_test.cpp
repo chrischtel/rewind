@@ -130,7 +130,78 @@ void test_reflection() {
 
 } // namespace
 
+void test_bidirectional_and_penalties() {
+    // A grid with varied costs: both searches must agree everywhere.
+    Graph g = Graph::grid(12, 9, 1, true);
+    u64 seed = 12345;
+    auto rnd = [&]() {
+        seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+        return static_cast<float>((seed >> 33) % 100) / 25.0f + 0.5f;
+    };
+    for (u32 e = 0; e < g.edge_count(); ++e) g.set_edge_cost(e, rnd());
+    int compared = 0;
+    for (u32 from = 0; from < 108; from += 7)
+        for (u32 to = 5; to < 108; to += 11) {
+            const GraphPath a = g.shortest_path(from, to, 0);
+            const GraphPath b = g.bidirectional_path(from, to);
+            CHECK(a.found == b.found);
+            if (a.found) CHECK(near(a.cost, b.cost, 1e-3f));
+            CHECK(b.nodes.front() == from && b.nodes.back() == to);
+            // The returned node chain really costs what it claims.
+            float sum = 0;
+            for (usize i = 0; i + 1 < b.nodes.size(); ++i) sum += g.edge_cost(g.find_edge(b.nodes[i], b.nodes[i + 1]));
+            CHECK(near(sum, b.cost, 1e-3f));
+            ++compared;
+        }
+    CHECK(compared > 100);
+    CHECK(g.bidirectional_path(3, 3).found && g.bidirectional_path(3, 3).nodes.size() == 1);
+    CHECK(!g.bidirectional_path(3, 999).found);
+
+    // Penalties steer routes without touching the authored cost, and bump the version.
+    Graph line = Graph::grid(3, 2, 1); // two rows: 0-1-2 over 3-4-5
+    const u64 before = line.version();
+    const u32 e01 = line.find_edge(0, 1);
+    line.set_edge_penalty(e01, 10);
+    CHECK(line.version() > before);
+    CHECK(near(line.edge(e01).cost, 1) && near(line.edge_cost(e01), 11));
+    GraphPath around = line.shortest_path(0, 2, 0);
+    CHECK(around.found && around.nodes.size() == 5); // down, across, up
+    line.clear_penalties();
+    CHECK(line.shortest_path(0, 2, 0).nodes.size() == 3);
+    line.set_edge_penalty(e01, 10);
+    CHECK(line.bidirectional_path(0, 2).nodes.size() == 5);
+
+    // Flow field: every node knows its next edge towards the goal.
+    Graph::FlowField f = g.flow_to(107);
+    CHECK(f.goal == 107 && f.reachable(0) && !f.reachable(999));
+    u32 at = 0;
+    int steps = 0;
+    while (at != 107 && steps++ < 200) {
+        const u32 e = f.next_edge[at];
+        CHECK(e != Graph::kNone);
+        if (e == Graph::kNone) break;
+        at = g.edge(e).to;
+    }
+    CHECK(at == 107);
+    CHECK(near(f.distance[0], g.shortest_path(0, 107, 0).cost, 1e-3f));
+    CHECK(f.next_edge[107] == Graph::kNone && near(f.distance[107], 0));
+    Graph::FlowField capped = g.flow_to(107, 1.0f);
+    CHECK(!capped.reachable(0));
+
+    // The cache hands back stored routes until the version moves.
+    RouteCache cache(2);
+    CHECK(cache.find(0, 5, g.version()) == nullptr && cache.misses() == 1);
+    const GraphPath& stored = cache.get(0, 5, g.version(), [&] { return g.shortest_path(0, 5); });
+    CHECK(stored.found && cache.size() == 1);
+    CHECK(cache.find(0, 5, g.version()) != nullptr && cache.hits() == 1);
+    CHECK(cache.find(0, 5, g.version() + 1) == nullptr); // stale
+    cache.get(1, 5, g.version(), [&] { return g.shortest_path(1, 5); });
+    cache.get(2, 5, g.version(), [&] { return g.shortest_path(2, 5); }); // evicts (0,5)
+    CHECK(cache.size() == 2 && cache.find(0, 5, g.version()) == nullptr);
+}
+
 int main() {
+    test_bidirectional_and_penalties();
     test_basic_paths();
     test_grid();
     test_flood();

@@ -168,8 +168,11 @@ knows what a car is. Decided 2026-09-06.
    route planning to a concatenated Path. Reflects; derived data rebuilds.
    Debug drawing in `render/network_draw.h`.~~ Done: `CurveNetwork`,
    `draw_network`, `network_test`.
-2. Routing at scale: edge-based costs with dynamic updates and re-route,
-   route cache, bidirectional A*.
+2. ~~Routing at scale: edge-based costs with dynamic updates and re-route,
+   route cache, bidirectional A*.~~ Done: `Graph` penalties and version,
+   `bidirectional_path`, `flow_to` (next-edge field for crowds),
+   `RouteCache`; `CurveNetwork` track penalties surviving rebuilds,
+   `route_affected` for re-planning, built-in cache, `bidirectional` flag.
 3. Network agents: follow a track with spacing to the agent ahead (track
    occupancy), change tracks along a transition curve, wait at conflict
    zones and signals (state machines), deterministic and reflected.
