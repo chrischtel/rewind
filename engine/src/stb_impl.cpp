@@ -9,6 +9,8 @@
 #pragma warning(disable : 4244 4996 4100 4456 4457 4505)
 #endif
 #include <stb_image.h>
+#define STB_TRUETYPE_IMPLEMENTATION
+#include <stb_truetype.h>
 #if defined(_MSC_VER)
 #pragma warning(pop)
 #endif

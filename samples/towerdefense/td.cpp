@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -31,9 +32,9 @@ constexpr int kTile = 32;
 constexpr int kCols = 20;
 constexpr int kRows = 11;
 constexpr int kViewW = kCols * kTile;              // 640
-constexpr int kMapTop = 10;                        // HUD strip above the map
+constexpr int kMapTop = 12;                        // HUD strip above the map
 constexpr int kMapBottom = kMapTop + kRows * kTile; // 362
-constexpr int kViewH = kMapBottom + 22;            // tower bar below the map: 384, scales 2x into 1280x768
+constexpr int kViewH = kMapBottom + 20;            // tower bar below the map: 384, scales 2x into 1280x768
 
 // '#' path, '.' buildable, 'S' spawn, 'E' exit, '~' water (not buildable).
 const std::vector<std::string> kMap = {
@@ -206,7 +207,18 @@ public:
         cfg.timeline.history_ticks = 60 * 180; // three minutes: enough to take back a whole wave
     }
 
-    void load_assets(Renderer2D&, Audio& audio) override {
+    void load_assets(Renderer2D& r, Audio& audio) override {
+        // A real font for the HUD when the system has one; the pixel font otherwise.
+        const char* fonts[] = {"C:/Windows/Fonts/consolab.ttf", "C:/Windows/Fonts/consola.ttf",
+                               "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf"};
+        font_ = nullptr;
+        for (const char* f : fonts) {
+            if (!std::filesystem::exists(f)) continue;
+            font_ = r.load_font(f, 12.0f);
+            title_font_ = r.load_font(f, 28.0f);
+            if (font_ && font_->ok) break;
+        }
+
         auto make = [&](const char* name, float sec, float f0, float f1, float noise, u32 seed) {
             const std::vector<float> s = synth(sec, f0, f1, noise, seed);
             return audio.create_sound(name, 48000, 1, s.data(), s.size());
@@ -641,9 +653,25 @@ public:
 
     void draw_hud(Renderer2D& r) {
         char buf[160];
+        const bool ttf = font_ && font_->ok;
+        auto text = [&](float x, float y, const char* s, Color c) {
+            if (ttf) r.draw_text(*font_, x, y - 2, s, c);
+            else r.draw_text(x, y, s, c);
+        };
+        auto text_width = [&](const char* s) {
+            return ttf ? r.measure_text(*font_, s).x : 6.0f * static_cast<float>(std::strlen(s));
+        };
+
         r.fill_rect(0, 0, kViewW, kMapTop, rgb(14, 16, 20));
         std::snprintf(buf, sizeof buf, "GOLD %d   LIVES %d   WAVE %d   SCORE %d", gold_, lives_, wave_, score_);
-        r.draw_text(4, 1, buf, rgb(255, 230, 140));
+        text(4, 1, buf, rgb(255, 230, 140));
+        if (!wave_active_) {
+            std::snprintf(buf, sizeof buf, "next wave in %d   Enter: call early +%d gold", static_cast<int>(countdown_) + 1,
+                          static_cast<int>(countdown_) * 3);
+        } else {
+            std::snprintf(buf, sizeof buf, "wave %d   %d left to spawn", wave_, to_spawn_);
+        }
+        text(kViewW - text_width(buf) - 4, 1, buf, rgb(200, 220, 255));
 
         // Bottom strip: tower selection on the left, wave status on the right.
         r.fill_rect(0, kMapBottom, kViewW, kViewH - kMapBottom, rgb(14, 16, 20));
@@ -652,27 +680,30 @@ public:
         for (int i = 0; i < kTowerKinds; ++i) {
             const TowerSpec& s = kTowers[i];
             std::snprintf(buf, sizeof buf, "%s %s %d", i == selected_ ? ">" : " ", s.name, s.cost);
-            const float w = 6.0f * static_cast<float>(std::strlen(buf)) + 4;
+            const float w = text_width(buf) + 4;
             if (i == selected_) r.fill_rect(x - 2, y - 2, w, 12, rgba(255, 255, 255, 40));
             r.fill_rect(x, y + 10, w - 4, 1, s.color);
-            r.draw_text(x, y, buf, i == selected_ ? rgb(255, 255, 255) : s.color);
+            text(x, y, buf, i == selected_ ? rgb(255, 255, 255) : s.color);
             x += w + 8;
         }
-        r.draw_text(x + 6, y, "X: NEXT TOWER   RIGHT CLICK: SELL", rgb(110, 120, 140));
-        if (!wave_active_) {
-            std::snprintf(buf, sizeof buf, "NEXT WAVE IN %d   ENTER: CALL EARLY +%d GOLD", static_cast<int>(countdown_) + 1,
-                          static_cast<int>(countdown_) * 3);
-        } else {
-            std::snprintf(buf, sizeof buf, "WAVE %d   %d LEFT TO SPAWN", wave_, to_spawn_);
-        }
-        r.draw_text(kViewW - 6.0f * static_cast<float>(std::strlen(buf)) - 4, y, buf, rgb(200, 220, 255));
+        text(x + 6, y, "X: next tower   left: build / upgrade   right: sell   F4: rewind", rgb(110, 120, 140));
 
         if (game_over_) {
             r.fill_rect(0, 0, kViewW, kViewH, rgba(0, 0, 0, 150));
-            r.draw_text(kViewW * 0.5f - 27 * 6, kViewH * 0.5f - 24, "THE GATE HAS FALLEN", rgb(255, 90, 90), 3);
-            r.draw_text(kViewW * 0.5f - 24 * 6, kViewH * 0.5f + 12, "HOLD F4 TO REWIND TIME AND TRY AGAIN", rgb(255, 255, 255), 2);
-            std::snprintf(buf, sizeof buf, "WAVE %d   SCORE %d", wave_, score_);
-            r.draw_text(kViewW * 0.5f - 9 * 6, kViewH * 0.5f + 34, buf, rgb(255, 230, 140), 2);
+            if (title_font_ && title_font_->ok) {
+                const char* line1 = "The gate has fallen";
+                const char* line2 = "Hold F4 to rewind time and try again";
+                std::snprintf(buf, sizeof buf, "Wave %d   Score %d", wave_, score_);
+                const float cx = kViewW * 0.5f;
+                r.draw_text(*title_font_, cx - r.measure_text(*title_font_, line1).x * 0.5f, kViewH * 0.5f - 40, line1, rgb(255, 90, 90));
+                r.draw_text(*font_, cx - r.measure_text(*font_, line2).x * 0.5f, kViewH * 0.5f + 4, line2, rgb(255, 255, 255));
+                r.draw_text(*font_, cx - r.measure_text(*font_, buf).x * 0.5f, kViewH * 0.5f + 22, buf, rgb(255, 230, 140));
+            } else {
+                r.draw_text(kViewW * 0.5f - 27 * 6, kViewH * 0.5f - 24, "THE GATE HAS FALLEN", rgb(255, 90, 90), 3);
+                r.draw_text(kViewW * 0.5f - 24 * 6, kViewH * 0.5f + 12, "HOLD F4 TO REWIND TIME AND TRY AGAIN", rgb(255, 255, 255), 2);
+                std::snprintf(buf, sizeof buf, "WAVE %d   SCORE %d", wave_, score_);
+                r.draw_text(kViewW * 0.5f - 9 * 6, kViewH * 0.5f + 34, buf, rgb(255, 230, 140), 2);
+            }
         }
     }
 
@@ -756,6 +787,8 @@ private:
     std::vector<Vec2> waypoints_;
 
     // Assets.
+    Font* font_ = nullptr;
+    Font* title_font_ = nullptr;
     Sound* snd_shoot_ = nullptr;
     Sound* snd_hit_ = nullptr;
     Sound* snd_kill_ = nullptr;

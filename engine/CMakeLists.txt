@@ -54,6 +54,7 @@ add_library(rewind SHARED
     src/audio.cpp
     src/debug_font.cpp
     src/file_watcher.cpp
+    src/font.cpp
     src/game_module.cpp
     src/inspector.cpp
     src/log.cpp

@@ -18,6 +18,7 @@
 #include "rewind/net/session.h"
 #include "rewind/net/transport.h"
 #include "rewind/net/udp.h"
+#include "rewind/render/font.h"
 #include "rewind/render/material.h"
 #include "rewind/render/renderer2d.h"
 #include "rewind/render/shader_cross.h"

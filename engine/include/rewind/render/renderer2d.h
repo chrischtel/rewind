@@ -14,6 +14,7 @@ struct ImDrawData;
 namespace rw {
 
 class FileWatcher;
+struct Font;
 struct Material;
 
 struct Color {
@@ -90,6 +91,19 @@ public:
     /// Built-in 5x7 pixel font, 6 px advance, 8 px line height, times `scale`.
     /// Screen space, not affected by the camera.
     void draw_text(float x, float y, const char* text, Color c, int scale = 1);
+
+    // ---- fonts --------------------------------------------------------------
+    /// Load a TrueType or OpenType file at a pixel size. Cached by path and
+    /// size, re-baked when the file changes. Returns a font with ok == false
+    /// (and draws nothing) when the file cannot be read.
+    Font* load_font(const std::string& path, float pixel_size);
+
+    /// Draw UTF-8 text with (x, y) at the top-left of the first line. Screen
+    /// space by default; `world` applies the camera. `scale` multiplies the
+    /// baked size (use 1 for crisp text and bake the size you need).
+    void draw_text(const Font& font, float x, float y, std::string_view text, Color c, float scale = 1,
+                   bool world = false);
+    Vec2 measure_text(const Font& font, std::string_view text, float scale = 1) const;
 
     // ---- textures -----------------------------------------------------------
     /// Load a PNG. Cached by path: calling again returns the same texture,

@@ -289,6 +289,17 @@ int main(int argc, char** argv) {
 
     config.embedded = true;
     config.title = "Rewind Editor  -  " + config.title;
+    if (config.ui_font.empty()) {
+        // A real UI font makes the editor read like a tool. Use the system's if there is one.
+        const char* candidates[] = {"C:/Windows/Fonts/segoeui.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                                    "/System/Library/Fonts/Supplemental/Arial.ttf"};
+        for (const char* c : candidates)
+            if (fs::exists(c, ec)) {
+                config.ui_font = c;
+                config.ui_font_size = 17.0f;
+                break;
+            }
+    }
     config.width = std::max(config.width + 480, 1280);
     config.height = std::max(config.height + 320, 800);
 

@@ -152,7 +152,14 @@ uploaded once per frame, and one render pass per target.
   texture. Shapes go through a 1x1 white texture, so a whole frame of tiles,
   sprites, shapes and text is usually a handful of draw calls. The overlay
   shows the count.
-- `draw_text` uses a built-in 5x7 pixel font. No font file needed.
+- Text: `draw_text` with no font uses the built-in 5x7 pixel font.
+  `load_font("ui.ttf", 16)` bakes a TrueType or OpenType file at that pixel
+  size into an atlas with kerning; `draw_text(font, x, y, "Héllo")` draws
+  UTF-8 through the same batched pipeline, and `measure_text` sizes it for
+  layout. Fonts are cached by path and size and re-baked when the file
+  changes. Small sizes sample nearest for crisp pixel fonts, larger ones
+  smooth. The overlay and editor take a UI font through `ui_font` in the
+  app config or project file.
 - Render targets are ordinary textures: `create_render_target()` then
   `set_target()`. Pixel mode is built on this.
 
@@ -477,6 +484,7 @@ engine/include/rewind/
   sim/serialize.h     Writer / Reader / hash_bytes
   sim/rng.h           PCG32, trivially copyable
   render/renderer2d.h batched GPU drawing: shapes, text, textures, sprites, targets, materials
+  render/font.h       FontAtlas baking, UTF-8, Font
   render/material.h   Material: a custom fragment shader
   render/shader_cross.h SPIR-V reflection and SPIR-V -> HLSL
   render/sprite.h     SpriteSheet, tags, slices, Aseprite loading
@@ -496,7 +504,7 @@ samples/bounce/       shapes, entities, rewind, desync detector
 samples/pixels/       sprites, animation, tilemap, sound, pixel mode, gamepad
 samples/duel/         two players over rollback netcode
 samples/towerdefense/ Rewind Defense: waves, towers, economy, mouse input
-tests/                headless tests: core, timeline, assets, world, reflect, ecs, net, shader, hot reload
+tests/                headless tests: core, timeline, assets, world, reflect, ecs, net, shader, text, hot reload
 ```
 
 The engine builds as a shared library so that SDL, ImGui, and the engine

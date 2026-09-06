@@ -57,6 +57,11 @@ struct AppConfig {
     /// the callback set with App::set_ui_callback().
     bool embedded = false;
 
+    /// TrueType file for the debug overlay and editor UI; empty keeps ImGui's
+    /// built-in font. Sized in pixels.
+    std::string ui_font;
+    float ui_font_size = 16.0f;
+
     TimelineConfig timeline{};
 
     /// Project settings: everything a project file may override.
@@ -74,6 +79,8 @@ struct AppConfig {
         v.field("render_height", render_height, {.min = 0, .max = 4096});
         v.field("integer_scale", integer_scale);
         v.field("pixel_art", pixel_art);
+        v.field("ui_font", ui_font, {.tooltip = "TrueType file for the overlay and editor, empty = built-in"});
+        v.field("ui_font_size", ui_font_size, {.min = 8, .max = 40});
         v.field("timeline", timeline);
     }
 };

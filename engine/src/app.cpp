@@ -2,6 +2,7 @@
 #include "rewind/core/log.h"
 
 #include "rewind/core/game_module.h"
+#include "rewind/core/paths.h"
 #include "rewind/core/profiler.h"
 #include "rewind/net/session.h"
 #include "rewind/render/renderer2d.h"
@@ -96,6 +97,11 @@ bool App::init_platform() {
     if (cfg_.embedded) {
         io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
         time_.show_overlay = false;
+    }
+    if (!cfg_.ui_font.empty()) {
+        const std::string file = resolve_asset_path(cfg_.ui_font);
+        if (!io.Fonts->AddFontFromFileTTF(file.c_str(), cfg_.ui_font_size))
+            RW_LOG_WARN("app", "ui font %s could not be loaded, using the built-in one", cfg_.ui_font.c_str());
     }
     ImGui::StyleColorsDark();
     ImGui_ImplSDL3_InitForSDLGPU(window_);

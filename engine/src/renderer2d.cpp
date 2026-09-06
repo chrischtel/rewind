@@ -4,6 +4,7 @@
 #include "rewind/core/file_watcher.h"
 #include "rewind/core/log.h"
 #include "rewind/core/paths.h"
+#include "rewind/render/font.h"
 #include "rewind/render/material.h"
 #include "rewind/render/shader_cross.h"
 #include "rewind_shaders_spv.h"
@@ -169,6 +170,7 @@ struct Renderer2D::Impl {
 
     std::unordered_map<std::string, std::unique_ptr<Texture>> textures;
     std::unordered_map<std::string, std::unique_ptr<Material>> materials;
+    std::unordered_map<std::string, std::unique_ptr<Font>> fonts;
     std::unordered_set<std::string> stale_files; ///< loaded from disk, changed since
     std::unordered_map<std::string, std::string> aliases; ///< resolved path -> name the game used
     FileWatcher* watcher = nullptr;
@@ -879,6 +881,99 @@ void Renderer2D::draw_text(float x, float y, const char* text, Color c, int scal
             im.push_rect(*im.font, pen_x, pen_y, cw, ch, u0, v0, u0 + u_cell, v0 + v_cell, c);
         }
         pen_x += cw;
+    }
+}
+
+
+// ---- fonts ----------------------------------------------------------------------
+
+Font* Renderer2D::load_font(const std::string& path, float pixel_size) {
+    Impl& im = *impl_;
+    const std::string key = path + "@" + std::to_string(static_cast<int>(pixel_size * 100));
+    auto it = im.fonts.find(key);
+    Font* font = it == im.fonts.end() ? nullptr : it->second.get();
+    const std::string file = resolve_asset_path(path);
+    const bool stale = im.stale_files.erase(path) > 0 || im.stale_files.erase(file) > 0;
+    if (font && !stale) return font;
+
+    if (!font) {
+        auto owned = std::make_unique<Font>();
+        owned->path = path;
+        font = owned.get();
+        im.fonts[key] = std::move(owned);
+    }
+
+    std::vector<u8> ttf;
+    std::string error;
+    if (!read_file(file, ttf)) {
+        RW_LOG_ERROR("gpu", "load_font(%s): could not read the file", path.c_str());
+        return font;
+    }
+    FontAtlas atlas;
+    if (!bake_font(ttf.data(), ttf.size(), pixel_size, atlas, &error)) {
+        RW_LOG_ERROR("gpu", "load_font(%s): %s", path.c_str(), error.c_str());
+        return font;
+    }
+
+    // Coverage to white RGBA so the sprite pipeline tints it with the vertex colour.
+    std::vector<u8> rgba(static_cast<usize>(atlas.width) * atlas.height * 4);
+    for (usize i = 0; i < atlas.alpha.size(); ++i) {
+        rgba[i * 4 + 0] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = 255;
+        rgba[i * 4 + 3] = atlas.alpha[i];
+    }
+    Texture* texture = create_texture("__font:" + key, atlas.width, atlas.height, rgba.data());
+    if (!texture) return font;
+    // Small sizes read as pixel fonts and want hard edges; larger ones look better smoothed.
+    texture->nearest = pixel_art_ && pixel_size <= 24;
+
+    font->atlas = std::move(atlas);
+    font->texture = texture;
+    font->ok = true;
+    track_file(file);
+    if (file != path) im.aliases[file] = path;
+    RW_LOG_INFO("gpu", "font %s at %.0f px: %zu glyphs, %dx%d atlas", path.c_str(), pixel_size,
+                font->atlas.glyphs.size(), font->atlas.width, font->atlas.height);
+    return font;
+}
+
+Vec2 Renderer2D::measure_text(const Font& font, std::string_view text, float scale) const {
+    return font.atlas.measure(text, scale);
+}
+
+void Renderer2D::draw_text(const Font& font, float x, float y, std::string_view text, Color c, float scale,
+                           bool world) {
+    Impl& im = *impl_;
+    if (!im.frame_active || !font.ok || !font.texture) return;
+    const FontAtlas& a = font.atlas;
+    const float zoom = world ? camera_.zoom : 1.0f;
+    const float s = scale * zoom;
+    const float origin_x = world ? sx(x) : x;
+    const float origin_y = world ? sy(y) : y;
+    const float tw = static_cast<float>(font.texture->width);
+    const float th = static_cast<float>(font.texture->height);
+
+    float pen_x = origin_x;
+    float baseline = origin_y + a.ascent * s;
+    u32 prev = 0;
+    for (usize i = 0; i < text.size();) {
+        const u32 cp = utf8_next(text, i);
+        if (cp == '\n') {
+            pen_x = origin_x;
+            baseline += a.line_height * s;
+            prev = 0;
+            continue;
+        }
+        const Glyph* g = a.find(cp);
+        if (!g) continue;
+        pen_x += a.kern(prev, cp) * s;
+        if (g->src.w > 0 && g->src.h > 0) {
+            const float gx = std::floor(pen_x + g->x_off * s);
+            const float gy = std::floor(baseline + g->y_off * s);
+            im.push_rect(*font.texture, gx, gy, g->src.w * s, g->src.h * s, g->src.x / tw, g->src.y / th,
+                         (g->src.x + g->src.w) / tw, (g->src.y + g->src.h) / th, c);
+        }
+        pen_x += g->advance * s;
+        prev = cp;
     }
 }
 
