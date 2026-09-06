@@ -19,6 +19,7 @@
 #include "rewind/core/paths.h"
 #include "rewind/core/profiler.h"
 #include "rewind/core/spatial.h"
+#include "rewind/core/system.h"
 #include "rewind/core/types.h"
 #include "rewind/debug/edit_history.h"
 #include "rewind/debug/gizmo.h"

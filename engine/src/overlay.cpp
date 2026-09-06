@@ -290,6 +290,88 @@ void draw_keys_panel() {
     ImGui::BulletText("F4  hold to rewind");
     ImGui::BulletText("F5  replay all history from the start and verify every tick");
     ImGui::BulletText("Esc quit");
+    ImGui::Spacing();
+    ImGui::TextDisabled("editor");
+    ImGui::BulletText("Ctrl+Z / Ctrl+Y  undo / redo");
+    ImGui::BulletText("Ctrl+S  save the scene (or the state without a project)");
+    ImGui::BulletText("Ctrl+D  duplicate the selected entity, Del  delete it");
+    ImGui::BulletText("scene view: wheel zooms (free camera), right/middle drag pans, right-click places");
+    ImGui::BulletText("gizmos: Alt ignores snapping, Shift locks a drag to one axis");
+}
+
+void apply_editor_theme(Color accent) {
+    ImGuiStyle& s = ImGui::GetStyle();
+    ImGui::StyleColorsDark(&s);
+    s.WindowRounding = 4;
+    s.FrameRounding = 3;
+    s.GrabRounding = 3;
+    s.TabRounding = 3;
+    s.PopupRounding = 4;
+    s.ScrollbarRounding = 6;
+    s.WindowBorderSize = 1;
+    s.FrameBorderSize = 0;
+    s.TabBorderSize = 0;
+    s.WindowPadding = ImVec2(8, 8);
+    s.FramePadding = ImVec2(6, 4);
+    s.ItemSpacing = ImVec2(8, 5);
+    s.IndentSpacing = 18;
+    s.ScrollbarSize = 12;
+    s.DockingSeparatorSize = 2;
+
+    const ImVec4 a(accent.r / 255.0f, accent.g / 255.0f, accent.b / 255.0f, 1.0f);
+    auto with_alpha = [&](float alpha) { return ImVec4(a.x, a.y, a.z, alpha); };
+    auto grey = [](float v, float alpha = 1.0f) { return ImVec4(v, v, v, alpha); };
+    ImVec4* c = s.Colors;
+    c[ImGuiCol_Text] = grey(0.90f);
+    c[ImGuiCol_TextDisabled] = grey(0.52f);
+    c[ImGuiCol_WindowBg] = ImVec4(0.11f, 0.11f, 0.125f, 1.0f);
+    c[ImGuiCol_ChildBg] = ImVec4(0, 0, 0, 0);
+    c[ImGuiCol_PopupBg] = ImVec4(0.09f, 0.09f, 0.10f, 0.98f);
+    c[ImGuiCol_Border] = grey(0.22f);
+    c[ImGuiCol_FrameBg] = ImVec4(0.17f, 0.17f, 0.19f, 1.0f);
+    c[ImGuiCol_FrameBgHovered] = ImVec4(0.22f, 0.22f, 0.25f, 1.0f);
+    c[ImGuiCol_FrameBgActive] = with_alpha(0.45f);
+    c[ImGuiCol_TitleBg] = ImVec4(0.09f, 0.09f, 0.10f, 1.0f);
+    c[ImGuiCol_TitleBgActive] = ImVec4(0.12f, 0.12f, 0.14f, 1.0f);
+    c[ImGuiCol_TitleBgCollapsed] = ImVec4(0.09f, 0.09f, 0.10f, 1.0f);
+    c[ImGuiCol_MenuBarBg] = ImVec4(0.09f, 0.09f, 0.10f, 1.0f);
+    c[ImGuiCol_ScrollbarBg] = ImVec4(0.09f, 0.09f, 0.10f, 0.6f);
+    c[ImGuiCol_ScrollbarGrab] = grey(0.30f);
+    c[ImGuiCol_ScrollbarGrabHovered] = grey(0.38f);
+    c[ImGuiCol_ScrollbarGrabActive] = grey(0.46f);
+    c[ImGuiCol_CheckMark] = a;
+    c[ImGuiCol_SliderGrab] = with_alpha(0.85f);
+    c[ImGuiCol_SliderGrabActive] = a;
+    c[ImGuiCol_Button] = ImVec4(0.20f, 0.20f, 0.23f, 1.0f);
+    c[ImGuiCol_ButtonHovered] = ImVec4(0.27f, 0.27f, 0.31f, 1.0f);
+    c[ImGuiCol_ButtonActive] = with_alpha(0.6f);
+    c[ImGuiCol_Header] = with_alpha(0.28f);
+    c[ImGuiCol_HeaderHovered] = with_alpha(0.42f);
+    c[ImGuiCol_HeaderActive] = with_alpha(0.55f);
+    c[ImGuiCol_Separator] = grey(0.22f);
+    c[ImGuiCol_SeparatorHovered] = with_alpha(0.6f);
+    c[ImGuiCol_SeparatorActive] = a;
+    c[ImGuiCol_ResizeGrip] = grey(0.25f, 0.5f);
+    c[ImGuiCol_ResizeGripHovered] = with_alpha(0.6f);
+    c[ImGuiCol_ResizeGripActive] = a;
+    c[ImGuiCol_Tab] = ImVec4(0.13f, 0.13f, 0.15f, 1.0f);
+    c[ImGuiCol_TabHovered] = with_alpha(0.5f);
+    c[ImGuiCol_TabSelected] = ImVec4(0.18f, 0.18f, 0.21f, 1.0f);
+    c[ImGuiCol_TabSelectedOverline] = a;
+    c[ImGuiCol_TabDimmed] = ImVec4(0.11f, 0.11f, 0.125f, 1.0f);
+    c[ImGuiCol_TabDimmedSelected] = ImVec4(0.15f, 0.15f, 0.17f, 1.0f);
+    c[ImGuiCol_TabDimmedSelectedOverline] = with_alpha(0.5f);
+    c[ImGuiCol_DockingPreview] = with_alpha(0.5f);
+    c[ImGuiCol_DockingEmptyBg] = ImVec4(0.08f, 0.08f, 0.09f, 1.0f);
+    c[ImGuiCol_PlotLines] = a;
+    c[ImGuiCol_PlotHistogram] = a;
+    c[ImGuiCol_TableHeaderBg] = ImVec4(0.15f, 0.15f, 0.17f, 1.0f);
+    c[ImGuiCol_TableBorderStrong] = grey(0.25f);
+    c[ImGuiCol_TableBorderLight] = grey(0.18f);
+    c[ImGuiCol_TableRowBgAlt] = grey(1.0f, 0.03f);
+    c[ImGuiCol_TextSelectedBg] = with_alpha(0.35f);
+    c[ImGuiCol_DragDropTarget] = a;
+    c[ImGuiCol_NavCursor] = a;
 }
 
 // ---- the stacked overlay ------------------------------------------------------------

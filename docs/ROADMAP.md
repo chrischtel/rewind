@@ -101,9 +101,14 @@ reflected state with hints.
    scene), dirty marker, Ctrl+S, `sim/hierarchy.h` (Parent, set_parent,
    children_of, destroy_with_children), Entities tree with drag-and-drop
    reparenting, `hierarchy_test`.
-4. Editor polish: dark theme with accent, toolbar icons, status bar with
+4. ~~Editor polish: dark theme with accent, toolbar icons, status bar with
    tick, fps and state, keyboard shortcut reference, welcome screen when
-   started without a project.
+   started without a project.~~ Done: `apply_editor_theme`, coloured
+   transport buttons (no icon font: text stays), status bar, Keys panel
+   with the editor shortcuts, welcome screen with recent list, native
+   folder/file dialogs and New project (`core/system.h`).
+
+This list is complete.
 
 ## Later
 

@@ -594,6 +594,16 @@ is a dockable window on the ImGui docking branch.
 build/bin/Release/rewind_editor.exe build/bin/Release/towerdefense_hot.dll
 ```
 
+Started without arguments it shows a welcome screen: open a project
+folder or a game DLL through the system's dialogs, create a new project
+(folder plus its game DLL), or pick from the recent list, which lives in
+`editor_recent.json` next to the executable. A status bar along the
+bottom shows the mode, tick, frame rate, project and scene, the selected
+entity and the last message; the theme is `apply_editor_theme()` from
+`debug/overlay.h`, which any tool built on the engine can reuse.
+`core/system.h` wraps the folder and file dialogs, process launching and
+URL opening for such tools.
+
 - **Scene** shows the game, integer-scaled in pixel mode, with the mouse
   mapped into game pixels. The editor opens in edit mode: **Play** runs the
   simulation from the edited state, **Pause** and **Step** freeze it, and

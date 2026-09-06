@@ -81,6 +81,7 @@ add_library(rewind SHARED
     src/shader_cross.cpp
     src/sprite.cpp
     src/stb_impl.cpp
+    src/system.cpp
     src/text_format.cpp
     src/tilemap.cpp
     src/timeline.cpp

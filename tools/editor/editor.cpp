@@ -75,9 +75,54 @@ struct EditorState {
     char new_scene_name[64] = "";
     std::string pending_scene;   ///< scene to open once the unsaved prompt is answered
     bool ask_unsaved = false;
+    // Welcome screen (no project or DLL given) and the recent list.
+    bool welcome = false;
+    std::string welcome_error;
+    std::string exe_path;
+    std::vector<std::string> recent;
+    bool show_status_bar = true;
+    bool theme_applied = false;
 };
 
 EditorState g_editor;
+
+/// The recently opened projects and DLLs, next to the executable.
+struct RecentList {
+    std::vector<std::string> paths;
+    void reflect(rw::Visitor& v) { v.field("paths", paths); }
+};
+
+fs::path recent_file() { return fs::path(rw::executable_dir()) / "editor_recent.json"; }
+
+void load_recent() {
+    RecentList list;
+    std::string error;
+    if (rw::load_json_file(recent_file().string(), list, &error)) g_editor.recent = list.paths;
+}
+
+void remember_recent(const std::string& path) {
+    const std::string abs = fs::absolute(path).lexically_normal().string();
+    std::vector<std::string>& r = g_editor.recent;
+    r.erase(std::remove(r.begin(), r.end(), abs), r.end());
+    r.insert(r.begin(), abs);
+    if (r.size() > 10) r.resize(10);
+    RecentList list;
+    list.paths = r;
+    std::string error;
+    rw::save_json_file(recent_file().string(), list, &error);
+}
+
+/// Start another editor on `path` and close this one.
+void relaunch_with(rw::App& app, const std::string& path) {
+    std::string error;
+    if (rw::spawn_process({g_editor.exe_path, path}, &error)) {
+        remember_recent(path);
+        app.quit();
+    } else {
+        g_editor.welcome_error = "could not start the editor: " + error;
+    }
+}
+
 
 std::vector<rw::u8> snapshot(rw::App& app) {
     rw::Writer w;
@@ -524,6 +569,7 @@ void draw_menu(rw::App& app) {
         ImGui::MenuItem("Profiler", nullptr, &g_editor.show_profiler);
         ImGui::MenuItem("Project", nullptr, &g_editor.show_project);
         ImGui::MenuItem("Keys", nullptr, &g_editor.show_keys);
+        ImGui::MenuItem("Status bar", nullptr, &g_editor.show_status_bar);
         ImGui::Separator();
         if (ImGui::MenuItem("Reset layout")) g_editor.layout_done = false;
         ImGui::EndMenu();
@@ -707,13 +753,25 @@ void draw_scene(rw::App& app) {
         {
             rw::TimeControl& t = app.time_control();
             const bool playing = t.mode == rw::TimeMode::Playing;
+            const ImVec4 go(0.22f, 0.55f, 0.32f, 1.0f), go_hover(0.28f, 0.66f, 0.40f, 1.0f);
+            const ImVec4 halt(0.62f, 0.26f, 0.26f, 1.0f), halt_hover(0.74f, 0.32f, 0.32f, 1.0f);
+            if (!playing) {
+                ImGui::PushStyleColor(ImGuiCol_Button, go);
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, go_hover);
+            }
             if (playing ? ImGui::Button("Pause") : ImGui::Button(g_editor.in_play ? "Resume" : "Play")) {
                 if (playing) pause(app);
                 else play(app);
             }
+            if (!playing) ImGui::PopStyleColor(2);
             ImGui::SameLine();
             ImGui::BeginDisabled(!g_editor.in_play);
+            if (g_editor.in_play) {
+                ImGui::PushStyleColor(ImGuiCol_Button, halt);
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, halt_hover);
+            }
             if (ImGui::Button("Stop")) stop(app);
+            if (g_editor.in_play) ImGui::PopStyleColor(2);
             ImGui::EndDisabled();
             ImGui::SameLine();
             if (ImGui::Button("Step")) {
@@ -1097,12 +1155,180 @@ void draw_panels(rw::App& app) {
     }
 }
 
+/// One line along the bottom: mode, tick, fps, scene, selection, last message.
+void draw_status_bar(rw::App& app) {
+    if (!g_editor.show_status_bar) return;
+    ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const float height = ImGui::GetFrameHeight();
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_MenuBar;
+    if (ImGui::BeginViewportSideBar("##status", viewport, ImGuiDir_Down, height, flags)) {
+        if (ImGui::BeginMenuBar()) {
+            const rw::TimeControl& t = app.time_control();
+            const rw::FrameStats& st = app.stats();
+            const char* mode = t.mode == rw::TimeMode::Playing ? "PLAYING"
+                             : t.mode == rw::TimeMode::Rewinding ? "REWINDING"
+                             : t.mode == rw::TimeMode::Replaying ? "REPLAYING"
+                             : g_editor.in_play ? "PAUSED" : "EDITING";
+            const ImVec4 accent = ImGui::GetStyleColorVec4(ImGuiCol_CheckMark);
+            ImGui::TextColored(t.mode == rw::TimeMode::Playing ? accent : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled), "%s", mode);
+            ImGui::Separator();
+            ImGui::Text("tick %llu", static_cast<unsigned long long>(app.timeline().head()));
+            ImGui::Separator();
+            ImGui::Text("%.0f fps  %.1f ms", st.fps, st.frame_ms);
+            ImGui::Separator();
+            if (g_editor.has_project) {
+                ImGui::Text("%s / %s%s", g_editor.project.name.c_str(), g_editor.scene_name.c_str(), g_editor.scene_dirty ? " *" : "");
+                ImGui::Separator();
+            }
+            rw::World* world = app.game().world();
+            if (world) {
+                if (world->alive(g_editor.selected)) {
+                    const std::string name = entity_name(*world, g_editor.selected);
+                    ImGui::Text("#%u%s%s", g_editor.selected.index, name.empty() ? "" : "  ", name.c_str());
+                } else {
+                    ImGui::TextDisabled("%zu entities", world->entity_count());
+                }
+                ImGui::Separator();
+            }
+            ImGui::TextDisabled("%s", g_editor.status.c_str());
+            ImGui::EndMenuBar();
+        }
+    }
+    ImGui::End();
+}
+
+// ---- welcome screen ----------------------------------------------------------------------
+
+/// A game that shows nothing, so the App can host the welcome window.
+class WelcomeGame final : public rw::Game {
+public:
+    void configure(rw::AppConfig& cfg) override {
+        cfg.title = "Rewind Editor";
+        cfg.width = 900;
+        cfg.height = 600;
+        cfg.audio = false;
+    }
+    void tick(const rw::TickContext&) override {}
+    void reflect(rw::Visitor&) override {}
+    void render(rw::Renderer2D& r, float) override { r.clear(rw::rgb(24, 24, 28)); }
+};
+
+void welcome_ui(rw::App& app) {
+    if (!g_editor.theme_applied) {
+        rw::apply_editor_theme();
+        g_editor.theme_applied = true;
+    }
+    rw::dispatch_dialog_results();
+    app.time_control().show_overlay = false;
+
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f), ImGuiCond_Always,
+                            ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(620, 0), ImGuiCond_Always);
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                                   ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar;
+    if (ImGui::Begin("##welcome", nullptr, flags)) {
+        ImGui::SetWindowFontScale(1.6f);
+        ImGui::TextUnformatted("Rewind");
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::TextDisabled("Open a project folder or a game DLL to start editing.");
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        if (ImGui::Button("Open project folder...", ImVec2(190, 0)))
+            rw::pick_folder([&app](const std::string& path) {
+                if (path.empty()) return;
+                if (!rw::is_project_dir(path)) {
+                    g_editor.welcome_error = "no project.json in " + path;
+                    return;
+                }
+                relaunch_with(app, path);
+            });
+        ImGui::SameLine();
+        if (ImGui::Button("Open game DLL...", ImVec2(190, 0)))
+            rw::pick_file([&app](const std::string& path) {
+                if (!path.empty()) relaunch_with(app, path);
+            }, {{"Game module", "dll;so;dylib"}});
+        ImGui::SameLine();
+        if (ImGui::Button("New project...", ImVec2(190, 0)))
+            rw::pick_folder([&app](const std::string& dir) {
+                if (dir.empty()) return;
+                rw::Project project;
+                std::string error;
+                if (!rw::create_project(dir, fs::path(dir).filename().string(), project, &error)) {
+                    g_editor.welcome_error = error;
+                    return;
+                }
+                // A project needs its game DLL; ask for it, then open.
+                rw::pick_file([&app, project](const std::string& dll) mutable {
+                    if (!dll.empty()) {
+                        std::error_code ec;
+                        const fs::path rel = fs::relative(dll, project.root, ec);
+                        project.module = (ec || rel.empty() ? fs::path(dll) : rel).generic_string();
+                        std::string err;
+                        rw::save_project(project, nullptr, &err);
+                    }
+                    relaunch_with(app, project.root.string());
+                }, {{"Game module", "dll;so;dylib"}});
+            });
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("creates project.json, assets/, scenes/, shaders/ in a folder, then asks for the game DLL");
+
+        ImGui::Spacing();
+        ImGui::TextDisabled("Recent");
+        if (g_editor.recent.empty()) ImGui::TextDisabled("nothing yet");
+        for (rw::usize i = 0; i < g_editor.recent.size(); ++i) {
+            const std::string& r = g_editor.recent[i];
+            std::error_code ec;
+            const bool exists = fs::exists(r, ec);
+            ImGui::BeginDisabled(!exists);
+            if (ImGui::Selectable((r + "##r" + std::to_string(i)).c_str())) relaunch_with(app, r);
+            ImGui::EndDisabled();
+            if (!exists && ImGui::IsItemHovered()) ImGui::SetTooltip("not found");
+        }
+        if (!g_editor.welcome_error.empty()) {
+            ImGui::Spacing();
+            ImGui::TextColored(ImVec4(1, 0.45f, 0.45f, 1), "%s", g_editor.welcome_error.c_str());
+        }
+        ImGui::Spacing();
+        ImGui::TextDisabled("rewind_editor <project dir | game dll>   also works from the command line.");
+    }
+    ImGui::End();
+}
+
+int run_welcome(const std::string& error) {
+    g_editor.welcome = true;
+    g_editor.welcome_error = error;
+    load_recent();
+    WelcomeGame game;
+    rw::AppConfig config;
+    game.configure(config);
+    config.start_with_overlay = false;
+    std::error_code ec;
+    const char* candidates[] = {"C:/Windows/Fonts/segoeui.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                                "/System/Library/Fonts/Supplemental/Arial.ttf"};
+    for (const char* c : candidates)
+        if (fs::exists(c, ec)) {
+            config.ui_font = c;
+            config.ui_font_size = 17.0f;
+            break;
+        }
+    rw::App app(config);
+    app.set_ui_callback(welcome_ui);
+    return app.run(game);
+}
+
 void editor_ui(rw::App& app) {
     const ImGuiID dockspace = ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
     if (!g_editor.layout_done) {
         default_layout(dockspace);
         g_editor.layout_done = true;
     }
+    if (!g_editor.theme_applied) {
+        rw::apply_editor_theme();
+        g_editor.theme_applied = true;
+    }
+    rw::dispatch_dialog_results();
     if (g_editor.first_frame) {
         // The editor opens in edit mode; Play starts the simulation.
         app.time_control().mode = rw::TimeMode::Paused;
@@ -1130,27 +1356,27 @@ void editor_ui(rw::App& app) {
     draw_menu(app);
     draw_scene(app);
     draw_panels(app);
+    draw_status_bar(app);
 }
 
 } // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 2) {
-        std::fprintf(stderr, "usage: rewind_editor <project dir | game dll> [game arguments...]\n");
-        return 2;
-    }
+    std::error_code ec;
+    g_editor.exe_path = fs::absolute(argv[0], ec).string();
+    if (argc < 2) return run_welcome("");
 
     std::string module_path = argv[1];
-    std::error_code ec;
     if (rw::is_project_dir(argv[1])) {
         std::string error;
         if (!rw::load_project(argv[1], g_editor.project, &error)) {
             std::fprintf(stderr, "rewind_editor: %s\n", error.c_str());
-            return 1;
+            return run_welcome(error);
         }
         if (g_editor.project.module.empty()) {
-            std::fprintf(stderr, "rewind_editor: project.json has no \"module\"; set it to the game DLL first\n");
-            return 1;
+            const std::string msg = "project.json in " + std::string(argv[1]) + " has no \"module\": set it to the game DLL first";
+            std::fprintf(stderr, "rewind_editor: %s\n", msg.c_str());
+            return run_welcome(msg);
         }
         g_editor.has_project = true;
         module_path = g_editor.project.module_path().string();
@@ -1170,8 +1396,10 @@ int main(int argc, char** argv) {
     rw::GameModule module(module_path);
     if (!module.load()) {
         std::fprintf(stderr, "rewind_editor: %s\n", module.error().c_str());
-        return 1;
+        return run_welcome(module.error());
     }
+    load_recent();
+    remember_recent(argv[1]);
 
     rw::AppConfig config;
     for (int i = 2; i < argc; ++i) config.args.push_back(argv[i]);
