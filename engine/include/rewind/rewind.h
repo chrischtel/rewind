@@ -44,6 +44,7 @@
 #include "rewind/render/shader_cross.h"
 #include "rewind/render/sprite.h"
 #include "rewind/render/texture.h"
+#include "rewind/render/ui.h"
 #include "rewind/sim/animation.h"
 #include "rewind/sim/events.h"
 #include "rewind/sim/game.h"

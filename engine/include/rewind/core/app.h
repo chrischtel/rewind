@@ -3,6 +3,7 @@
 #include "rewind/audio/audio.h"
 #include "rewind/core/input_map.h"
 #include "rewind/core/player_settings.h"
+#include "rewind/render/ui.h"
 #include "rewind/sim/savegame.h"
 #include "rewind/core/file_watcher.h"
 #include "rewind/core/math.h"
@@ -13,6 +14,7 @@
 #include "rewind/sim/reflect.h"
 #include "rewind/sim/timeline.h"
 
+#include <deque>
 #include <functional>
 #include <memory>
 #include <string>
@@ -197,6 +199,16 @@ public:
     std::string take_pressed_key();
     std::string take_pressed_gamepad_button();
 
+    // ---- game UI ------------------------------------------------------------
+    /// This frame's mouse for the game's own UI (render/ui.h), in render
+    /// pixels, with press and release edges; disabled while the mouse
+    /// belongs to the overlay or another editor panel.
+    UiInput ui_input() const;
+    /// Queue a command for the simulation: it rides in the next tick's
+    /// InputFrame (`command`, `command_value`), one per tick, so a UI click
+    /// becomes deterministic input.
+    void push_command(u32 command, i32 value = 0);
+
     // ---- save games ---------------------------------------------------------
     /// Write the state to "<saves dir>/<slot>.rwsave" with the config's
     /// save_version; load_game reads it back (migrating through
@@ -257,6 +269,10 @@ private:
     CompiledBindings compiled_;
     std::string pressed_key_;
     std::string pressed_pad_;
+    std::deque<std::pair<u32, i32>> commands_;
+    mutable bool ui_prev_down_ = false;
+    mutable bool ui_down_ = false;
+    i32 wheel_frame_ = 0;
     bool screenshot_pending_ = false;
     std::string screenshot_file_;
     Texture* screenshot_target_ = nullptr;

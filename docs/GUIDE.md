@@ -436,6 +436,49 @@ order its code finds convenient. Layers are sorted per frame; batches do
 not merge across layers. The bounce sample draws its road at layer -1
 after the balls and still ends up underneath them.
 
+### Game UI and commands
+
+`render/ui.h` is the UI players see: an immediate-mode `Ui` with panels,
+labels, buttons, toggles, sliders, progress bars and tooltips, drawn in
+screen space through the renderer with a `Font` or the built-in pixel font,
+and skinned by a `UiStyle` (colours, padding, rounding, optional nine-slice
+textures for panels and buttons via `Renderer2D::draw_nine_slice`). It is
+not Dear ImGui and works in pixel mode. Call it from `render()`:
+
+```cpp
+ui_.begin(&r, app.ui_input());          // mouse in render pixels, with edges
+ui_.begin_panel({w - 232, 12, 220, 150}, "Bounce");
+ui_.label("12 balls", true);
+if (ui_.button("Launch")) app.push_command(kCmdLaunch);
+ui_.tooltip("same as Z");
+ui_.same_line();
+if (ui_.button("Pop")) app.push_command(kCmdPop);
+ui_.slider("volume", volume_, 0, 1);
+ui_.progress(hp / max_hp, 204, {}, "hull");
+ui_.end_panel();
+ui_.end();
+if (ui_.wants_mouse()) { /* the click was for the HUD, not the world */ }
+```
+
+`App::ui_input()` disables the UI while the overlay or an editor panel owns
+the mouse; `wants_mouse()` tells the game to ignore clicks that landed on a
+panel. Widgets flow top to bottom inside a panel, `same_line()` puts the
+next one beside the last, `button_at(rect, text)` places freely, and
+`begin(nullptr, in)` runs the layout and hit testing without a renderer
+(that is how `ui_test` checks it).
+
+UI is presentation and runs in `render()`, so it must not touch the
+simulation directly. `App::push_command(id, value)` puts a click into the
+next tick's `InputFrame` (`command`, `command_value`, one per tick): the game
+handles it in `tick()` like a key, and because it is part of the input
+record it rewinds, replays and reaches every peer in a session.
+
+`TimeControl::time_scale` (`app.time_control()`) runs the simulation at a
+quarter, half, double or quadruple speed: more or fewer fixed ticks per
+second, never a different tick, so the timeline and the fingerprints stay
+exactly what they would be at 1x. The overlay's timeline panel and the
+editor status bar show it.
+
 ### Materials
 
 A material is a GLSL fragment shader of your own, applied to any sprites

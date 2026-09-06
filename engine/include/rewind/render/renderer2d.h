@@ -210,6 +210,10 @@ public:
     /// Draw the whole texture with its origin at world (x, y).
     void draw_texture(const Texture& texture, float x, float y, const SpriteOptions& options = {});
 
+    /// Stretch `src` over `dst` keeping a `border`-wide frame unscaled
+    /// (panels, buttons, speech bubbles). World space, tinted.
+    void draw_nine_slice(const Texture& texture, const Rect& src, const Rect& dst, float border, Color tint = {});
+
     // ---- materials ----------------------------------------------------------
     /// Load a fragment shader (.spv built by rewind_add_game SHADERS) as a
     /// material. Cached by path; a changed file or source is reloaded into the

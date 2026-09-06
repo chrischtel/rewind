@@ -87,8 +87,8 @@ public:
         player_x_ = clampf(player_x_, 0.0f, kWidth - kPlayerSize);
         player_y_ = clampf(player_y_, 0.0f, kHeight - kPlayerSize);
 
-        if (pressed(in, prev_input_, Button::A)) spawn_ball();
-        if (pressed(in, prev_input_, Button::B)) pop_ball();
+        if (pressed(in, prev_input_, Button::A) || in.command == kCmdLaunch) spawn_ball();
+        if (pressed(in, prev_input_, Button::B) || in.command == kCmdPop) pop_ball();
         // Camera intent is simulation state (it rewinds and replays); the
         // smooth motion towards it happens in render().
         if (in.wheel != 0) zoom_target_ = clampf(zoom_target_ * std::pow(1.25f, static_cast<float>(in.wheel)), 0.5f, 4.0f);
@@ -216,12 +216,42 @@ public:
         }
         r.draw_polyline(ring, halo);
 
+        draw_hud(r);
         r.draw_text(12, kHeight - 60, "arrows / WASD: move   Z: launch a ball   X: pop one", rgb(160, 160, 180));
         r.draw_text(12, kHeight - 44, "hold F4: rewind   F2: pause   F3: step   F5: replay + verify", rgb(160, 160, 180));
         r.draw_text(12, kHeight - 28, "F1: toggle overlay   Esc: quit   wheel: zoom   right drag: pan", rgb(160, 160, 180));
     }
 
     World* world() override { return &world_; }
+
+    void start(App& app) override { app_ = &app; }
+
+    /// HUD with the game UI: presentation, so it runs after the world is
+    /// drawn; clicks that change the simulation go in as commands.
+    void draw_hud(Renderer2D& r) {
+        if (!app_) return;
+        Ui& ui = ui_;
+        ui.begin(&r, app_->ui_input());
+        ui.begin_panel({kWidth - 232, 12, 220, 150}, "Bounce");
+        char line[64];
+        std::snprintf(line, sizeof line, "%zu balls, %u bounces", world_.entity_count(), bounces_);
+        ui.label(line, true);
+        if (ui.button("Launch")) app_->push_command(kCmdLaunch);
+        ui.tooltip("same as Z: goes through the input record");
+        ui.same_line();
+        if (ui.button("Pop")) app_->push_command(kCmdPop);
+        TimeControl& t = app_->time_control();
+        const float scales[3] = {1, 2, 4};
+        const char* names[3] = {"1x", "2x", "4x"};
+        for (int i = 0; i < 3; ++i) {
+            if (i > 0) ui.same_line();
+            if (ui.button(names[i], 56)) t.time_scale = scales[i];
+        }
+        ui.progress(static_cast<float>(world_.entity_count()) / 40.0f, 204, {0, 0, 0, 0}, "capacity");
+        ui.end_panel();
+        ui.end();
+        hud_wants_mouse_ = ui.wants_mouse();
+    }
 
     // The editor's Scene panel offers this next to Select: draw a curve
     // network with the mouse. It is reflected state like everything else.
@@ -242,6 +272,7 @@ public:
 
 private:
     enum Event : u32 { kEvBounce = 1 };
+    enum Command : u32 { kCmdLaunch = 1, kCmdPop = 2 };
 
     static constexpr float kWidth = 1280;
     static constexpr float kHeight = 720;
@@ -287,6 +318,9 @@ private:
     CameraController cam_; // presentation only
     CurveNetwork net_;
     NetworkTool net_tool_{&net_, "Network"};
+    App* app_ = nullptr;
+    Ui ui_;                  // presentation only
+    bool hud_wants_mouse_ = false;
     u32 bounces_ = 0;
     u64 tick_ = 0; // for the animated road markings only, not saved on purpose
 

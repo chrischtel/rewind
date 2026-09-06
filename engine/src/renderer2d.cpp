@@ -1285,6 +1285,26 @@ void Renderer2D::invalidate_file(const std::string& path) {
     if (alias != impl_->aliases.end()) impl_->stale_files.insert(alias->second);
 }
 
+void Renderer2D::draw_nine_slice(const Texture& texture, const Rect& src, const Rect& dst, float border, Color tint) {
+    if (!texture.handle) return;
+    const float b = std::min({border, src.w * 0.5f, src.h * 0.5f, dst.w * 0.5f, dst.h * 0.5f});
+    const float sx3[4] = {src.x, src.x + b, src.right() - b, src.right()};
+    const float sy3[4] = {src.y, src.y + b, src.bottom() - b, src.bottom()};
+    const float dx3[4] = {dst.x, dst.x + b, dst.right() - b, dst.right()};
+    const float dy3[4] = {dst.y, dst.y + b, dst.bottom() - b, dst.bottom()};
+    for (int j = 0; j < 3; ++j)
+        for (int i = 0; i < 3; ++i) {
+            const Rect s{sx3[i], sy3[j], sx3[i + 1] - sx3[i], sy3[j + 1] - sy3[j]};
+            const float dw = dx3[i + 1] - dx3[i], dh = dy3[j + 1] - dy3[j];
+            if (s.w <= 0 || s.h <= 0 || dw <= 0 || dh <= 0) continue;
+            SpriteOptions o;
+            o.scale_x = dw / s.w;
+            o.scale_y = dh / s.h;
+            o.tint = tint;
+            draw_sprite(texture, s, dx3[i], dy3[j], o);
+        }
+}
+
 void Renderer2D::draw_sprite(const Texture& texture, const Rect& src, float x, float y, const SpriteOptions& o) {
     if (!texture.handle || texture.width <= 0 || texture.height <= 0) return;
 

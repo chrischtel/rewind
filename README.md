@@ -69,6 +69,10 @@ It is not for 3D games, and not for people who want a no-code workflow.
   floods, grid graphs, steering (seek, arrive, pursue, keep distance,
   separation, path following), and reflected timers, cooldowns and state
   machines that rewind with the rest of the state.
+- Game UI: immediate-mode panels, buttons, toggles, sliders and progress
+  bars in the game's own style (nine-slice skins, your fonts), with UI
+  clicks turned into commands inside the deterministic input record, and a
+  simulation speed of 1/4x to 4x that never changes a tick.
 - Materials: your own GLSL fragment shaders with extra textures and
   parameters, one source for both backends.
 - Native Aseprite import: layers, tags, slices, tilesets, tilemap layers.
@@ -99,7 +103,7 @@ It is not for 3D games, and not for people who want a no-code workflow.
   links, enums by name, curve previews, asset pickers.
 - Always-on profiler, engine log with an in-game console, gamepad, mouse
   (with wheel) and keyboard input as part of the deterministic input record.
-- Twenty-six headless test suites and a CI workflow for Windows and Ubuntu.
+- Thirty headless test suites and a CI workflow for Windows and Ubuntu.
 
 Four samples show all of it: `bounce`, `pixels`, `duel` (a four-player netcode arena with a lobby) and
 `towerdefense`, a complete small game.

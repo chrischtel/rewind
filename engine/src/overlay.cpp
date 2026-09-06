@@ -109,6 +109,17 @@ void draw_timeline_panel(Timeline& tl, TimeControl& time, const FrameStats& stat
     }
     ImGui::SetNextItemWidth(120);
     ImGui::SliderFloat("rewind speed", &time.rewind_speed, 0.25f, 8.0f, "%.2fx");
+    ImGui::SameLine();
+    ImGui::TextDisabled("speed");
+    const float scales[] = {0.25f, 0.5f, 1, 2, 4};
+    const char* labels[] = {"1/4", "1/2", "1x", "2x", "4x"};
+    for (int i = 0; i < 5; ++i) {
+        ImGui::SameLine();
+        const bool on = std::fabs(time.time_scale - scales[i]) < 1e-3f;
+        if (on) ImGui::PushStyleColor(ImGuiCol_Button, kGood);
+        if (ImGui::SmallButton(labels[i])) time.time_scale = scales[i];
+        if (on) ImGui::PopStyleColor();
+    }
 }
 
 // ---- hot reload and network ----------------------------------------------------------

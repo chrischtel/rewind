@@ -1310,6 +1310,10 @@ void draw_status_bar(rw::App& app) {
             ImGui::TextColored(t.mode == rw::TimeMode::Playing ? accent : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled), "%s", mode);
             ImGui::Separator();
             ImGui::Text("tick %llu", static_cast<unsigned long long>(app.timeline().head()));
+            if (std::fabs(t.time_scale - 1.0f) > 1e-3f) {
+                ImGui::SameLine();
+                ImGui::TextColored(accent, "x%.2g", t.time_scale);
+            }
             ImGui::Separator();
             ImGui::Text("%.0f fps  %.1f ms", st.fps, st.frame_ms);
             ImGui::Separator();

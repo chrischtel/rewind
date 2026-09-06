@@ -96,6 +96,7 @@ add_library(rewind SHARED
     src/text_format.cpp
     src/tilemap.cpp
     src/timeline.cpp
+    src/ui.cpp
     ${REWIND_SHADER_HEADER}
     ${REWIND_IMGUI_SOURCES})
 

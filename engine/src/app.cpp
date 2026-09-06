@@ -158,6 +158,7 @@ void App::shutdown_platform() {
 }
 
 void App::handle_events() {
+    wheel_frame_ = 0;
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         ImGui_ImplSDL3_ProcessEvent(&e);
@@ -190,9 +191,12 @@ void App::handle_events() {
             }
             break;
 
-        case SDL_EVENT_MOUSE_WHEEL:
-            wheel_accum_ += static_cast<i32>(e.wheel.y > 0 ? std::ceil(e.wheel.y) : std::floor(e.wheel.y));
+        case SDL_EVENT_MOUSE_WHEEL: {
+            const i32 clicks = static_cast<i32>(e.wheel.y > 0 ? std::ceil(e.wheel.y) : std::floor(e.wheel.y));
+            wheel_accum_ += clicks;
+            wheel_frame_ += clicks;
             break;
+        }
 
         case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
             pressed_pad_ = gamepad_button_name(e.gbutton.button);
@@ -271,6 +275,11 @@ InputFrame App::sample_input() const {
         in.wheel = static_cast<i8>(std::clamp(wheel_accum_, -127, 127));
     }
     wheel_accum_ = 0;
+    if (!commands_.empty()) {
+        in.command = commands_.front().first;
+        in.command_value = commands_.front().second;
+        const_cast<App*>(this)->commands_.pop_front();
+    }
     return in;
 }
 
@@ -350,7 +359,9 @@ void App::simulate(const InputFrame& live, double frame_dt) {
     const double dt = timeline_.dt();
     switch (time_.mode) {
     case TimeMode::Playing:
-        accumulator_ += frame_dt;
+        accumulator_ += frame_dt * std::max(time_.time_scale, 0.0f);
+        // A slow frame or a high scale never turns into a runaway catch-up.
+        accumulator_ = std::min(accumulator_, std::max(dt * 8.0, 0.25));
         if (session_) {
             // The session decides how far we may run; stalls leave time in
             // the accumulator, capped so a long stall does not turn into a sprint.
@@ -499,6 +510,23 @@ void App::render_frame(float alpha) {
 }
 
 // ---- save games ------------------------------------------------------------------------
+
+UiInput App::ui_input() const {
+    UiInput ui;
+    float mx = 0, my = 0;
+    const SDL_MouseButtonFlags mb = SDL_GetMouseState(&mx, &my);
+    ui.mouse = renderer_ ? renderer_->window_to_render(mx, my) : Vec2{mx, my};
+    ui.enabled = cfg_.embedded ? input_focus_ : !ImGui::GetIO().WantCaptureMouse;
+    ui_prev_down_ = ui_down_;
+    ui_down_ = ui.enabled && (mb & SDL_BUTTON_LMASK) != 0;
+    ui.down = ui_down_;
+    ui.pressed = ui_down_ && !ui_prev_down_;
+    ui.released = !ui_down_ && ui_prev_down_;
+    ui.wheel = wheel_frame_;
+    return ui;
+}
+
+void App::push_command(u32 command, i32 value) { commands_.emplace_back(command, value); }
 
 void App::restart(net::Session* session) {
     if (!game_) return;

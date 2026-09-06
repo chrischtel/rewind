@@ -38,6 +38,10 @@ struct InputFrame {
     i16 mouse_y = 0;
     i8 wheel = 0;    ///< Mouse wheel clicks this tick, positive = away from the user. Only the first tick of a frame gets them.
     i8 pad_ = 0;
+    /// A command from the game's UI (App::push_command): one per tick, 0 = none.
+    /// Part of the record, so replays and peers see the same click.
+    u32 command = 0;
+    i32 command_value = 0;
 
     bool down(Button b) const { return (buttons & static_cast<u32>(b)) != 0; }
 
@@ -57,6 +61,8 @@ struct InputFrame {
         v.field("mouse_x", mouse_x);
         v.field("mouse_y", mouse_y);
         v.field("wheel", wheel);
+        v.field("command", command);
+        v.field("command_value", command_value);
     }
 };
 

@@ -26,6 +26,9 @@ enum class TimeMode {
 struct TimeControl {
     TimeMode mode = TimeMode::Playing;
     float rewind_speed = 1.0f;
+    /// Simulation speed while playing: 2 runs twice as many ticks per
+    /// second. Ticks themselves never change, so replays stay identical.
+    float time_scale = 1.0f;
     bool show_overlay = true;
 
     std::optional<Tick> scrub_request;

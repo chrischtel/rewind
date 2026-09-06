@@ -183,8 +183,12 @@ knows what a car is. Decided 2026-09-06.
    Done: `debug/editor_tool.h` (EditorTool, ToolContext, NetworkTool),
    `Game::editor_tools`, tool picker and options in the Scene panel,
    `tool_test`; bounce carries a network and the tool.
-5. Game UI and time scale: skinned widgets for HUD and menus, pause and
-   1x/2x/4x simulation speed.
+5. ~~Game UI and time scale: skinned widgets for HUD and menus, pause and
+   1x/2x/4x simulation speed.~~ Done: `render/ui.h` immediate-mode game UI
+   (panels, labels, buttons, toggles, sliders, progress, tooltips, styles,
+   nine-slice skins), `App::ui_input`, `App::push_command` into the
+   deterministic `InputFrame`, `TimeControl::time_scale` with speed buttons
+   in the overlay and the editor, `ui_test`; bounce has a HUD.
 6. Data tables: definitions in JSON with ids and asset references.
 7. Curve fitting for drawn strokes, particles, positional audio, per-draw
    sort keys.
