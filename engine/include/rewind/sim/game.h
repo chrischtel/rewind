@@ -12,6 +12,7 @@ namespace rw {
 
 class App;
 class Audio;
+class EditorTool;
 class Renderer2D;
 class World;
 struct AppConfig;
@@ -118,6 +119,11 @@ public:
     /// The entity world the game keeps, if any. Tools use it for scenes,
     /// prefabs and the entity list. Nullptr means the game has no world.
     virtual World* world() { return nullptr; }
+
+    /// Tools the editor offers in its Scene panel besides the built-in
+    /// selection: a network editor, a tile painter, whatever the game
+    /// needs (see debug/editor_tool.h). The game owns them.
+    virtual std::vector<EditorTool*> editor_tools() { return {}; }
 };
 
 } // namespace rw

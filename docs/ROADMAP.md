@@ -173,11 +173,16 @@ knows what a car is. Decided 2026-09-06.
    `bidirectional_path`, `flow_to` (next-edge field for crowds),
    `RouteCache`; `CurveNetwork` track penalties surviving rebuilds,
    `route_affected` for re-planning, built-in cache, `bidirectional` flag.
-3. Network agents: follow a track with spacing to the agent ahead (track
+3. ~~Network agents: follow a track with spacing to the agent ahead (track
    occupancy), change tracks along a transition curve, wait at conflict
-   zones and signals (state machines), deterministic and reflected.
-4. Editor tool API: tools a game registers (click, drag, snap, cancel),
-   node and track snapping, split and join edges in the scene view.
+   zones and signals (state machines), deterministic and reflected.~~
+   Done: `sim/network_agents.h` (NetworkAgents, NetAgent, NetAgentParams,
+   entry rule for signals and priority), `agents_test`.
+4. ~~Editor tool API: tools a game registers (click, drag, snap, cancel),
+   node and track snapping, split and join edges in the scene view.~~
+   Done: `debug/editor_tool.h` (EditorTool, ToolContext, NetworkTool),
+   `Game::editor_tools`, tool picker and options in the Scene panel,
+   `tool_test`; bounce carries a network and the tool.
 5. Game UI and time scale: skinned widgets for HUD and menus, pause and
    1x/2x/4x simulation speed.
 6. Data tables: definitions in JSON with ids and asset references.

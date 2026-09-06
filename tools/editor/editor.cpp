@@ -83,9 +83,19 @@ struct EditorState {
     bool show_status_bar = true;
     bool theme_applied = false;
     std::string selected_asset; ///< path of the row picked in the Assets panel (Inspector shows its import settings)
+    int tool_index = 0;         ///< 0 = Select (gizmos); n = the game's editor_tools()[n - 1]
 };
 
+
 EditorState g_editor;
+
+/// The game's tool that is active, or null for the built-in selection.
+rw::EditorTool* active_tool(rw::App& app) {
+    if (g_editor.tool_index <= 0) return nullptr;
+    const std::vector<rw::EditorTool*> tools = app.game().editor_tools();
+    const rw::usize i = static_cast<rw::usize>(g_editor.tool_index - 1);
+    return i < tools.size() ? tools[i] : nullptr;
+}
 
 /// The recently opened projects and DLLs, next to the executable.
 struct RecentList {
@@ -591,9 +601,8 @@ void draw_scene_tools(rw::App& app, rw::Renderer2D& renderer) {
     // whether the previous frame edited it. Consecutive edits merge.
     g_editor.history.frame(g_editor.edited_frame, snapshot(app));
     g_editor.edited_frame = false;
-    if (!g_editor.show_scene || !g_editor.show_gizmos) return;
+    if (!g_editor.show_scene) return;
     rw::World* world = app.game().world();
-    if (!world) return;
     const ImGuiIO& io = ImGui::GetIO();
     const rw::AppConfig& cfg = app.config();
     rw::Gizmos& g = g_editor.gizmos;
@@ -605,6 +614,37 @@ void draw_scene_tools(rw::App& app, rw::Renderer2D& renderer) {
     in.shift = io.KeyShift;
     in.enabled = g_editor.scene_hovered;
     g.begin(in, renderer.camera(), static_cast<float>(cfg.render_width), static_cast<float>(cfg.render_height));
+
+    // A game tool owns the view while it is selected.
+    if (rw::EditorTool* tool = active_tool(app)) {
+        rw::ToolContext ctx;
+        ctx.renderer = &renderer;
+        ctx.gizmos = &g;
+        ctx.world = world;
+        ctx.mouse_render = in.mouse;
+        ctx.mouse_world = renderer.camera().to_world(in.mouse);
+        ctx.hovered = g_editor.scene_hovered;
+        ctx.down = in.down;
+        ctx.pressed = g_editor.scene_hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+        ctx.released = ImGui::IsMouseReleased(ImGuiMouseButton_Left);
+        ctx.right_pressed = g_editor.scene_hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+        ctx.shift = io.KeyShift;
+        ctx.ctrl = io.KeyCtrl;
+        ctx.alt = io.KeyAlt;
+        ctx.zoom = renderer.camera().zoom;
+        ctx.dt = io.DeltaTime;
+        tool->update(ctx);
+        if (!ctx.status.empty()) g_editor.status = ctx.status;
+        if (ctx.edited) mark_edited(app);
+        g.end();
+        g.draw(renderer);
+        return;
+    }
+
+    if (!g_editor.show_gizmos || !world) {
+        g.end();
+        return;
+    }
 
     bool edited = false;
     const rw::Entity selected = g_editor.selected;
@@ -716,7 +756,8 @@ void draw_scene(rw::App& app) {
         g_editor.scene_hovered = hovered;
         g_editor.scene_scale = scale;
         // While a gizmo is being dragged the game must not see the mouse button.
-        const bool gizmo_busy = g_editor.show_gizmos && (g_editor.gizmos.dragging() || g_editor.gizmos.hot() != 0);
+        const bool tool_active = active_tool(app) != nullptr;
+        const bool gizmo_busy = tool_active || (g_editor.show_gizmos && (g_editor.gizmos.dragging() || g_editor.gizmos.hot() != 0));
         app.set_game_input_focus(focused && !gizmo_busy && (hovered || !ImGui::IsAnyItemActive()));
         if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) ImGui::SetWindowFocus();
 
@@ -739,8 +780,8 @@ void draw_scene(rw::App& app) {
             renderer.set_camera_override(nullptr);
         }
 
-        // Right-click (without dragging) opens the placement menu.
-        if (hovered && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+        // Right-click (without dragging) opens the placement menu; tools use right-click themselves.
+        if (hovered && !tool_active && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
             const ImVec2 drag = ImGui::GetMouseDragDelta(ImGuiMouseButton_Right);
             if (std::fabs(drag.x) < 4 && std::fabs(drag.y) < 4) {
                 const ImVec2 m = ImGui::GetIO().MousePos;
@@ -811,6 +852,35 @@ void draw_scene(rw::App& app) {
             }
             ImGui::SameLine();
             ImGui::TextDisabled("%.2fx  (%.0f, %.0f)", cam.zoom(), cam.center().x, cam.center().y);
+        }
+        ImGui::SameLine(0, 16);
+        {
+            const std::vector<rw::EditorTool*> tools = app.game().editor_tools();
+            if (g_editor.tool_index > static_cast<int>(tools.size())) g_editor.tool_index = 0;
+            const char* current = g_editor.tool_index == 0 ? "Select" : tools[static_cast<rw::usize>(g_editor.tool_index - 1)]->name();
+            ImGui::SetNextItemWidth(120);
+            if (ImGui::BeginCombo("##tool", current)) {
+                if (ImGui::Selectable("Select", g_editor.tool_index == 0)) {
+                    if (rw::EditorTool* old = active_tool(app)) old->deactivate();
+                    g_editor.tool_index = 0;
+                }
+                for (rw::usize i = 0; i < tools.size(); ++i) {
+                    if (ImGui::Selectable(tools[i]->name(), g_editor.tool_index == static_cast<int>(i) + 1)) {
+                        if (rw::EditorTool* old = active_tool(app)) old->deactivate();
+                        g_editor.tool_index = static_cast<int>(i) + 1;
+                        tools[i]->activate();
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            if (rw::EditorTool* tool = active_tool(app)) {
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Options")) ImGui::OpenPopup("tool_options");
+                if (ImGui::BeginPopup("tool_options")) {
+                    tool->panel();
+                    ImGui::EndPopup();
+                }
+            }
         }
         ImGui::SameLine(0, 16);
         ImGui::Checkbox("Gizmos", &g_editor.show_gizmos);

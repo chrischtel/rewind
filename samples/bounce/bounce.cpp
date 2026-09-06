@@ -137,6 +137,7 @@ public:
         v.field("rng", rng_);
         v.field("prev_input", prev_input_);
         v.field("cam_target", cam_target_);
+        v.field("network", net_);
         v.field("zoom_target", zoom_target_, {.min = 0.5f, .max = 4});
         v.field("bounces", bounces_);
         // Transient: shown in the inspector, but deliberately NOT part of the
@@ -197,6 +198,7 @@ public:
         marking.r = 0.9f, marking.g = 0.85f, marking.b = 0.5f;
         r.draw_path(track, marking);
         r.fill_polygon({{60, 660}, {200, 640}, {230, 700}, {150, 690}, {100, 710}}, rgba(75, 192, 192, 80));
+        if (!net_.nodes().empty()) draw_network(r, net_);
         r.set_layer(0);
 
         r.fill_rect(player_x_, player_y_, kPlayerSize, kPlayerSize, rgb(240, 240, 240));
@@ -220,6 +222,10 @@ public:
     }
 
     World* world() override { return &world_; }
+
+    // The editor's Scene panel offers this next to Select: draw a curve
+    // network with the mouse. It is reflected state like everything else.
+    std::vector<EditorTool*> editor_tools() override { return {&net_tool_}; }
 
     void debug_ui() override {
         ImGui::Text("entities %zu   bounces %u", world_.entity_count(), bounces_);
@@ -279,6 +285,8 @@ private:
     Vec2 cam_target_{kWidth * 0.5f, kHeight * 0.5f};
     float zoom_target_ = 1;
     CameraController cam_; // presentation only
+    CurveNetwork net_;
+    NetworkTool net_tool_{&net_, "Network"};
     u32 bounces_ = 0;
     u64 tick_ = 0; // for the animated road markings only, not saved on purpose
 

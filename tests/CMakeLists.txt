@@ -30,6 +30,8 @@ rewind_add_test(pack_test)
 rewind_add_test(settings_test)
 rewind_add_test(savegame_test)
 rewind_add_test(network_test)
+rewind_add_test(agents_test)
+rewind_add_test(tool_test)
 rewind_add_test(shader_test)
 target_include_directories(shader_test PRIVATE ${CMAKE_BINARY_DIR}/generated)
 

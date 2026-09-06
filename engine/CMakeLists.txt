@@ -59,6 +59,7 @@ add_library(rewind SHARED
     src/cooked.cpp
     src/curve.cpp
     src/debug_font.cpp
+    src/editor_tool.cpp
     src/file_watcher.cpp
     src/font.cpp
     src/game_module.cpp
@@ -72,6 +73,7 @@ add_library(rewind SHARED
     src/mesh.cpp
     src/net_lobby.cpp
     src/network.cpp
+    src/network_agents.cpp
     src/network_draw.cpp
     src/net_loopback.cpp
     src/net_session.cpp

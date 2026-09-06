@@ -334,6 +334,51 @@ derived data rebuilds on load. `draw_network()` in `render/network_draw.h`
 shows surfaces, tracks with arrows, connectors, links, conflicts and nodes
 for tools and prototypes.
 
+### Network agents
+
+`sim/network_agents.h` moves things along a network's routes:
+
+```cpp
+NetworkAgents agents;                     // reflected: put it in your Game state
+u32 car = agents.spawn(net.route(from, to), 0, params, tag);
+agents.set_entry_rule([&](const NetworkAgents&, u32 agent, u32 connector) {
+    return signals.is_green(net.connectors()[connector].node, connector);   // your rule
+});
+agents.tick(net, ctx.dt);                 // in tick(): deterministic, index order
+PathPoint pose = agents.pose(net, car);   // position and heading for drawing
+```
+
+Each agent follows its route piece by piece (track, connector, sideways
+change), never faster than it can stop within the gap to whoever is ahead
+on its piece or the next ones, keeping `headway` seconds behind a leader
+and `min_gap` when standing. Sideways changes blend between the two
+tracks over `change_length`. Before a connector that crosses another, the
+entry rule decides; the default refuses while a crossing connector has
+someone on it. `NetAgentParams` holds length, speeds, acceleration,
+braking and gaps per agent. Parked agents (`done`) still take up room
+until removed. `on_track` and `on_connector` list who is where,
+`reroute` swaps the plan of an agent that is on the new route's first
+track, `stop_distance` parks it short of the end.
+
+### Editor tools
+
+`debug/editor_tool.h` is how a game adds modes to the editor's Scene
+panel. Return your tools from `Game::editor_tools()`; the panel's picker
+lists them next to Select, and the active tool's `update(ToolContext&)`
+runs every frame inside the scene callback with the mouse in world and
+render coordinates, button edges, modifiers, the zoom, the renderer to
+draw with and the gizmos for snapping. Set `ctx.edited` when you changed
+state (undo step, timeline re-snapshot) and `ctx.status` for the status
+bar; `panel()` draws the tool's options. While a tool is active the game
+gets no mouse and right-click belongs to the tool.
+
+`NetworkTool` comes ready: Place (click for a node chained to the last
+one, click a node to connect or start a chain, drag to move, right-click
+to end), Split (click an edge) and Delete (click a node or edge), with
+track layout and node radius as options and the debug overlay drawn
+underneath. The bounce sample keeps a `CurveNetwork` in its state and
+hands the editor one of these.
+
 ### Gizmos
 
 `debug/gizmo.h` has immediate-mode handles for tools and debug views:

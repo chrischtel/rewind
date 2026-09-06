@@ -119,6 +119,11 @@ struct RouteStep {
     enum class Kind : u8 { Track, Connector, Change };
     Kind kind = Kind::Track;
     u32 index = 0; ///< track index (see CurveNetwork::track_index), connector index, or link index
+
+    void reflect(Visitor& v) {
+        v.field("kind", kind);
+        v.field("index", index);
+    }
 };
 
 struct Route {
@@ -126,6 +131,13 @@ struct Route {
     float cost = 0;
     u64 version = 0;              ///< network version it was planned on
     std::vector<RouteStep> steps; ///< alternating tracks and connectors/changes, starting on the start track
+
+    void reflect(Visitor& v) {
+        v.field("found", found);
+        v.field("cost", cost);
+        v.field("version", version);
+        v.field("steps", steps);
+    }
 };
 
 class CurveNetwork {
