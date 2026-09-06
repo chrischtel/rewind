@@ -45,6 +45,11 @@ struct EditorState {
          show_project = true, show_assets = true, show_keys = false;
     std::string status;
     std::vector<std::string> cook_log;
+    // Free camera for the scene view: pan with right/middle drag, zoom with
+    // the wheel around the cursor. Overrides whatever camera the game sets.
+    bool free_camera = false;
+    rw::CameraController free_cam;
+    rw::Camera free_cam_out;
 };
 
 EditorState g_editor;
@@ -273,6 +278,47 @@ void draw_scene(rw::App& app) {
         const bool focused = ImGui::IsWindowFocused();
         app.set_game_input_focus(focused && (hovered || !ImGui::IsAnyItemActive()));
         if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) ImGui::SetWindowFocus();
+
+        // Free camera: wheel zooms around the cursor, right or middle drag pans.
+        rw::Renderer2D& renderer = app.renderer();
+        rw::CameraController& cam = g_editor.free_cam;
+        if (g_editor.free_camera) {
+            cam.set_view_size(rw_, rh);
+            const ImGuiIO& io = ImGui::GetIO();
+            const rw::Vec2 mouse_rt = renderer.window_to_render(io.MousePos.x, io.MousePos.y);
+            if (hovered && io.MouseWheel != 0)
+                cam.zoom_step(static_cast<int>(io.MouseWheel > 0 ? std::ceil(io.MouseWheel) : std::floor(io.MouseWheel)), mouse_rt);
+            const bool dragging = ImGui::IsMouseDragging(ImGuiMouseButton_Right, 0) || ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0);
+            if (dragging && (hovered || ImGui::IsWindowFocused()))
+                cam.pan(rw::Vec2{io.MouseDelta.x / scale, io.MouseDelta.y / scale});
+            cam.update(io.DeltaTime);
+            g_editor.free_cam_out = cam.camera();
+            renderer.set_camera_override(&g_editor.free_cam_out);
+        } else if (renderer.camera_overridden()) {
+            renderer.set_camera_override(nullptr);
+        }
+
+        // Small toolbar over the top-left corner of the view.
+        ImGui::SetCursorScreenPos(ImVec2(origin.x + 6, origin.y + 6));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4, 2));
+        if (ImGui::Checkbox("Free camera", &g_editor.free_camera) && g_editor.free_camera) {
+            // Start from where the game is looking right now.
+            const rw::Camera& current = renderer.camera();
+            cam.set_view_size(rw_, rh);
+            cam.set_target(current.center(rw_, rh));
+            cam.set_target_zoom(current.zoom);
+            cam.snap();
+        }
+        if (g_editor.free_camera) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reset")) {
+                cam.set_target(rw::Vec2{rw_ * 0.5f, rh * 0.5f});
+                cam.set_target_zoom(1);
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("%.2fx  (%.0f, %.0f)", cam.zoom(), cam.center().x, cam.center().y);
+        }
+        ImGui::PopStyleVar();
     } else {
         ImGui::TextDisabled("no view yet");
         app.set_game_input_focus(false);

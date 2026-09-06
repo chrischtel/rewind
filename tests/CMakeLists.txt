@@ -17,6 +17,8 @@ rewind_add_test(project_test)
 rewind_add_test(scene_test)
 rewind_add_test(geometry_test)
 rewind_add_test(curve_test)
+rewind_add_test(camera_test)
+rewind_add_test(spatial_test)
 rewind_add_test(shader_test)
 target_include_directories(shader_test PRIVATE ${CMAKE_BINARY_DIR}/generated)
 

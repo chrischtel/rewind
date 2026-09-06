@@ -233,6 +233,54 @@ polygons), `simplify_polyline` (Douglas-Peucker), `resample_polyline`,
 `from_angle` and `angle_of`. Paths reflect, so they save, load, diff and
 show up in the inspector.
 
+### Camera
+
+`Camera` (x, y, zoom) is what the renderer uses: `to_screen`, `to_world`,
+`Camera::centered(center, zoom, w, h)`. `CameraController` in
+`render/camera.h` drives it smoothly:
+
+```cpp
+CameraController cam;                  // presentation state, lives in your Game
+cam.set_view_size(w, h);
+cam.set_bounds(world_rect);            // the view never leaves it
+cam.follow(player, 40);                // dead zone of 40 world units
+cam.zoom_step(input.wheel, mouse);     // zoom around the cursor, 1.25x per click
+cam.pan(drag_delta);                   // screen pixels
+cam.shake(8, 0.3f);                    // on impact
+cam.update(dt);                        // or update_realtime()
+renderer.set_camera(cam.camera());
+if (!cam.visible(bounds, 32)) continue;   // culling
+int lod = cam.lod();                      // 0 at 1:1, 1 at half, 2 at a quarter...
+```
+
+Zoom is smoothed in log space, pan exponentially; `snap()` skips the
+smoothing, `frame(rect)` fits a rectangle. The mouse wheel arrives in
+`InputFrame::wheel` (clicks per tick), so zoom intent can be simulation
+state that rewinds and replays while the controller chases it in render().
+The editor's Scene panel has a **Free camera** toggle built on the same
+controller: wheel zooms around the cursor, right or middle drag pans, and
+`Renderer2D::set_camera_override()` makes the game's own camera calls
+inert while it is on.
+
+### Spatial index
+
+`SpatialGrid<T>` in `core/spatial.h` answers "what is near here" for any
+payload (entity handles, indices) with axis-aligned bounds:
+
+```cpp
+SpatialGrid<Entity> grid(64);                     // cell size about one object
+auto h = grid.insert(entity, bounds);             // returns a handle
+grid.update(h, new_bounds);                       // cheap while it stays in the same cells
+grid.remove(h);
+grid.query(rect, [](u32 h, const Entity& e, const Rect& b) { ... });
+grid.query_circle(center, radius, ...);
+grid.query_segment(a, b, ...);                    // line of sight, bullets
+auto nearest = grid.nearest(point, max_distance); // optional handle
+```
+
+It is derived data: rebuild it from the world after a load or rewind
+instead of saving it. Results come in no particular order.
+
 Draw layers: `set_layer(n)` tags everything drawn afterwards. Within a
 render target lower layers are drawn first and the recording order is kept
 inside a layer, so a game can draw ground, objects and UI in whatever

@@ -191,6 +191,7 @@ private:
     bool running_ = false;
     bool imgui_ready_ = false;
     bool input_focus_ = true;
+    mutable i32 wheel_accum_ = 0; ///< wheel clicks since sample_input() last took them
     double accumulator_ = 0;
 };
 

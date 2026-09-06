@@ -85,6 +85,13 @@ public:
 
         if (pressed(in, prev_input_, Button::A)) spawn_ball();
         if (pressed(in, prev_input_, Button::B)) pop_ball();
+        // Camera intent is simulation state (it rewinds and replays); the
+        // smooth motion towards it happens in render().
+        if (in.wheel != 0) zoom_target_ = clampf(zoom_target_ * std::pow(1.25f, static_cast<float>(in.wheel)), 0.5f, 4.0f);
+        if (in.down(Button::MouseRight) && prev_input_.down(Button::MouseRight)) {
+            cam_target_.x -= static_cast<float>(in.mouse_x - prev_input_.mouse_x) / zoom_target_;
+            cam_target_.y -= static_cast<float>(in.mouse_y - prev_input_.mouse_y) / zoom_target_;
+        }
         prev_input_ = in;
 
         world_.each<Transform, Velocity, Shape>([&](Entity, Transform& t, Velocity& vel, Shape& s) {
@@ -125,6 +132,8 @@ public:
         v.field("world", world_);
         v.field("rng", rng_);
         v.field("prev_input", prev_input_);
+        v.field("cam_target", cam_target_);
+        v.field("zoom_target", zoom_target_, {.min = 0.5f, .max = 4});
         v.field("bounces", bounces_);
         // Transient: shown in the inspector, but deliberately NOT part of the
         // saved state. See debug_ui().
@@ -133,6 +142,25 @@ public:
 
     void render(Renderer2D& r, float /*alpha*/) override {
         r.clear(kBackground);
+
+        // Smooth camera chasing the simulation's target; bounded to the arena.
+        cam_.set_view_size(kWidth, kHeight);
+        cam_.set_bounds({-kWidth * 0.5f, -kHeight * 0.5f, kWidth * 2, kHeight * 2});
+        cam_.set_target(cam_target_);
+        cam_.set_target_zoom(zoom_target_);
+        cam_.update_realtime();
+        r.set_camera(cam_.camera());
+
+        // Spatial index demo: balls within reach of the player get a ring.
+        // The grid is derived from the world each frame, never saved.
+        SpatialGrid<Entity> nearby(64);
+        world_.each<Transform, Shape>([&](Entity e, Transform& t, Shape& s) {
+            nearby.insert(e, {t.x - s.radius, t.y - s.radius, s.radius * 2, s.radius * 2});
+        });
+        nearby.query_circle({player_x_ + kPlayerSize / 2, player_y_ + kPlayerSize / 2}, 140,
+                            [&](u32, const Entity&, const Rect& b) {
+                                r.draw_rect(b.x - 3, b.y - 3, b.w + 6, b.h + 6, rgba(255, 255, 255, 90));
+                            });
 
         // Draw layers: the balls are recorded first but the track (layer -1)
         // still ends up underneath them.
@@ -184,7 +212,7 @@ public:
 
         r.draw_text(12, kHeight - 60, "arrows / WASD: move   Z: launch a ball   X: pop one", rgb(160, 160, 180));
         r.draw_text(12, kHeight - 44, "hold F4: rewind   F2: pause   F3: step   F5: replay + verify", rgb(160, 160, 180));
-        r.draw_text(12, kHeight - 28, "F1: toggle overlay   Esc: quit", rgb(160, 160, 180));
+        r.draw_text(12, kHeight - 28, "F1: toggle overlay   Esc: quit   wheel: zoom   right drag: pan", rgb(160, 160, 180));
     }
 
     World* world() override { return &world_; }
@@ -244,6 +272,9 @@ private:
     World world_;
     Rng rng_;
     InputFrame prev_input_;
+    Vec2 cam_target_{kWidth * 0.5f, kHeight * 0.5f};
+    float zoom_target_ = 1;
+    CameraController cam_; // presentation only
     u32 bounces_ = 0;
     u64 tick_ = 0; // for the animated road markings only, not saved on purpose
 

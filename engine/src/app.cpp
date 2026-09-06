@@ -171,6 +171,10 @@ void App::handle_events() {
             }
             break;
 
+        case SDL_EVENT_MOUSE_WHEEL:
+            wheel_accum_ += static_cast<i32>(e.wheel.y > 0 ? std::ceil(e.wheel.y) : std::floor(e.wheel.y));
+            break;
+
         case SDL_EVENT_GAMEPAD_ADDED:
             if (!gamepad_) {
                 gamepad_ = SDL_OpenGamepad(e.gdevice.which);
@@ -258,7 +262,9 @@ InputFrame App::sample_input() const {
         in.set(Button::MouseLeft, (mb & SDL_BUTTON_LMASK) != 0);
         in.set(Button::MouseRight, (mb & SDL_BUTTON_RMASK) != 0);
         in.set(Button::MouseMiddle, (mb & SDL_BUTTON_MMASK) != 0);
+        in.wheel = static_cast<i8>(std::clamp(wheel_accum_, -127, 127));
     }
+    wheel_accum_ = 0;
     return in;
 }
 

@@ -59,6 +59,9 @@ It is not for 3D games, and not for people who want a no-code workflow.
 - Curves: Bezier paths, arcs and Catmull-Rom splines with arc-length
   sampling, closest point, split, join, offset and flattening; polygon
   offset, simplification, hull and intersection helpers.
+- Camera controller with smooth pan and zoom around the cursor, bounds,
+  follow with dead zone, shake, culling and a level-of-detail hint; a
+  spatial hash grid for rectangle, circle, segment and nearest queries.
 - Materials: your own GLSL fragment shaders with extra textures and
   parameters, one source for both backends.
 - Native Aseprite import: layers, tags, slices, tilesets, tilemap layers.

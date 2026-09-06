@@ -60,8 +60,10 @@ building blocks that any game uses. Engine-level only, never game-specific.
    split and join, closest point. Polygon triangulation and offset.~~
    Done: `core/curve.h` (CubicBezier, Arc, Path, PathSampler, polyline and
    polygon helpers), `draw_path`/`fill_path`, `curve_test`.
-3. Camera with smooth zoom and pan, level-of-detail hint, spatial index
-   (grid or quadtree) for proximity queries.
+3. ~~Camera with smooth zoom and pan, level-of-detail hint, spatial index
+   (grid or quadtree) for proximity queries.~~ Done: `render/camera.h`
+   (CameraController, editor free camera, `InputFrame::wheel`),
+   `core/spatial.h` (SpatialGrid), `camera_test`, `spatial_test`.
 4. Editor gizmos: draggable handles, tangent handles, snapping; property
    widgets for curves.
 5. Generic graph module with weighted edges and shortest-path search;

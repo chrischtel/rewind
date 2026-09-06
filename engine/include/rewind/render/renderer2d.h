@@ -41,6 +41,20 @@ struct Camera {
     float x = 0;
     float y = 0;
     float zoom = 1;
+
+    Vec2 to_screen(Vec2 world) const { return {(world.x - x) * zoom, (world.y - y) * zoom}; }
+    Vec2 to_world(Vec2 screen) const { return {screen.x / zoom + x, screen.y / zoom + y}; }
+    Vec2 center(float view_w, float view_h) const { return {x + view_w / (2 * zoom), y + view_h / (2 * zoom)}; }
+    /// A camera looking at `center` with `zoom`, for a view of the given size.
+    static Camera centered(Vec2 center, float zoom, float view_w, float view_h) {
+        return {center.x - view_w / (2 * zoom), center.y - view_h / (2 * zoom), zoom};
+    }
+
+    void reflect(Visitor& v) {
+        v.field("x", x);
+        v.field("y", y);
+        v.field("zoom", zoom, {.min = 0.01f, .max = 64});
+    }
 };
 
 struct SpriteOptions {
@@ -210,8 +224,20 @@ public:
     void set_material_texture(u32 slot, Texture* texture);
 
     // ---- camera and coordinates ---------------------------------------------
-    void set_camera(const Camera& cam) { camera_ = cam; }
+    void set_camera(const Camera& cam) {
+        game_camera_ = cam;
+        if (!camera_override_) camera_ = cam;
+    }
+    /// The camera in effect (the override while one is set).
     const Camera& camera() const { return camera_; }
+
+    /// Tools only: replace whatever camera the game sets with this one until
+    /// called with nullptr. The editor's free camera uses it.
+    void set_camera_override(const Camera* cam) {
+        camera_override_ = cam != nullptr;
+        camera_ = cam ? *cam : game_camera_;
+    }
+    bool camera_overridden() const { return camera_override_; }
 
     /// Size of what is being drawn into right now: the render target after
     /// set_target(), otherwise the window.
@@ -248,6 +274,8 @@ private:
 
     std::unique_ptr<Impl> impl_;
     Camera camera_;
+    Camera game_camera_;
+    bool camera_override_ = false;
     bool pixel_art_ = false;
     Rect present_{};
     float present_scale_ = 1;
