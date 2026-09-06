@@ -11,6 +11,8 @@
 #include "rewind/sim/reflect.h"
 #include "rewind/sim/timeline.h"
 
+#include "rewind/sim/savegame.h"
+#include <filesystem>
 #include <imgui.h>
 
 #include <algorithm>
@@ -399,6 +401,55 @@ void draw_settings_panel(App& app) {
     ImGui::TextDisabled("%s", user_data_dir(app.config().organization, app.config().title).c_str());
 }
 
+void draw_saves_panel(App& app) {
+    static char slot[32] = "slot1";
+    static char label[64] = "";
+    ImGui::SetNextItemWidth(100);
+    ImGui::InputText("slot", slot, sizeof slot);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(160);
+    ImGui::InputTextWithHint("##label", "label", label, sizeof label);
+    ImGui::SameLine();
+    std::string error;
+    if (ImGui::Button("Save") && slot[0]) {
+        if (!app.save_game(slot, label, &error)) RW_LOG_ERROR("app", "save: %s", error.c_str());
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Load") && slot[0]) {
+        if (!app.load_game(slot, &error)) RW_LOG_ERROR("app", "load: %s", error.c_str());
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Screenshot (F12)")) app.screenshot();
+
+    const std::vector<SaveInfo> saves = app.saved_games();
+    if (saves.empty()) {
+        ImGui::TextDisabled("no saves yet in %s", app.save_dir().c_str());
+        return;
+    }
+    if (ImGui::BeginTable("##saves", 4, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
+        ImGui::TableSetupColumn("slot");
+        ImGui::TableSetupColumn("label");
+        ImGui::TableSetupColumn("saved");
+        ImGui::TableSetupColumn("tick");
+        ImGui::TableHeadersRow();
+        for (const SaveInfo& s : saves) {
+            const std::string name = std::filesystem::path(s.file).stem().string();
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            if (ImGui::Selectable((name + "##" + s.file).c_str(), false, ImGuiSelectableFlags_SpanAllColumns))
+                std::snprintf(slot, sizeof slot, "%s", name.c_str());
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s (version %u, %zu bytes)", s.file.c_str(), s.version, s.bytes);
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextUnformatted(s.label.c_str());
+            ImGui::TableSetColumnIndex(2);
+            ImGui::TextUnformatted(format_timestamp(s.timestamp).c_str());
+            ImGui::TableSetColumnIndex(3);
+            ImGui::Text("%llu", static_cast<unsigned long long>(s.tick));
+        }
+        ImGui::EndTable();
+    }
+}
+
 void apply_editor_theme(Color accent) {
     ImGuiStyle& s = ImGui::GetStyle();
     ImGui::StyleColorsDark(&s);
@@ -514,6 +565,8 @@ void draw_debug_overlay(Timeline& tl, TimeControl& time, Game& game, const Frame
     if (ImGui::CollapsingHeader("Keys")) draw_keys_panel();
 
     if (app && ImGui::CollapsingHeader("Settings")) draw_settings_panel(*app);
+
+    if (app && ImGui::CollapsingHeader("Saves")) draw_saves_panel(*app);
 
     if (ImGui::CollapsingHeader("Game", ImGuiTreeNodeFlags_DefaultOpen)) game.debug_ui();
 

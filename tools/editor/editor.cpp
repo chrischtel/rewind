@@ -44,7 +44,7 @@ struct EditorState {
     bool settings_dirty = false;
     bool layout_done = false;
     bool show_scene = true, show_timeline = true, show_inspector = true, show_console = true, show_profiler = true,
-         show_project = true, show_assets = true, show_keys = false, show_settings = false;
+         show_project = true, show_assets = true, show_keys = false, show_settings = false, show_saves = false;
     std::string status;
     std::vector<std::string> cook_log;
     // Free camera for the scene view: pan with right/middle drag, zoom with
@@ -571,6 +571,7 @@ void draw_menu(rw::App& app) {
         ImGui::MenuItem("Project", nullptr, &g_editor.show_project);
         ImGui::MenuItem("Keys", nullptr, &g_editor.show_keys);
         ImGui::MenuItem("Player settings", nullptr, &g_editor.show_settings);
+        ImGui::MenuItem("Save games", nullptr, &g_editor.show_saves);
         ImGui::MenuItem("Status bar", nullptr, &g_editor.show_status_bar);
         ImGui::Separator();
         if (ImGui::MenuItem("Reset layout")) g_editor.layout_done = false;
@@ -1178,6 +1179,10 @@ void draw_panels(rw::App& app) {
     }
     if (g_editor.show_settings) {
         if (ImGui::Begin("Player settings", &g_editor.show_settings)) rw::draw_settings_panel(app);
+        ImGui::End();
+    }
+    if (g_editor.show_saves) {
+        if (ImGui::Begin("Save games", &g_editor.show_saves)) rw::draw_saves_panel(app);
         ImGui::End();
     }
 

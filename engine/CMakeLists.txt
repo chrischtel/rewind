@@ -66,6 +66,7 @@ add_library(rewind SHARED
     src/gizmo.cpp
     src/input_map.cpp
     src/inspector.cpp
+    src/localization.cpp
     src/log.cpp
     src/math.cpp
     src/mesh.cpp
@@ -80,6 +81,7 @@ add_library(rewind SHARED
     src/profiler.cpp
     src/project.cpp
     src/reflect.cpp
+    src/savegame.cpp
     src/renderer2d.cpp
     src/scene.cpp
     src/shader_cross.cpp

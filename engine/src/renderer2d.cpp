@@ -1163,6 +1163,48 @@ Texture* Renderer2D::create_texture(const std::string& name, int width, int heig
     return t;
 }
 
+bool Renderer2D::read_texture(const Texture& texture, std::vector<u8>& rgba) {
+    Impl& im = *impl_;
+    if (!texture.handle || texture.width <= 0 || texture.height <= 0) return false;
+    const u32 size = static_cast<u32>(texture.width) * static_cast<u32>(texture.height) * 4u;
+    SDL_GPUTransferBufferCreateInfo tinfo{};
+    tinfo.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
+    tinfo.size = size;
+    SDL_GPUTransferBuffer* staging = SDL_CreateGPUTransferBuffer(im.device, &tinfo);
+    if (!staging) return false;
+
+    SDL_WaitForGPUIdle(im.device);
+    SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(im.device);
+    SDL_GPUCopyPass* pass = SDL_BeginGPUCopyPass(cmd);
+    SDL_GPUTextureRegion src{};
+    src.texture = texture.handle;
+    src.w = static_cast<u32>(texture.width);
+    src.h = static_cast<u32>(texture.height);
+    src.d = 1;
+    SDL_GPUTextureTransferInfo dst{};
+    dst.transfer_buffer = staging;
+    SDL_DownloadFromGPUTexture(pass, &src, &dst);
+    SDL_EndGPUCopyPass(pass);
+    SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+    if (fence) {
+        SDL_WaitForGPUFences(im.device, true, &fence, 1);
+        SDL_ReleaseGPUFence(im.device, fence);
+    }
+    const u8* mapped = static_cast<const u8*>(SDL_MapGPUTransferBuffer(im.device, staging, false));
+    if (!mapped) {
+        SDL_ReleaseGPUTransferBuffer(im.device, staging);
+        return false;
+    }
+    rgba.assign(mapped, mapped + size);
+    SDL_UnmapGPUTransferBuffer(im.device, staging);
+    SDL_ReleaseGPUTransferBuffer(im.device, staging);
+    // Render targets use the swapchain's format, which is often BGRA.
+    const SDL_GPUTextureFormat fmt = texture.render_target ? im.target_format : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    if (fmt == SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM || fmt == SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB)
+        for (u32 i = 0; i + 3 < size; i += 4) std::swap(rgba[i], rgba[i + 2]);
+    return true;
+}
+
 Texture* Renderer2D::create_render_target(const std::string& name, int width, int height) {
     if (width <= 0 || height <= 0) return nullptr;
     return impl_->make_texture(name, width, height, true, pixel_art_);

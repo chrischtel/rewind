@@ -77,6 +77,13 @@ const std::string& executable_dir() {
 void add_asset_root(const std::string& dir, bool cooked) { roots().push_back(Root{with_separator(dir), cooked}); }
 void clear_asset_roots() { roots().clear(); }
 
+std::vector<std::string> asset_roots() {
+    std::vector<std::string> out;
+    for (const Root& r : roots())
+        if (!r.cooked) out.push_back(r.dir);
+    return out;
+}
+
 std::string resolve_asset_path(const std::string& path) {
     if (path.empty()) return path;
     const std::filesystem::path p(path);

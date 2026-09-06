@@ -2,6 +2,8 @@
 
 #include "rewind/core/input_map.h"
 #include "rewind/core/player_settings.h"
+#include "rewind/assets/png.h"
+#include "rewind/sim/savegame.h"
 #include "rewind/core/log.h"
 
 #include "rewind/core/game_module.h"
@@ -18,6 +20,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <ctime>
+#include <filesystem>
 
 namespace rw {
 
@@ -175,6 +179,7 @@ void App::handle_events() {
                 break;
             case SDL_SCANCODE_F4: time_.mode = TimeMode::Rewinding; break;
             case SDL_SCANCODE_F5: time_.replay_request = true; break;
+            case SDL_SCANCODE_F12: screenshot(); break;
             default: break;
             }
             break;
@@ -426,6 +431,12 @@ void App::render_frame(float alpha) {
     ImGui::NewFrame();
 
     const bool drawing = renderer_->begin_frame();
+    // A screenshot of a window-sized game needs an offscreen copy to read back.
+    Texture* shot = nullptr;
+    if (screenshot_pending_ && drawing && !target_) {
+        shot = renderer_->create_render_target("__screenshot", renderer_->window_width(), renderer_->window_height());
+        if (shot) renderer_->set_target(shot);
+    }
     if (target_) renderer_->set_target(target_);
     {
         RW_PROFILE_SCOPE("game.render");
@@ -442,6 +453,10 @@ void App::render_frame(float alpha) {
             renderer_->set_target(nullptr);
             present_target();
         }
+    } else if (shot) {
+        renderer_->set_target(nullptr);
+        renderer_->set_camera(Camera{});
+        renderer_->draw_texture(*shot, 0, 0);
     }
 
     if (time_.show_overlay) {
@@ -454,8 +469,72 @@ void App::render_frame(float alpha) {
     }
 
     ImGui::Render();
-    RW_PROFILE_SCOPE("submit");
-    renderer_->end_frame(drawing ? ImGui::GetDrawData() : nullptr);
+    {
+        RW_PROFILE_SCOPE("submit");
+        renderer_->end_frame(drawing ? ImGui::GetDrawData() : nullptr);
+    }
+
+    if (screenshot_pending_ && drawing) {
+        screenshot_pending_ = false;
+        Texture* source = target_ ? target_ : shot;
+        std::vector<u8> rgba;
+        if (source && renderer_->read_texture(*source, rgba)) {
+            std::string file = screenshot_file_;
+            if (file.empty()) {
+                const std::string dir = user_data_dir(cfg_.organization, cfg_.title) + "screenshots/";
+                std::error_code ec;
+                std::filesystem::create_directories(dir, ec);
+                const u64 now = static_cast<u64>(SDL_GetTicksNS() / 1000000ull);
+                file = dir + "shot_" + format_timestamp(static_cast<u64>(std::time(nullptr))) + "_" + std::to_string(now % 1000) + ".png";
+                for (char& c : file)
+                    if (c == ':' || c == ' ') c = '-';
+            }
+            std::string error;
+            if (write_png(file, source->width, source->height, rgba.data(), &error)) RW_LOG_INFO("app", "screenshot: %s", file.c_str());
+            else RW_LOG_ERROR("app", "screenshot: %s", error.c_str());
+        } else {
+            RW_LOG_ERROR("app", "screenshot: could not read the frame back");
+        }
+    }
+}
+
+// ---- save games ------------------------------------------------------------------------
+
+std::string App::save_dir() const { return savegame_dir(cfg_.organization, cfg_.title); }
+
+bool App::save_game(const std::string& slot, const std::string& label, std::string* error) {
+    const std::string dir = save_dir();
+    if (dir.empty() || !game_) {
+        if (error) *error = "no save folder or no game";
+        return false;
+    }
+    const bool ok = write_savegame(dir + slot + ".rwsave", *game_, cfg_.save_version, label, timeline_.head(), error);
+    if (ok) RW_LOG_INFO("app", "saved game '%s'", slot.c_str());
+    return ok;
+}
+
+bool App::load_game(const std::string& slot, std::string* error) {
+    const std::string dir = save_dir();
+    if (dir.empty() || !game_) {
+        if (error) *error = "no save folder or no game";
+        return false;
+    }
+    Game* game = game_;
+    const SaveMigration migrate = [game](u32 from, std::vector<u8>& state) { return game->migrate_save(from, state); };
+    SaveInfo info;
+    if (!read_savegame(dir + slot + ".rwsave", *game_, cfg_.save_version, migrate, &info, error)) return false;
+    timeline_.recapture(*game_);
+    accumulator_ = 0;
+    if (time_.mode == TimeMode::Replaying || time_.mode == TimeMode::Rewinding) time_.mode = TimeMode::Paused;
+    RW_LOG_INFO("app", "loaded game '%s' (%s, saved %s)", slot.c_str(), info.label.c_str(), format_timestamp(info.timestamp).c_str());
+    return true;
+}
+
+std::vector<SaveInfo> App::saved_games() const { return list_savegames(save_dir()); }
+
+void App::screenshot(const std::string& file) {
+    screenshot_pending_ = true;
+    screenshot_file_ = file;
 }
 
 void App::set_view_size(int width, int height) {

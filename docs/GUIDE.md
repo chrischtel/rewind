@@ -761,6 +761,43 @@ is running, since the engine DLL and runner are locked by the process. And a
 game must not keep simulation state anywhere except what `save()` writes,
 because that is the only thing carried across.
 
+## Save games, screenshots, localisation
+
+**Save games** are the reflected state behind a small header: the
+project's `save_version`, a label, the tick and a timestamp, in
+`<user data>/saves/<slot>.rwsave`.
+
+```cpp
+app.save_game("slot1", "before the boss");
+app.load_game("slot1");                 // becomes the current tick; history continues from it
+for (const SaveInfo& s : app.saved_games()) ...   // newest first: label, version, timestamp, tick
+```
+
+Bump `save_version` in `configure()` (or the project) when the state
+changes shape and override `Game::migrate_save(from, bytes)` to rewrite
+older saves; without a migration an old file is refused with a clear
+error instead of read as garbage. The overlay's **Saves** section and the
+editor's **Save games** panel list and load slots.
+
+**Screenshots:** F12 or `app.screenshot()` writes the next frame (the
+game only, no overlay) as PNG into `<user data>/screenshots/`. Underneath
+it is `Renderer2D::read_texture()`, which copies any texture back to RGBA.
+
+**Localisation:** string tables are flat JSON files per language in
+`strings/` (nested objects flatten to `menu.play`), read through the asset
+roots and packs.
+
+```cpp
+Localization::global().configure("strings", "en");   // fallback language
+Localization::global().set_language("de");
+draw_text(font, x, y, tr("menu.play"));
+draw_text(font, x, y, trf("hello", {{"name", player_name}}));   // {name} placeholders
+```
+
+Missing keys come back as `[key]` so they are visible in the game, the
+fallback fills gaps in a translation, and `available()` lists the
+languages that have a table.
+
 ## Settings: project, player, bindings
 
 Three layers, each overriding the last:

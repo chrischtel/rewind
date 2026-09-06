@@ -87,6 +87,8 @@ void draw_keys_panel();
 /// button's + and press a key or pad button). Saves on request.
 class App;
 void draw_settings_panel(App& app);
+/// Save slots in the user's folder: save, load, list; a screenshot button.
+void draw_saves_panel(App& app);
 
 /// A calm dark theme with one accent colour, for tools built on the
 /// engine. Rounded frames, flat headers, readable contrast.

@@ -17,6 +17,8 @@ const std::string& executable_dir();
 /// cook step's output) before the plain path.
 void add_asset_root(const std::string& dir, bool cooked);
 void clear_asset_roots();
+/// The loose (uncooked) roots, with trailing separators, in search order.
+std::vector<std::string> asset_roots();
 
 /// Where to read an asset from. Absolute paths and paths that exist from the
 /// current directory are returned unchanged; otherwise the asset roots and

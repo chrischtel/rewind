@@ -137,9 +137,14 @@ project settings, save games, localisation.
    SDL's per-user folder, game block), `App::player_settings`, Settings
    section in the overlay and a Player settings panel in the editor with
    press-to-bind, `settings_test`.
-4. Core: save games with a version tag and a migration hook, screenshot
+4. ~~Core: save games with a version tag and a migration hook, screenshot
    capture, localisation (string tables per language, `tr()`), a settings
-   struct games can extend.
+   struct games can extend.~~ Done: `sim/savegame.h` (RWSV files with
+   version, label, tick; `Game::migrate_save`; `App::save_game/load_game`,
+   Saves section in the overlay and editor), `Renderer2D::read_texture` and
+   `App::screenshot` (F12, PNG in the user's folder), `core/localization.h`
+   (`tr`, `trf`, fallback language, flattened JSON tables), the player
+   settings `game` block, `savegame_test`.
 5. Network II: sessions with up to four players, lobby with slots, ready
    state and start countdown, the duel sample grows into an arena.
 

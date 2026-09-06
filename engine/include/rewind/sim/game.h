@@ -6,6 +6,8 @@
 #include "rewind/sim/reflect.h"
 #include "rewind/sim/serialize.h"
 
+#include <vector>
+
 namespace rw {
 
 class App;
@@ -107,6 +109,11 @@ public:
 
     /// Optional: draw Dear ImGui widgets inside the engine's debug overlay.
     virtual void debug_ui() {}
+
+    /// A save game written by an older `save_version` is handed here before
+    /// loading: rewrite `state` to the current layout and return true, or
+    /// return false to refuse it. The default refuses.
+    virtual bool migrate_save(u32 /*from_version*/, std::vector<u8>& /*state*/) { return false; }
 
     /// The entity world the game keeps, if any. Tools use it for scenes,
     /// prefabs and the entity list. Nullptr means the game has no world.

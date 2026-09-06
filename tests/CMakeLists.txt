@@ -28,6 +28,7 @@ rewind_add_test(hierarchy_test)
 rewind_add_test(audio_test)
 rewind_add_test(pack_test)
 rewind_add_test(settings_test)
+rewind_add_test(savegame_test)
 rewind_add_test(shader_test)
 target_include_directories(shader_test PRIVATE ${CMAKE_BINARY_DIR}/generated)
 

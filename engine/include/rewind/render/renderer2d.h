@@ -195,6 +195,10 @@ public:
 
     Texture* find_texture(const std::string& name) const;
 
+    /// Copy a texture's pixels back as RGBA8 (waits for the GPU). Used for
+    /// screenshots and tests; not something to do every frame.
+    bool read_texture(const Texture& texture, std::vector<u8>& rgba);
+
     /// Nearest-neighbour sampling for textures created from now on.
     void set_pixel_art(bool nearest) { pixel_art_ = nearest; }
     bool pixel_art() const { return pixel_art_; }

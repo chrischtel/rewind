@@ -3,6 +3,7 @@
 #include "rewind/audio/audio.h"
 #include "rewind/core/input_map.h"
 #include "rewind/core/player_settings.h"
+#include "rewind/sim/savegame.h"
 #include "rewind/core/file_watcher.h"
 #include "rewind/core/math.h"
 #include "rewind/core/types.h"
@@ -69,6 +70,8 @@ struct AppConfig {
     /// Organisation name for the per-user settings folder (SDL_GetPrefPath).
     std::string organization = "Rewind";
     bool fullscreen = false; ///< Borderless fullscreen on the window's display.
+    /// Bump when the reflected state changes shape; older saves go through Game::migrate_save().
+    u32 save_version = 1;
     /// Keys and gamepad buttons per abstract Button; empty = InputBindings::defaults().
     InputBindings input;
     AudioMix audio_mix;
@@ -77,6 +80,7 @@ struct AppConfig {
     void reflect(Visitor& v) {
         v.field("title", title);
         v.field("organization", organization, {.tooltip = "folder name for the per-user settings"});
+        v.field("save_version", save_version, {.tooltip = "bump when the saved state changes shape"});
         v.field("fullscreen", fullscreen);
         v.field("width", width, {.min = 320, .max = 7680});
         v.field("height", height, {.min = 200, .max = 4320});
@@ -189,6 +193,21 @@ public:
     std::string take_pressed_key();
     std::string take_pressed_gamepad_button();
 
+    // ---- save games ---------------------------------------------------------
+    /// Write the state to "<saves dir>/<slot>.rwsave" with the config's
+    /// save_version; load_game reads it back (migrating through
+    /// Game::migrate_save when the version differs) and makes it the current
+    /// tick. Slots are file names: "slot1", "auto", "quick".
+    bool save_game(const std::string& slot, const std::string& label = "", std::string* error = nullptr);
+    bool load_game(const std::string& slot, std::string* error = nullptr);
+    std::vector<SaveInfo> saved_games() const;
+    std::string save_dir() const;
+
+    // ---- screenshots --------------------------------------------------------
+    /// Capture the next frame (game only, no overlay) to
+    /// "<user data>/screenshots/<timestamp>.png". F12 does the same.
+    void screenshot(const std::string& file = "");
+
 private:
     int loop();
     bool init_platform();
@@ -234,6 +253,9 @@ private:
     CompiledBindings compiled_;
     std::string pressed_key_;
     std::string pressed_pad_;
+    bool screenshot_pending_ = false;
+    std::string screenshot_file_;
+    Texture* screenshot_target_ = nullptr;
     double accumulator_ = 0;
 };
 
