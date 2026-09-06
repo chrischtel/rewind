@@ -563,13 +563,23 @@ is a dockable window on the ImGui docking branch.
 build/bin/Release/rewind_editor.exe build/bin/Release/towerdefense_hot.dll
 ```
 
-- **Scene** shows the running game, integer-scaled in pixel mode, with the
-  mouse mapped into game pixels. Click it to give the game your input; while
-  another panel has focus the game receives nothing. Its toolbar has the
+- **Scene** shows the game, integer-scaled in pixel mode, with the mouse
+  mapped into game pixels. The editor opens in edit mode: **Play** runs the
+  simulation from the edited state, **Pause** and **Step** freeze it, and
+  **Stop** brings the edited state back, so you can try a change and return
+  to it. **Undo** and **Redo** (Ctrl+Z, Ctrl+Y) cover every edit, whether
+  it came from the Inspector, a gizmo drag or the placement menu; a drag is
+  one undo step. Click the view to give the game your input; while another
+  panel has focus the game receives nothing. The second toolbar row has the
   **Free camera** (wheel zooms around the cursor, right or middle drag
   pans) and **Gizmos** with a snap grid and angle: the selected entity's
   hinted `Vec2`, `Rect` and `Path` fields get handles in the view, and a
-  click near an entity's position selects it.
+  click near an entity's position selects it. A right-click opens the
+  placement menu: create an entity or spawn a prefab at that spot, move or
+  duplicate the selection there, delete it (also Del and Ctrl+D).
+- **Entities** lists every entity with its name, which is the first string
+  field among its components, and a filter box that matches names,
+  component names and `#index`.
 - **Timeline** holds the transport, scrubber, determinism status, hot reload
   and network state. **Inspector** holds the game's debug UI and its whole
   reflected state, editable live. **Console** and **Profiler** are the same

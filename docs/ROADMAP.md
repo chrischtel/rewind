@@ -76,9 +76,27 @@ building blocks that any game uses. Engine-level only, never game-specific.
    separation, turn_toward, PathFollower), `sim/timer.h` (Timer, Cooldown,
    StateMachine), `graph_test`, `gameplay_test`.
 
-All five items are done; this list is complete. The next list is not yet
-chosen (candidates: the deferred project items above, 3D and isometric
-groundwork, editor growth such as undo and an asset picker).
+All five items are done; this list is complete.
+
+## Active: editor workflow
+
+What makes the editor feel like an editor: an edit mode with Play and Stop,
+undo, names, placing things. Generic throughout; the game only supplies
+reflected state with hints.
+
+1. ~~Edit and play modes (Play, Pause, Resume, Stop returns to the edited
+   state), undo/redo over whole-state snapshots with drag coalescing,
+   entity names (first string field) and a filter in the Entities panel,
+   right-click placement menu in the scene (create, spawn prefab, move,
+   duplicate, delete), Ctrl+Z/Y/D and Del.~~ Done: `debug/edit_history.h`,
+   `edit_history_test`, editor.
+2. Asset references: an `AssetRef` field type with a hint, a picker in the
+   Inspector fed by the asset database, drag from the Assets panel.
+3. Scene management: new scene, scene list, switch scene, unsaved-changes
+   marker, save on Ctrl+S; entity hierarchy through an optional parent link.
+4. Editor polish: dark theme with accent, toolbar icons, status bar with
+   tick, fps and state, keyboard shortcut reference, welcome screen when
+   started without a project.
 
 ## Later
 

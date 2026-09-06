@@ -56,9 +56,131 @@ struct EditorState {
     rw::Gizmos gizmos;
     bool scene_hovered = false;
     float scene_scale = 1;
+    // Editing workflow: undo history over whole-state snapshots, play/stop
+    // that returns to the edited state, names and search, placement.
+    rw::EditHistory history;
+    bool edited_frame = false;   ///< something changed the state this frame
+    bool in_play = false;        ///< Play was pressed; play_start holds the state to return to
+    std::vector<rw::u8> play_start;
+    bool first_frame = true;
+    rw::TimeMode last_mode = rw::TimeMode::Paused;
+    char entity_filter[64] = "";
+    rw::Vec2 context_world;      ///< world position of the last right-click
 };
 
 EditorState g_editor;
+
+std::vector<rw::u8> snapshot(rw::App& app) {
+    rw::Writer w;
+    app.game().save(w);
+    return std::move(w.bytes());
+}
+
+void restore(rw::App& app, const std::vector<rw::u8>& bytes) {
+    if (!app.load_state(bytes)) {
+        g_editor.status = "could not restore that state (game code changed?)";
+        return;
+    }
+    if (app.time_control().mode != rw::TimeMode::Playing) app.time_control().mode = rw::TimeMode::Paused;
+}
+
+/// Every edit goes through here: the timeline re-snapshots the tick, a
+/// replay or rewind in progress stops, and the undo history sees the edit.
+void mark_edited(rw::App& app) {
+    app.timeline().recapture(app.game());
+    rw::TimeControl& t = app.time_control();
+    if (t.mode == rw::TimeMode::Replaying || t.mode == rw::TimeMode::Rewinding) t.mode = rw::TimeMode::Paused;
+    g_editor.edited_frame = true;
+}
+
+/// First string field of an entity's components, as its display name.
+class NameVisitor final : public rw::Visitor {
+public:
+    std::string name;
+    void visit(std::string_view, bool&, const rw::FieldMeta&) override {}
+    void visit(std::string_view, rw::i8&, const rw::FieldMeta&) override {}
+    void visit(std::string_view, rw::i16&, const rw::FieldMeta&) override {}
+    void visit(std::string_view, rw::i32&, const rw::FieldMeta&) override {}
+    void visit(std::string_view, rw::i64&, const rw::FieldMeta&) override {}
+    void visit(std::string_view, rw::u8&, const rw::FieldMeta&) override {}
+    void visit(std::string_view, rw::u16&, const rw::FieldMeta&) override {}
+    void visit(std::string_view, rw::u32&, const rw::FieldMeta&) override {}
+    void visit(std::string_view, rw::u64&, const rw::FieldMeta&) override {}
+    void visit(std::string_view, float&, const rw::FieldMeta&) override {}
+    void visit(std::string_view, double&, const rw::FieldMeta&) override {}
+    void visit(std::string_view, std::string& v, const rw::FieldMeta&) override {
+        if (name.empty() && !v.empty()) name = v;
+    }
+    bool begin_struct(std::string_view, const rw::FieldMeta&) override { return name.empty(); }
+    void end_struct() override {}
+    bool begin_array(std::string_view, rw::usize&, const rw::FieldMeta&) override { return false; }
+    void end_array() override {}
+    bool begin_element(rw::usize) override { return false; }
+    void end_element() override {}
+};
+
+std::string entity_name(rw::World& world, rw::Entity e) {
+    NameVisitor v;
+    world.visit_entity(e, v);
+    return v.name;
+}
+
+/// Put an entity at a world position through its first Vec2-hinted field.
+bool place_entity(rw::World& world, rw::Entity e, rw::Vec2 pos) {
+    rw::GizmoVisitor v;
+    world.visit_entity(e, v);
+    for (const rw::GizmoVisitor::Target& t : v.targets()) {
+        if (t.kind != rw::Widget::Vec2 || t.floats.size() < 2 || t.read_only) continue;
+        *t.floats[0] = pos.x;
+        *t.floats[1] = pos.y;
+        return true;
+    }
+    return false;
+}
+
+rw::Entity duplicate_entity(rw::World& world, rw::Entity e) {
+    const rw::JsonValue components = rw::entity_to_json(world, e);
+    const rw::Entity copy = world.create();
+    rw::entity_from_json(world, copy, components);
+    return copy;
+}
+
+void delete_selected(rw::App& app) {
+    rw::World* world = app.game().world();
+    if (!world || !world->alive(g_editor.selected)) return;
+    world->destroy(g_editor.selected);
+    g_editor.selected = rw::Entity::null();
+    mark_edited(app);
+}
+
+void duplicate_selected(rw::App& app) {
+    rw::World* world = app.game().world();
+    if (!world || !world->alive(g_editor.selected)) return;
+    g_editor.selected = duplicate_entity(*world, g_editor.selected);
+    mark_edited(app);
+}
+
+void undo(rw::App& app) {
+    if (const std::vector<rw::u8>* s = g_editor.history.undo()) restore(app, *s);
+}
+void redo(rw::App& app) {
+    if (const std::vector<rw::u8>* s = g_editor.history.redo()) restore(app, *s);
+}
+
+// Play runs the simulation from the edited state; Stop brings that state back.
+void play(rw::App& app) {
+    if (!g_editor.in_play) {
+        g_editor.play_start = snapshot(app);
+        g_editor.in_play = true;
+    }
+    app.time_control().mode = rw::TimeMode::Playing;
+}
+void pause(rw::App& app) { app.time_control().mode = rw::TimeMode::Paused; }
+void stop(rw::App& app) {
+    if (g_editor.in_play) restore(app, g_editor.play_start);
+    g_editor.in_play = false;
+    app.time_control().mode = rw::TimeMode::Paused;
+}
 
 void default_layout(ImGuiID dockspace) {
     // Scene in the middle, inspector on the right, tools along the bottom.
@@ -219,6 +341,16 @@ void draw_menu(rw::App& app) {
         if (ImGui::MenuItem("Quit", "Esc")) app.quit();
         ImGui::EndMenu();
     }
+    if (ImGui::BeginMenu("Edit")) {
+        if (ImGui::MenuItem("Undo", "Ctrl+Z", false, g_editor.history.can_undo())) undo(app);
+        if (ImGui::MenuItem("Redo", "Ctrl+Y", false, g_editor.history.can_redo())) redo(app);
+        ImGui::Separator();
+        rw::World* world = app.game().world();
+        const bool has_sel = world && world->alive(g_editor.selected);
+        if (ImGui::MenuItem("Duplicate entity", "Ctrl+D", false, has_sel)) duplicate_selected(app);
+        if (ImGui::MenuItem("Delete entity", "Del", false, has_sel)) delete_selected(app);
+        ImGui::EndMenu();
+    }
     if (ImGui::BeginMenu("Time")) {
         rw::TimeControl& t = app.time_control();
         const bool playing = t.mode == rw::TimeMode::Playing;
@@ -254,6 +386,10 @@ void draw_menu(rw::App& app) {
 // Runs inside the frame right after the game drew, with its camera still
 // set: gizmos for the selected entity, and click-to-select on empty space.
 void draw_scene_tools(rw::App& app, rw::Renderer2D& renderer) {
+    // The undo history sees every frame: the state as it is now, and
+    // whether the previous frame edited it. Consecutive edits merge.
+    g_editor.history.frame(g_editor.edited_frame, snapshot(app));
+    g_editor.edited_frame = false;
     if (!g_editor.show_scene || !g_editor.show_gizmos) return;
     rw::World* world = app.game().world();
     if (!world) return;
@@ -303,11 +439,46 @@ void draw_scene_tools(rw::App& app, rw::Renderer2D& renderer) {
     }
 
     g.draw(renderer);
-    if (edited) {
-        app.timeline().recapture(app.game());
-        if (app.time_control().mode == rw::TimeMode::Replaying || app.time_control().mode == rw::TimeMode::Rewinding)
-            app.time_control().mode = rw::TimeMode::Paused;
+    if (edited) mark_edited(app);
+}
+
+void draw_scene_context_menu(rw::App& app) {
+    if (!ImGui::BeginPopup("scene_context")) return;
+    rw::World* world = app.game().world();
+    const rw::Vec2 at = g_editor.context_world;
+    ImGui::TextDisabled("at (%.0f, %.0f)", at.x, at.y);
+    ImGui::Separator();
+    if (world) {
+        if (ImGui::MenuItem("Create entity here")) {
+            g_editor.selected = world->create();
+            mark_edited(app);
+        }
+        if (g_editor.has_project && g_editor.prefabs.size() > 0 && ImGui::BeginMenu("Spawn prefab here")) {
+            for (const auto& [id, prefab] : g_editor.prefabs.all()) {
+                if (ImGui::MenuItem(prefab.name.c_str())) {
+                    g_editor.selected = rw::spawn_prefab(*world, prefab);
+                    place_entity(*world, g_editor.selected, at);
+                    mark_edited(app);
+                }
+            }
+            ImGui::EndMenu();
+        }
+        const bool has_sel = world->alive(g_editor.selected);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Move selected here", nullptr, false, has_sel)) {
+            if (place_entity(*world, g_editor.selected, at)) mark_edited(app);
+            else g_editor.status = "the selected entity has no Vec2-hinted position";
+        }
+        if (ImGui::MenuItem("Duplicate selected here", "Ctrl+D", false, has_sel)) {
+            g_editor.selected = duplicate_entity(*world, g_editor.selected);
+            place_entity(*world, g_editor.selected, at);
+            mark_edited(app);
+        }
+        if (ImGui::MenuItem("Delete selected", "Del", false, has_sel)) delete_selected(app);
+        ImGui::Separator();
     }
+    if (ImGui::MenuItem("Look here", nullptr, false, g_editor.free_camera)) g_editor.free_cam.set_target(at);
+    ImGui::EndPopup();
 }
 
 void draw_scene(rw::App& app) {
@@ -367,9 +538,49 @@ void draw_scene(rw::App& app) {
             renderer.set_camera_override(nullptr);
         }
 
-        // Small toolbar over the top-left corner of the view.
+        // Right-click (without dragging) opens the placement menu.
+        if (hovered && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+            const ImVec2 drag = ImGui::GetMouseDragDelta(ImGuiMouseButton_Right);
+            if (std::fabs(drag.x) < 4 && std::fabs(drag.y) < 4) {
+                const ImVec2 m = ImGui::GetIO().MousePos;
+                g_editor.context_world = renderer.window_to_world(m.x, m.y);
+                ImGui::OpenPopup("scene_context");
+            }
+        }
+        draw_scene_context_menu(app);
+
+        // Toolbar over the top-left corner of the view: transport, then camera and gizmos.
         ImGui::SetCursorScreenPos(ImVec2(origin.x + 6, origin.y + 6));
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4, 2));
+        {
+            rw::TimeControl& t = app.time_control();
+            const bool playing = t.mode == rw::TimeMode::Playing;
+            if (playing ? ImGui::Button("Pause") : ImGui::Button(g_editor.in_play ? "Resume" : "Play")) {
+                if (playing) pause(app);
+                else play(app);
+            }
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!g_editor.in_play);
+            if (ImGui::Button("Stop")) stop(app);
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (ImGui::Button("Step")) {
+                t.mode = rw::TimeMode::Paused;
+                t.step_request = true;
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", g_editor.in_play ? (playing ? "playing" : "paused (Stop returns to the edited state)")
+                                                       : "editing");
+            ImGui::SameLine(0, 16);
+            ImGui::BeginDisabled(!g_editor.history.can_undo());
+            if (ImGui::SmallButton("Undo")) undo(app);
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!g_editor.history.can_redo());
+            if (ImGui::SmallButton("Redo")) redo(app);
+            ImGui::EndDisabled();
+        }
+        ImGui::SetCursorScreenPos(ImVec2(origin.x + 6, origin.y + 6 + ImGui::GetFrameHeight() + 4));
         if (ImGui::Checkbox("Free camera", &g_editor.free_camera) && g_editor.free_camera) {
             // Start from where the game is looking right now.
             const rw::Camera& current = renderer.camera();
@@ -491,22 +702,28 @@ void draw_entities(rw::App& app) {
         }
     }
     ImGui::Text("%zu entities", world->entity_count());
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputTextWithHint("##filter", "filter by name, component or #index", g_editor.entity_filter,
+                             sizeof g_editor.entity_filter);
     ImGui::Separator();
 
+    const std::string filter = g_editor.entity_filter;
     ImGui::BeginChild("##list", ImVec2(0, 0));
     world->each_entity([&](rw::Entity e) {
+        const std::string name = entity_name(*world, e);
         std::string line = "#" + std::to_string(e.index);
-        for (const std::string& c : world->component_names(e)) line += " " + c;
+        if (!name.empty()) line += "  " + name;
+        std::string components;
+        for (const std::string& c : world->component_names(e)) components += " " + c;
+        if (!filter.empty() && line.find(filter) == std::string::npos && components.find(filter) == std::string::npos) return;
         line += "##e" + std::to_string(e.index);
         if (ImGui::Selectable(line.c_str(), e == g_editor.selected)) g_editor.selected = e;
+        if (ImGui::IsItemHovered() && !components.empty()) ImGui::SetTooltip("%s", components.c_str() + 1);
     });
     ImGui::EndChild();
     ImGui::End();
 
-    if (edited) {
-        app.timeline().recapture(app.game());
-        if (app.time_control().mode != rw::TimeMode::Playing) app.time_control().mode = rw::TimeMode::Paused;
-    }
+    if (edited) mark_edited(app);
 }
 
 /// The selected entity's components, each editable and removable, plus adding new ones.
@@ -570,11 +787,7 @@ void draw_selected_entity(rw::App& app) {
         world->remove_component(e, remove);
         edited = true;
     }
-    if (edited) {
-        app.timeline().recapture(app.game());
-        if (app.time_control().mode == rw::TimeMode::Replaying || app.time_control().mode == rw::TimeMode::Rewinding)
-            app.time_control().mode = rw::TimeMode::Paused;
-    }
+    if (edited) mark_edited(app);
 }
 
 void draw_panels(rw::App& app) {
@@ -662,6 +875,26 @@ void editor_ui(rw::App& app) {
     if (!g_editor.layout_done) {
         default_layout(dockspace);
         g_editor.layout_done = true;
+    }
+    if (g_editor.first_frame) {
+        // The editor opens in edit mode; Play starts the simulation.
+        app.time_control().mode = rw::TimeMode::Paused;
+        g_editor.first_frame = false;
+    }
+    // Any way of starting the simulation (toolbar, F2, Time menu, Timeline
+    // panel) counts as Play: remember the state to return to on Stop.
+    const rw::TimeMode mode = app.time_control().mode;
+    if (mode == rw::TimeMode::Playing && g_editor.last_mode != rw::TimeMode::Playing && !g_editor.in_play) {
+        g_editor.play_start = snapshot(app);
+        g_editor.in_play = true;
+    }
+    g_editor.last_mode = mode;
+    const ImGuiIO& io = ImGui::GetIO();
+    if (!io.WantTextInput) {
+        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false)) undo(app);
+        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) redo(app);
+        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D, false)) duplicate_selected(app);
+        if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) && !app.game_input_focus()) delete_selected(app);
     }
     draw_menu(app);
     draw_scene(app);
