@@ -610,7 +610,19 @@ build/bin/Release/rewind_editor.exe build/bin/Release/towerdefense_hot.dll
   duplicate the selection there, delete it (also Del and Ctrl+D).
 - **Entities** lists every entity with its name, which is the first string
   field among its components, and a filter box that matches names,
-  component names and `#index`.
+  component names and `#index`. When the game registers the engine's
+  `Parent` component (`sim/hierarchy.h`), the list becomes a tree: drag a
+  row onto another to make it a child, drop it on the line at the bottom
+  to make it a root again, and deleting an entity takes its children with
+  it. The link is organisational; nothing moves children unless your tick
+  does, and `parent_of`, `children_of`, `set_parent` (refuses cycles) and
+  `descendants_of` are there for that.
+- **Scenes** lists the files in `scenes/`. Type a name and press New for an
+  empty scene, double-click to open one, right-click to make it the
+  startup scene. The current scene shows a `*` while it has unsaved
+  changes, Ctrl+S saves it, and opening another scene first asks whether
+  to save or discard. Play and Stop leave the scene alone: Stop returns to
+  the state Play started from, which is the edited scene.
 - **Timeline** holds the transport, scrubber, determinism status, hot reload
   and network state. **Inspector** holds the game's debug UI and its whole
   reflected state, editable live. **Console** and **Profiler** are the same

@@ -17,7 +17,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -66,6 +68,13 @@ struct EditorState {
     rw::TimeMode last_mode = rw::TimeMode::Paused;
     char entity_filter[64] = "";
     rw::Vec2 context_world;      ///< world position of the last right-click
+    // Scenes: the list in scenes/, the dirty flag, the unsaved-changes prompt.
+    bool show_scenes = true;
+    bool scene_dirty = false;
+    std::vector<std::string> scene_files;
+    char new_scene_name[64] = "";
+    std::string pending_scene;   ///< scene to open once the unsaved prompt is answered
+    bool ask_unsaved = false;
 };
 
 EditorState g_editor;
@@ -91,6 +100,7 @@ void mark_edited(rw::App& app) {
     rw::TimeControl& t = app.time_control();
     if (t.mode == rw::TimeMode::Replaying || t.mode == rw::TimeMode::Rewinding) t.mode = rw::TimeMode::Paused;
     g_editor.edited_frame = true;
+    if (!g_editor.in_play) g_editor.scene_dirty = true;
 }
 
 /// First string field of an entity's components, as its display name.
@@ -148,7 +158,8 @@ rw::Entity duplicate_entity(rw::World& world, rw::Entity e) {
 void delete_selected(rw::App& app) {
     rw::World* world = app.game().world();
     if (!world || !world->alive(g_editor.selected)) return;
-    world->destroy(g_editor.selected);
+    if (world->has_pool<rw::Parent>()) rw::destroy_with_children(*world, g_editor.selected);
+    else world->destroy(g_editor.selected);
     g_editor.selected = rw::Entity::null();
     mark_edited(app);
 }
@@ -195,6 +206,7 @@ void default_layout(ImGuiID dockspace) {
     const ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.2f, nullptr, &center);
     ImGui::DockBuilderDockWindow("Scene", center);
     ImGui::DockBuilderDockWindow("Entities", left);
+    ImGui::DockBuilderDockWindow("Scenes", left);
     ImGui::DockBuilderDockWindow("Inspector", right);
     ImGui::DockBuilderDockWindow("Project", right);
     ImGui::DockBuilderDockWindow("Timeline", bottom);
@@ -262,6 +274,17 @@ void reload_prefabs() {
     g_editor.prefabs.load_dir((g_editor.project.scene_dir() / "prefabs").string());
 }
 
+void refresh_scene_list() {
+    g_editor.scene_files.clear();
+    if (!g_editor.has_project) return;
+    std::error_code ec;
+    for (const fs::directory_entry& entry : fs::directory_iterator(g_editor.project.scene_dir(), ec)) {
+        if (!entry.is_regular_file(ec) || entry.path().extension() != ".json") continue;
+        g_editor.scene_files.push_back(entry.path().stem().string());
+    }
+    std::sort(g_editor.scene_files.begin(), g_editor.scene_files.end());
+}
+
 void save_scene(rw::App& app) {
     rw::World* world = app.game().world();
     if (!world) {
@@ -275,6 +298,8 @@ void save_scene(rw::App& app) {
     if (rw::save_scene(scene_path(g_editor.scene_name).string(), scene, &error)) {
         g_editor.status = "scene saved: " + g_editor.scene_name + " (" + std::to_string(scene.entities.size()) + " entities)";
         RW_LOG_INFO("editor", "%s", g_editor.status.c_str());
+        g_editor.scene_dirty = false;
+        refresh_scene_list();
     } else {
         g_editor.status = error;
         RW_LOG_ERROR("editor", "%s", error.c_str());
@@ -299,10 +324,127 @@ void load_scene_into(rw::App& app, const std::string& name) {
     rw::apply_scene(scene, *world, &g_editor.prefabs, &warnings);
     app.timeline().recapture(app.game());
     g_editor.scene_name = name;
+    g_editor.scene_dirty = false;
+    g_editor.history.clear();
+    g_editor.selected = rw::Entity::null();
+    if (g_editor.in_play) g_editor.play_start = snapshot(app); // Stop now returns to this scene
     g_editor.scene_warnings.clear();
     for (const std::string& w : warnings.items) g_editor.scene_warnings += w + "\n";
     g_editor.status = "scene loaded: " + name + (warnings.empty() ? "" : " (with warnings, see console)");
     RW_LOG_INFO("editor", "%s", g_editor.status.c_str());
+}
+
+/// Empty world under a new name, saved right away so it shows in the list.
+void new_scene(rw::App& app, const std::string& name) {
+    rw::World* world = app.game().world();
+    if (!world || name.empty()) return;
+    world->clear();
+    app.timeline().recapture(app.game());
+    g_editor.scene_name = name;
+    g_editor.selected = rw::Entity::null();
+    g_editor.history.clear();
+    save_scene(app);
+}
+
+/// Open a scene, asking first when the current one has unsaved changes.
+void open_scene(rw::App& app, const std::string& name) {
+    if (g_editor.scene_dirty && name != g_editor.scene_name) {
+        g_editor.pending_scene = name;
+        g_editor.ask_unsaved = true;
+        return;
+    }
+    load_scene_into(app, name);
+}
+
+void draw_unsaved_prompt(rw::App& app) {
+    if (g_editor.ask_unsaved) {
+        ImGui::OpenPopup("Unsaved changes");
+        g_editor.ask_unsaved = false;
+    }
+    if (ImGui::BeginPopupModal("Unsaved changes", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Scene '%s' has unsaved changes.", g_editor.scene_name.c_str());
+        ImGui::Spacing();
+        if (ImGui::Button("Save and open")) {
+            save_scene(app);
+            load_scene_into(app, g_editor.pending_scene);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Discard")) {
+            load_scene_into(app, g_editor.pending_scene);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+}
+
+void draw_scenes(rw::App& app) {
+    if (!g_editor.show_scenes || !g_editor.has_project) return;
+    if (!ImGui::Begin("Scenes", &g_editor.show_scenes)) {
+        ImGui::End();
+        return;
+    }
+    const bool has_world = app.game().world() != nullptr;
+    ImGui::BeginDisabled(!has_world);
+    ImGui::SetNextItemWidth(-70);
+    const bool entered = ImGui::InputTextWithHint("##newname", "new scene name", g_editor.new_scene_name,
+                                                  sizeof g_editor.new_scene_name, ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::SameLine();
+    if ((ImGui::Button("New") || entered) && g_editor.new_scene_name[0]) {
+        if (g_editor.scene_dirty) g_editor.status = "save or discard the current scene first";
+        else {
+            new_scene(app, g_editor.new_scene_name);
+            g_editor.new_scene_name[0] = '\0';
+        }
+    }
+    if (ImGui::Button("Save")) save_scene(app);
+    ImGui::SameLine();
+    if (ImGui::Button("Save as...")) ImGui::OpenPopup("save_as");
+    if (ImGui::BeginPopup("save_as")) {
+        static char name[64] = "";
+        if (ImGui::IsWindowAppearing()) {
+            std::snprintf(name, sizeof name, "%s", g_editor.scene_name.c_str());
+            ImGui::SetKeyboardFocusHere();
+        }
+        if (ImGui::InputText("name", name, sizeof name, ImGuiInputTextFlags_EnterReturnsTrue) && name[0]) {
+            g_editor.scene_name = name;
+            save_scene(app);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Refresh")) refresh_scene_list();
+    ImGui::EndDisabled();
+    ImGui::Text("%s%s", g_editor.scene_name.c_str(), g_editor.scene_dirty ? " *" : "");
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", g_editor.scene_dirty ? "(unsaved changes)" : "(saved)");
+    ImGui::Separator();
+
+    ImGui::BeginChild("##scenes");
+    for (const std::string& name : g_editor.scene_files) {
+        const bool current = name == g_editor.scene_name;
+        std::string label = name;
+        if (current && g_editor.scene_dirty) label += " *";
+        if (name == g_editor.project.startup_scene) label += "  (startup)";
+        if (ImGui::Selectable((label + "##s" + name).c_str(), current, ImGuiSelectableFlags_AllowDoubleClick) &&
+            ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && has_world)
+            open_scene(app, name);
+        if (ImGui::BeginPopupContextItem()) {
+            if (ImGui::MenuItem("Open", nullptr, false, has_world)) open_scene(app, name);
+            if (ImGui::MenuItem("Use as startup scene", nullptr, name == g_editor.project.startup_scene)) {
+                g_editor.project.startup_scene = name == g_editor.project.startup_scene ? "" : name;
+                save_project(app);
+            }
+            ImGui::EndPopup();
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("double-click to open");
+    }
+    if (g_editor.scene_files.empty()) ImGui::TextDisabled("no scenes yet: type a name and press New");
+    ImGui::EndChild();
+    ImGui::End();
 }
 
 /// The global id index the pickers and loaders use follows the database.
@@ -335,12 +477,12 @@ void draw_menu(rw::App& app) {
         if (g_editor.has_project && ImGui::MenuItem("Cook all assets")) cook_assets(true);
         ImGui::Separator();
         if (g_editor.has_project) {
-            static char name[64] = "scene";
-            ImGui::SetNextItemWidth(160);
-            if (ImGui::InputText("scene name", name, sizeof name)) g_editor.scene_name = name;
             const bool has_world = app.game().world() != nullptr;
-            if (ImGui::MenuItem("Save scene", nullptr, false, has_world)) save_scene(app);
-            if (ImGui::MenuItem("Load scene", nullptr, false, has_world)) load_scene_into(app, g_editor.scene_name);
+            if (ImGui::MenuItem(("Save scene '" + g_editor.scene_name + "'").c_str(), "Ctrl+S", false, has_world)) save_scene(app);
+            if (ImGui::MenuItem("Reload scene from disk", nullptr, false, has_world)) {
+                g_editor.scene_dirty = false;
+                load_scene_into(app, g_editor.scene_name);
+            }
             if (ImGui::MenuItem("Reload prefabs")) reload_prefabs();
             ImGui::Separator();
         }
@@ -374,6 +516,7 @@ void draw_menu(rw::App& app) {
     if (ImGui::BeginMenu("View")) {
         ImGui::MenuItem("Scene", nullptr, &g_editor.show_scene);
         ImGui::MenuItem("Entities", nullptr, &g_editor.show_entities);
+        ImGui::MenuItem("Scenes", nullptr, &g_editor.show_scenes, g_editor.has_project);
         ImGui::MenuItem("Timeline", nullptr, &g_editor.show_timeline);
         ImGui::MenuItem("Inspector", nullptr, &g_editor.show_inspector);
         ImGui::MenuItem("Assets", nullptr, &g_editor.show_assets, g_editor.has_project);
@@ -578,8 +721,9 @@ void draw_scene(rw::App& app) {
                 t.step_request = true;
             }
             ImGui::SameLine();
-            ImGui::TextDisabled("%s", g_editor.in_play ? (playing ? "playing" : "paused (Stop returns to the edited state)")
-                                                       : "editing");
+            if (g_editor.in_play) ImGui::TextDisabled("%s", playing ? "playing" : "paused (Stop returns to the edited state)");
+            else if (g_editor.has_project) ImGui::TextDisabled("editing %s%s", g_editor.scene_name.c_str(), g_editor.scene_dirty ? " *" : "");
+            else ImGui::TextDisabled("editing");
             ImGui::SameLine(0, 16);
             ImGui::BeginDisabled(!g_editor.history.can_undo());
             if (ImGui::SmallButton("Undo")) undo(app);
@@ -731,18 +875,76 @@ void draw_entities(rw::App& app) {
     ImGui::Separator();
 
     const std::string filter = g_editor.entity_filter;
+    const bool tree = world->has_pool<rw::Parent>() && filter.empty();
     ImGui::BeginChild("##list", ImVec2(0, 0));
-    world->each_entity([&](rw::Entity e) {
+
+    auto row_label = [&](rw::Entity e, std::string& components) {
         const std::string name = entity_name(*world, e);
         std::string line = "#" + std::to_string(e.index);
         if (!name.empty()) line += "  " + name;
-        std::string components;
         for (const std::string& c : world->component_names(e)) components += " " + c;
-        if (!filter.empty() && line.find(filter) == std::string::npos && components.find(filter) == std::string::npos) return;
-        line += "##e" + std::to_string(e.index);
-        if (ImGui::Selectable(line.c_str(), e == g_editor.selected)) g_editor.selected = e;
-        if (ImGui::IsItemHovered() && !components.empty()) ImGui::SetTooltip("%s", components.c_str() + 1);
-    });
+        return line;
+    };
+    // Dragging a row onto another row makes it that row's child.
+    auto drag_drop = [&](rw::Entity e, bool allow_drop) {
+        if (tree && ImGui::BeginDragDropSource()) {
+            ImGui::SetDragDropPayload("REWIND_ENTITY", &e, sizeof e);
+            ImGui::Text("#%u", e.index);
+            ImGui::EndDragDropSource();
+        }
+        if (tree && allow_drop && ImGui::BeginDragDropTarget()) {
+            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("REWIND_ENTITY")) {
+                rw::Entity child;
+                std::memcpy(&child, payload->Data, sizeof child);
+                if (rw::set_parent(*world, child, e)) mark_edited(app);
+                else g_editor.status = "cannot parent an entity below itself";
+            }
+            ImGui::EndDragDropTarget();
+        }
+    };
+
+    if (tree) {
+        std::function<void(rw::Entity)> draw_node = [&](rw::Entity e) {
+            std::string components;
+            const std::string line = row_label(e, components);
+            const std::vector<rw::Entity> kids = rw::children_of(*world, e);
+            ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth |
+                                       ImGuiTreeNodeFlags_DefaultOpen;
+            if (kids.empty()) flags |= ImGuiTreeNodeFlags_Leaf;
+            if (e == g_editor.selected) flags |= ImGuiTreeNodeFlags_Selected;
+            const bool open = ImGui::TreeNodeEx((line + "##e" + std::to_string(e.index)).c_str(), flags);
+            if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) g_editor.selected = e;
+            if (ImGui::IsItemHovered() && !components.empty()) ImGui::SetTooltip("%s", components.c_str() + 1);
+            drag_drop(e, true);
+            if (open) {
+                for (rw::Entity k : kids) draw_node(k);
+                ImGui::TreePop();
+            }
+        };
+        world->each_entity([&](rw::Entity e) {
+            if (rw::parent_of(*world, e).is_null()) draw_node(e);
+        });
+        // Drop below the tree to make an entity a root again.
+        ImGui::Selectable("(drop here to unparent)", false, ImGuiSelectableFlags_Disabled);
+        if (ImGui::BeginDragDropTarget()) {
+            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("REWIND_ENTITY")) {
+                rw::Entity child;
+                std::memcpy(&child, payload->Data, sizeof child);
+                if (rw::set_parent(*world, child, rw::Entity::null())) mark_edited(app);
+            }
+            ImGui::EndDragDropTarget();
+        }
+    } else {
+        world->each_entity([&](rw::Entity e) {
+            std::string components;
+            std::string line = row_label(e, components);
+            if (!filter.empty() && line.find(filter) == std::string::npos && components.find(filter) == std::string::npos) return;
+            line += "##e" + std::to_string(e.index);
+            if (ImGui::Selectable(line.c_str(), e == g_editor.selected)) g_editor.selected = e;
+            if (ImGui::IsItemHovered() && !components.empty()) ImGui::SetTooltip("%s", components.c_str() + 1);
+            drag_drop(e, false);
+        });
+    }
     ImGui::EndChild();
     ImGui::End();
 
@@ -815,6 +1017,8 @@ void draw_selected_entity(rw::App& app) {
 
 void draw_panels(rw::App& app) {
     draw_entities(app);
+    draw_scenes(app);
+    draw_unsaved_prompt(app);
 
     if (g_editor.show_timeline) {
         if (ImGui::Begin("Timeline", &g_editor.show_timeline)) {
@@ -917,6 +1121,10 @@ void editor_ui(rw::App& app) {
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false)) undo(app);
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) redo(app);
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D, false)) duplicate_selected(app);
+        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
+            if (g_editor.has_project) save_scene(app);
+            else save_state(app);
+        }
         if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) && !app.game_input_focus()) delete_selected(app);
     }
     draw_menu(app);
@@ -950,6 +1158,7 @@ int main(int argc, char** argv) {
         g_editor.assets = std::make_unique<rw::AssetDatabase>(g_editor.project);
         g_editor.assets->scan();
         refresh_asset_index();
+        refresh_scene_list();
         g_editor.project_file = g_editor.project.file();
         g_editor.state_file = g_editor.project.root / (g_editor.project.name + ".state.json");
     } else {

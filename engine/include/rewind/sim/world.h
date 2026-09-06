@@ -159,6 +159,8 @@ public:
 
     // ---- components by name (tools, scenes, prefabs) -----------------------------
     bool has_pool(std::string_view name) const { return pool_named(name) != nullptr; }
+    /// Whether a pool for this type was registered (never registers one).
+    template <class T> bool has_pool() const { return type_to_pool_.contains(std::type_index(typeid(T))); }
     bool has_component(Entity e, std::string_view name) const {
         const IPool* p = pool_named(name);
         return p && alive(e) && p->has(e.index);

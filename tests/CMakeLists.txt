@@ -24,6 +24,7 @@ rewind_add_test(graph_test)
 rewind_add_test(gameplay_test)
 rewind_add_test(edit_history_test)
 rewind_add_test(asset_ref_test)
+rewind_add_test(hierarchy_test)
 rewind_add_test(shader_test)
 target_include_directories(shader_test PRIVATE ${CMAKE_BINARY_DIR}/generated)
 

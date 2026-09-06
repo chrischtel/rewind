@@ -39,6 +39,7 @@
 #include "rewind/sim/events.h"
 #include "rewind/sim/game.h"
 #include "rewind/sim/graph.h"
+#include "rewind/sim/hierarchy.h"
 #include "rewind/sim/input.h"
 #include "rewind/sim/reflect.h"
 #include "rewind/sim/rng.h"

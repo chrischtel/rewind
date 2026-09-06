@@ -95,8 +95,12 @@ reflected state with hints.
    `project/asset_ref.h` (AssetRef = id + path, AssetIndex from sidecars,
    `resolve_asset`), loader overloads on Renderer2D and Audio, Inspector
    picker with type filter and drop target, `asset_ref_test`.
-3. Scene management: new scene, scene list, switch scene, unsaved-changes
-   marker, save on Ctrl+S; entity hierarchy through an optional parent link.
+3. ~~Scene management: new scene, scene list, switch scene, unsaved-changes
+   marker, save on Ctrl+S; entity hierarchy through an optional parent link.~~
+   Done: Scenes panel (new, save, save as, open with unsaved prompt, startup
+   scene), dirty marker, Ctrl+S, `sim/hierarchy.h` (Parent, set_parent,
+   children_of, destroy_with_children), Entities tree with drag-and-drop
+   reparenting, `hierarchy_test`.
 4. Editor polish: dark theme with accent, toolbar icons, status bar with
    tick, fps and state, keyboard shortcut reference, welcome screen when
    started without a project.

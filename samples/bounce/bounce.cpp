@@ -54,6 +54,9 @@ public:
         world_.register_component<Transform>("Transform");
         world_.register_component<Velocity>("Velocity");
         world_.register_component<Shape>("Shape");
+        // Optional: an engine-provided parent link. The editor shows the
+        // Entities panel as a tree and reparents by drag and drop.
+        world_.register_component<Parent>("Parent");
     }
 
     void configure(AppConfig& cfg) override {
