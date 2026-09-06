@@ -1,6 +1,8 @@
 #pragma once
 
 #include "rewind/audio/audio.h"
+#include "rewind/core/input_map.h"
+#include "rewind/core/player_settings.h"
 #include "rewind/core/file_watcher.h"
 #include "rewind/core/math.h"
 #include "rewind/core/types.h"
@@ -64,9 +66,18 @@ struct AppConfig {
 
     TimelineConfig timeline{};
 
+    /// Organisation name for the per-user settings folder (SDL_GetPrefPath).
+    std::string organization = "Rewind";
+    bool fullscreen = false; ///< Borderless fullscreen on the window's display.
+    /// Keys and gamepad buttons per abstract Button; empty = InputBindings::defaults().
+    InputBindings input;
+    AudioMix audio_mix;
+
     /// Project settings: everything a project file may override.
     void reflect(Visitor& v) {
         v.field("title", title);
+        v.field("organization", organization, {.tooltip = "folder name for the per-user settings"});
+        v.field("fullscreen", fullscreen);
         v.field("width", width, {.min = 320, .max = 7680});
         v.field("height", height, {.min = 200, .max = 4320});
         v.field("vsync", vsync);
@@ -82,6 +93,8 @@ struct AppConfig {
         v.field("ui_font", ui_font, {.tooltip = "TrueType file for the overlay and editor, empty = built-in"});
         v.field("ui_font_size", ui_font_size, {.min = 8, .max = 40});
         v.field("timeline", timeline);
+        v.field("input", input);
+        v.field("audio_mix", audio_mix);
     }
 };
 
@@ -158,6 +171,24 @@ public:
     /// bytes did not fit the game's layout.
     bool load_state(const std::vector<u8>& bytes);
 
+    // ---- player settings ----------------------------------------------------
+    /// The per-user options, loaded at start (fullscreen, vsync, volumes,
+    /// bindings, the game's own block). Edit, then apply_player_settings().
+    PlayerSettings& player_settings() { return settings_; }
+    /// Push the settings into the window, the audio mix and the bindings.
+    void apply_player_settings();
+    /// Write settings.json in the user's folder for this organisation and title.
+    bool save_player_settings(std::string* error = nullptr);
+    void set_fullscreen(bool on);
+    bool fullscreen() const;
+    /// The bindings in effect: the player's, else the project's, else the defaults.
+    const InputBindings& active_bindings() const { return active_bindings_; }
+    const CompiledBindings& compiled_bindings() const { return compiled_; }
+    /// For rebinding UIs: the key or gamepad button pressed since the last
+    /// call, as a name, or empty. Consumed on read.
+    std::string take_pressed_key();
+    std::string take_pressed_gamepad_button();
+
 private:
     int loop();
     bool init_platform();
@@ -198,6 +229,11 @@ private:
     bool imgui_ready_ = false;
     bool input_focus_ = true;
     mutable i32 wheel_accum_ = 0; ///< wheel clicks since sample_input() last took them
+    PlayerSettings settings_;
+    InputBindings active_bindings_;
+    CompiledBindings compiled_;
+    std::string pressed_key_;
+    std::string pressed_pad_;
     double accumulator_ = 0;
 };
 

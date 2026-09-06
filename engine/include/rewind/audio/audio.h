@@ -2,6 +2,7 @@
 
 #include "rewind/core/types.h"
 #include "rewind/project/asset_ref.h"
+#include "rewind/sim/reflect.h"
 
 #include <memory>
 #include <string>
@@ -25,6 +26,26 @@ struct Sound {
 
     float seconds() const;
 };
+
+/// Volumes a player sets: master times one group. play() takes the group.
+struct AudioMix {
+    float master = 1;
+    float sfx = 1;   ///< group 0
+    float music = 1; ///< group 1
+    float ui = 1;    ///< group 2
+
+    float group(u32 g) const { return g == 1 ? music : g == 2 ? ui : sfx; }
+    void reflect(Visitor& v) {
+        v.field("master", master, {.min = 0, .max = 1});
+        v.field("sfx", sfx, {.min = 0, .max = 1});
+        v.field("music", music, {.min = 0, .max = 1});
+        v.field("ui", ui, {.min = 0, .max = 1});
+    }
+};
+
+constexpr u32 kAudioSfx = 0;
+constexpr u32 kAudioMusic = 1;
+constexpr u32 kAudioUi = 2;
 
 /// Small polyphonic sound player over SDL's audio streams. Each play() gets
 /// its own stream; SDL mixes and resamples them. No positional audio yet.
@@ -68,10 +89,11 @@ public:
 
     Sound* find_sound(const std::string& name) const;
 
-    /// Start playing. `volume` is linear, 1 = as recorded.
-    void play(const Sound& sound, float volume = 1.0f);
-    void play(const Sound* sound, float volume = 1.0f) {
-        if (sound) play(*sound, volume);
+    /// Start playing. `volume` is linear, 1 = as recorded; the mix's master
+    /// and group volumes multiply in.
+    void play(const Sound& sound, float volume = 1.0f, u32 group = kAudioSfx);
+    void play(const Sound* sound, float volume = 1.0f, u32 group = kAudioSfx) {
+        if (sound) play(*sound, volume, group);
     }
 
     /// Stop every voice at once.
@@ -79,6 +101,11 @@ public:
 
     void set_master_volume(float volume);
     float master_volume() const { return master_; }
+    void set_mix(const AudioMix& mix) {
+        mix_ = mix;
+        master_ = mix.master < 0 ? 0 : mix.master > 1 ? 1 : mix.master;
+    }
+    const AudioMix& mix() const { return mix_; }
 
     /// Call once per frame: releases voices that have finished.
     void update();
@@ -90,6 +117,7 @@ public:
 private:
     u32 device_ = 0;
     float master_ = 1.0f;
+    AudioMix mix_;
     int max_voices_ = 32;
     std::vector<SDL_AudioStream*> voices_;
     std::unordered_map<std::string, std::unique_ptr<Sound>> sounds_;

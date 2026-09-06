@@ -1,4 +1,7 @@
 #include "rewind/core/app.h"
+
+#include "rewind/core/input_map.h"
+#include "rewind/core/player_settings.h"
 #include "rewind/core/log.h"
 
 #include "rewind/core/game_module.h"
@@ -33,6 +36,7 @@ bool App::init_platform() {
 
     SDL_WindowFlags flags = 0;
     if (cfg_.resizable) flags |= SDL_WINDOW_RESIZABLE;
+    if (cfg_.fullscreen) flags |= SDL_WINDOW_FULLSCREEN;
     window_ = SDL_CreateWindow(cfg_.title.c_str(), cfg_.width, cfg_.height, flags);
     if (!window_) {
         RW_LOG_ERROR("app", "SDL_CreateWindow failed: %s", SDL_GetError());
@@ -113,6 +117,15 @@ bool App::init_platform() {
     imgui_ready_ = true;
 
     if (cfg_.audio) audio_.init(); // failure is logged and leaves audio silent
+
+    // Per-user options over the project's settings; missing file = defaults.
+    settings_.fullscreen = cfg_.fullscreen;
+    settings_.vsync = cfg_.vsync;
+    settings_.audio = cfg_.audio_mix;
+    std::string settings_error;
+    if (load_player_settings(cfg_.organization, cfg_.title, settings_, &settings_error))
+        RW_LOG_INFO("app", "player settings loaded from %s", user_data_dir(cfg_.organization, cfg_.title).c_str());
+    apply_player_settings();
     return true;
 }
 
@@ -149,6 +162,7 @@ void App::handle_events() {
 
         case SDL_EVENT_KEY_DOWN:
             if (e.key.repeat) break;
+            pressed_key_ = key_name(e.key.scancode);
             switch (e.key.scancode) {
             case SDL_SCANCODE_ESCAPE: running_ = false; break;
             case SDL_SCANCODE_F1: time_.show_overlay = !time_.show_overlay; break;
@@ -175,6 +189,10 @@ void App::handle_events() {
             wheel_accum_ += static_cast<i32>(e.wheel.y > 0 ? std::ceil(e.wheel.y) : std::floor(e.wheel.y));
             break;
 
+        case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+            pressed_pad_ = gamepad_button_name(e.gbutton.button);
+            break;
+
         case SDL_EVENT_GAMEPAD_ADDED:
             if (!gamepad_) {
                 gamepad_ = SDL_OpenGamepad(e.gdevice.which);
@@ -199,48 +217,31 @@ InputFrame App::sample_input() const {
     InputFrame in;
     const bool keyboard = cfg_.embedded ? input_focus_ : !ImGui::GetIO().WantCaptureKeyboard;
 
-    static const bool no_keys[SDL_SCANCODE_COUNT] = {};
-    const bool* k = keyboard ? SDL_GetKeyboardState(nullptr) : no_keys;
-    in.set(Button::Up, k[SDL_SCANCODE_UP] || k[SDL_SCANCODE_W]);
-    in.set(Button::Down, k[SDL_SCANCODE_DOWN] || k[SDL_SCANCODE_S]);
-    in.set(Button::Left, k[SDL_SCANCODE_LEFT] || k[SDL_SCANCODE_A]);
-    in.set(Button::Right, k[SDL_SCANCODE_RIGHT] || k[SDL_SCANCODE_D]);
-    in.set(Button::A, k[SDL_SCANCODE_Z] || k[SDL_SCANCODE_J] || k[SDL_SCANCODE_SPACE]);
-    in.set(Button::B, k[SDL_SCANCODE_X] || k[SDL_SCANCODE_K] || k[SDL_SCANCODE_LSHIFT]);
-    in.set(Button::X, k[SDL_SCANCODE_C] || k[SDL_SCANCODE_L]);
-    in.set(Button::Y, k[SDL_SCANCODE_V] || k[SDL_SCANCODE_I]);
-    in.set(Button::L, k[SDL_SCANCODE_Q]);
-    in.set(Button::R, k[SDL_SCANCODE_E]);
-    in.set(Button::Start, k[SDL_SCANCODE_RETURN]);
-    in.set(Button::Select, k[SDL_SCANCODE_BACKSPACE]);
+    // Bindings: every held key or pad button contributes its Button bits.
+    u32 buttons = 0;
+    if (keyboard) {
+        int count = 0;
+        const bool* k = SDL_GetKeyboardState(&count);
+        const int n = std::min(count, static_cast<int>(CompiledBindings::kScancodes));
+        for (int s = 0; s < n; ++s)
+            if (k[s]) buttons |= compiled_.key_mask[s];
+    }
 
     i32 axis_x = 0;
     i32 axis_y = 0;
 
     if (gamepad_) {
-        auto held = [&](SDL_GamepadButton b) { return SDL_GetGamepadButton(gamepad_, b); };
-        auto set_or = [&](Button b, bool on) {
-            if (on) in.set(b, true);
-        };
-        set_or(Button::Up, held(SDL_GAMEPAD_BUTTON_DPAD_UP));
-        set_or(Button::Down, held(SDL_GAMEPAD_BUTTON_DPAD_DOWN));
-        set_or(Button::Left, held(SDL_GAMEPAD_BUTTON_DPAD_LEFT));
-        set_or(Button::Right, held(SDL_GAMEPAD_BUTTON_DPAD_RIGHT));
-        set_or(Button::A, held(SDL_GAMEPAD_BUTTON_SOUTH));
-        set_or(Button::B, held(SDL_GAMEPAD_BUTTON_EAST));
-        set_or(Button::X, held(SDL_GAMEPAD_BUTTON_WEST));
-        set_or(Button::Y, held(SDL_GAMEPAD_BUTTON_NORTH));
-        set_or(Button::L, held(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER));
-        set_or(Button::R, held(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER));
-        set_or(Button::Start, held(SDL_GAMEPAD_BUTTON_START));
-        set_or(Button::Select, held(SDL_GAMEPAD_BUTTON_BACK));
+        for (u32 b = 0; b < CompiledBindings::kPadButtons && b < SDL_GAMEPAD_BUTTON_COUNT; ++b)
+            if (compiled_.pad_mask[b] && SDL_GetGamepadButton(gamepad_, static_cast<SDL_GamepadButton>(b)))
+                buttons |= compiled_.pad_mask[b];
 
-        constexpr i32 kDeadzone = 8000;
+        const i32 deadzone = static_cast<i32>(std::clamp(compiled_.deadzone, 0.0f, 0.9f) * 32767.0f);
         const i32 sx = SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_LEFTX);
         const i32 sy = SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_LEFTY);
-        if (std::abs(sx) > kDeadzone) axis_x = std::clamp(sx, -32767, 32767);
-        if (std::abs(sy) > kDeadzone) axis_y = std::clamp(sy, -32767, 32767);
+        if (std::abs(sx) > deadzone) axis_x = std::clamp(sx, -32767, 32767);
+        if (std::abs(sy) > deadzone) axis_y = std::clamp(sy, -32767, 32767);
     }
+    in.buttons = buttons;
 
     // Digital directions always win over the stick so keyboard and d-pad feel exact.
     const int dx = (in.down(Button::Right) ? 1 : 0) - (in.down(Button::Left) ? 1 : 0);
@@ -445,7 +446,7 @@ void App::render_frame(float alpha) {
 
     if (time_.show_overlay) {
         RW_PROFILE_SCOPE("overlay");
-        draw_debug_overlay(timeline_, time_, *game_, stats_, hot_);
+        draw_debug_overlay(timeline_, time_, *game_, stats_, hot_, this);
     }
     if (ui_) {
         RW_PROFILE_SCOPE("host ui");
@@ -494,6 +495,50 @@ void App::present_to_view() {
     o.scale_y = scale;
     renderer_->draw_texture(*target_, x, y, o);
     renderer_->set_target(nullptr);
+}
+
+// ---- player settings ---------------------------------------------------------------
+
+void App::apply_player_settings() {
+    if (window_) {
+        set_fullscreen(settings_.fullscreen);
+        if (device_) {
+            SDL_GPUPresentMode present = SDL_GPU_PRESENTMODE_VSYNC;
+            if (!settings_.vsync) {
+                if (SDL_WindowSupportsGPUPresentMode(device_, window_, SDL_GPU_PRESENTMODE_MAILBOX))
+                    present = SDL_GPU_PRESENTMODE_MAILBOX;
+                else if (SDL_WindowSupportsGPUPresentMode(device_, window_, SDL_GPU_PRESENTMODE_IMMEDIATE))
+                    present = SDL_GPU_PRESENTMODE_IMMEDIATE;
+            }
+            SDL_SetGPUSwapchainParameters(device_, window_, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, present);
+        }
+    }
+    audio_.set_mix(settings_.audio);
+    active_bindings_ = !settings_.input.empty() ? settings_.input : !cfg_.input.empty() ? cfg_.input : InputBindings::defaults();
+    compiled_ = compile_bindings(active_bindings_);
+    for (const std::string& u : compiled_.unknown) RW_LOG_WARN("app", "input binding ignored: unknown %s", u.c_str());
+}
+
+bool App::save_player_settings(std::string* error) {
+    return rw::save_player_settings(cfg_.organization, cfg_.title, settings_, error);
+}
+
+void App::set_fullscreen(bool on) {
+    if (window_) SDL_SetWindowFullscreen(window_, on);
+}
+
+bool App::fullscreen() const { return window_ && (SDL_GetWindowFlags(window_) & SDL_WINDOW_FULLSCREEN) != 0; }
+
+std::string App::take_pressed_key() {
+    std::string k = std::move(pressed_key_);
+    pressed_key_.clear();
+    return k;
+}
+
+std::string App::take_pressed_gamepad_button() {
+    std::string b = std::move(pressed_pad_);
+    pressed_pad_.clear();
+    return b;
 }
 
 bool App::load_state(const std::vector<u8>& bytes) {

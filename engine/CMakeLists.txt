@@ -64,6 +64,7 @@ add_library(rewind SHARED
     src/game_module.cpp
     src/graph.cpp
     src/gizmo.cpp
+    src/input_map.cpp
     src/inspector.cpp
     src/log.cpp
     src/math.cpp
@@ -74,6 +75,7 @@ add_library(rewind SHARED
     src/overlay.cpp
     src/pack.cpp
     src/paths.cpp
+    src/player_settings.cpp
     src/png.cpp
     src/profiler.cpp
     src/project.cpp

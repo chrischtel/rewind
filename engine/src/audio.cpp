@@ -112,7 +112,7 @@ Sound* Audio::create_sound(const std::string& name, int sample_rate, int channel
     return sound;
 }
 
-void Audio::play(const Sound& sound, float volume) {
+void Audio::play(const Sound& sound, float volume, u32 group) {
     if (!device_ || sound.data.empty()) return;
 
     if (static_cast<int>(voices_.size()) >= max_voices_) {
@@ -130,7 +130,7 @@ void Audio::play(const Sound& sound, float volume) {
         RW_LOG_ERROR("audio", "audio: SDL_CreateAudioStream failed: %s", SDL_GetError());
         return;
     }
-    SDL_SetAudioStreamGain(stream, std::max(0.0f, volume) * master_);
+    SDL_SetAudioStreamGain(stream, std::max(0.0f, volume) * master_ * std::clamp(mix_.group(group), 0.0f, 1.0f));
     SDL_PutAudioStreamData(stream, sound.data.data(), static_cast<int>(sound.data.size()));
     SDL_FlushAudioStream(stream);
     if (!SDL_BindAudioStream(device_, stream)) {

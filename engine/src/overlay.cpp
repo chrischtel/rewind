@@ -1,4 +1,7 @@
 #include "rewind/debug/overlay.h"
+#include "rewind/core/player_settings.h"
+#include "rewind/core/input_map.h"
+#include "rewind/core/app.h"
 
 #include "rewind/core/log.h"
 #include "rewind/core/profiler.h"
@@ -299,6 +302,103 @@ void draw_keys_panel() {
     ImGui::BulletText("gizmos: Alt ignores snapping, Shift locks a drag to one axis");
 }
 
+void draw_settings_panel(App& app) {
+    PlayerSettings& s = app.player_settings();
+    bool changed = false;
+    if (ImGui::Checkbox("fullscreen", &s.fullscreen)) changed = true;
+    ImGui::SameLine();
+    if (ImGui::Checkbox("vsync", &s.vsync)) changed = true;
+    ImGui::TextDisabled("volume");
+    if (ImGui::SliderFloat("master", &s.audio.master, 0, 1)) changed = true;
+    if (ImGui::SliderFloat("sfx", &s.audio.sfx, 0, 1)) changed = true;
+    if (ImGui::SliderFloat("music", &s.audio.music, 0, 1)) changed = true;
+    if (ImGui::SliderFloat("ui", &s.audio.ui, 0, 1)) changed = true;
+
+    ImGui::TextDisabled("bindings");
+    ImGui::SameLine();
+    const bool custom = !s.input.empty();
+    if (!custom) ImGui::TextDisabled("(project defaults; edit to make your own)");
+    else if (ImGui::SmallButton("reset to project defaults")) {
+        s.input = InputBindings{};
+        changed = true;
+    }
+
+    // Capturing: which button waits for a key or pad press.
+    static std::string capture_button;
+    static bool capture_pad = false;
+    const std::string pressed_key = app.take_pressed_key();
+    const std::string pressed_pad = app.take_pressed_gamepad_button();
+    if (!capture_button.empty()) {
+        if (!capture_pad && !pressed_key.empty()) {
+            if (pressed_key != "Escape") {
+                if (s.input.empty()) s.input = app.active_bindings();
+                s.input.add_key(capture_button, pressed_key);
+                changed = true;
+            }
+            capture_button.clear();
+        } else if (capture_pad && !pressed_pad.empty()) {
+            if (s.input.empty()) s.input = app.active_bindings();
+            s.input.add_gamepad(capture_button, pressed_pad);
+            changed = true;
+            capture_button.clear();
+        }
+    }
+
+    const InputBindings& shown = custom ? s.input : app.active_bindings();
+    if (ImGui::BeginTable("##bindings", 3, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
+        ImGui::TableSetupColumn("button");
+        ImGui::TableSetupColumn("keys");
+        ImGui::TableSetupColumn("gamepad");
+        ImGui::TableHeadersRow();
+        for (u32 i = 0; i < kButtonCount; ++i) {
+            const char* name = button_name(static_cast<Button>(1u << i));
+            const ButtonBinding* b = shown.find(name);
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(name);
+            ImGui::PushID(name);
+            for (int col = 1; col <= 2; ++col) {
+                ImGui::TableSetColumnIndex(col);
+                ImGui::PushID(col);
+                const bool pad = col == 2;
+                if (b) {
+                    const std::vector<std::string>& list = pad ? b->gamepad : b->keys;
+                    for (usize k = 0; k < list.size(); ++k) {
+                        ImGui::PushID(static_cast<int>(k));
+                        if (ImGui::SmallButton((list[k] + "  x").c_str())) {
+                            if (s.input.empty()) s.input = app.active_bindings();
+                            if (pad) s.input.remove_gamepad(name, list[k]);
+                            else s.input.remove_key(name, list[k]);
+                            changed = true;
+                        }
+                        ImGui::PopID();
+                        ImGui::SameLine();
+                    }
+                }
+                const bool waiting = capture_button == name && capture_pad == pad;
+                if (waiting) {
+                    ImGui::TextColored(ImVec4(1, 0.85f, 0.35f, 1), pad ? "press a pad button" : "press a key (Esc cancels)");
+                } else if (ImGui::SmallButton("+")) {
+                    capture_button = name;
+                    capture_pad = pad;
+                }
+                ImGui::PopID();
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    if (changed) app.apply_player_settings();
+    ImGui::Spacing();
+    if (ImGui::Button("Save settings")) {
+        std::string error;
+        if (!app.save_player_settings(&error)) RW_LOG_ERROR("app", "settings: %s", error.c_str());
+        else RW_LOG_INFO("app", "settings saved");
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", user_data_dir(app.config().organization, app.config().title).c_str());
+}
+
 void apply_editor_theme(Color accent) {
     ImGuiStyle& s = ImGui::GetStyle();
     ImGui::StyleColorsDark(&s);
@@ -377,7 +477,7 @@ void apply_editor_theme(Color accent) {
 // ---- the stacked overlay ------------------------------------------------------------
 
 void draw_debug_overlay(Timeline& tl, TimeControl& time, Game& game, const FrameStats& stats,
-                        const HotReloadInfo& hot) {
+                        const HotReloadInfo& hot, App* app) {
     ImGui::SetNextWindowPos(ImVec2(12, 12), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(460, 0), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Rewind")) {
@@ -412,6 +512,8 @@ void draw_debug_overlay(Timeline& tl, TimeControl& time, Game& game, const Frame
     }
 
     if (ImGui::CollapsingHeader("Keys")) draw_keys_panel();
+
+    if (app && ImGui::CollapsingHeader("Settings")) draw_settings_panel(*app);
 
     if (ImGui::CollapsingHeader("Game", ImGuiTreeNodeFlags_DefaultOpen)) game.debug_ui();
 

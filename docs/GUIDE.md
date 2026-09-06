@@ -761,6 +761,37 @@ is running, since the engine DLL and runner are locked by the process. And a
 game must not keep simulation state anywhere except what `save()` writes,
 because that is the only thing carried across.
 
+## Settings: project, player, bindings
+
+Three layers, each overriding the last:
+
+1. **The game's defaults** from `configure()`.
+2. **The project** (`project.json`, `app` block): window, rendering,
+   timeline, and now `organization`, `fullscreen`, `input` bindings and the
+   `audio_mix`.
+3. **The player** (`settings.json` in the OS's per-user folder for the
+   organisation and title, `user_data_dir()`): fullscreen, vsync, volumes,
+   their own bindings, and a free-form `game` block for your options.
+
+```cpp
+PlayerSettings& s = app.player_settings();
+s.audio.music = 0.5f;
+s.input.add_key("a", "Space");     // names as SDL spells them; "dpup", "leftshoulder" for pads
+app.apply_player_settings();       // window, mix and bindings take effect now
+app.save_player_settings();
+
+audio.play(snd, 1.0f, kAudioMusic); // groups: kAudioSfx, kAudioMusic, kAudioUi times master
+```
+
+`InputBindings` maps each abstract Button to key and gamepad names and
+compiles to lookup tables; `InputBindings::defaults()` is the arrows/WASD
+layout every sample uses. The overlay's **Settings** section and the
+editor's **Player settings** panel edit all of this live: sliders, a
+fullscreen toggle, and press-to-bind (click a button's `+`, press a key or
+pad button, `x` removes one). Bindings are part of the deterministic
+input record only through the resulting InputFrame, so a replay is not
+affected by how the player rebinds.
+
 ## Writing a game
 
 ```cpp

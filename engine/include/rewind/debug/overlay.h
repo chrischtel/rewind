@@ -83,13 +83,19 @@ void draw_state_panel(Timeline& timeline, TimeControl& time, Game& game);
 /// Hotkey reference.
 void draw_keys_panel();
 
+/// Player settings: fullscreen, vsync, volumes, and rebinding (click a
+/// button's + and press a key or pad button). Saves on request.
+class App;
+void draw_settings_panel(App& app);
+
 /// A calm dark theme with one accent colour, for tools built on the
 /// engine. Rounded frames, flat headers, readable contrast.
 void apply_editor_theme(Color accent = rgb(86, 156, 214));
 
 /// Draws the engine's Dear ImGui overlay: stats, timeline scrubber, determinism
 /// status, hot reload status, and the game's own debug_ui().
+/// `app` adds the Settings section; nullptr leaves it out.
 void draw_debug_overlay(Timeline& timeline, TimeControl& time, Game& game, const FrameStats& stats,
-                        const HotReloadInfo& hot);
+                        const HotReloadInfo& hot, App* app = nullptr);
 
 } // namespace rw

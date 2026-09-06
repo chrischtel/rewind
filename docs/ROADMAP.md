@@ -128,10 +128,15 @@ project settings, save games, localisation.
    and `read_asset_bytes` in `core/paths.h` (all loaders use it), `rewind
    pack`, runner auto-mounts packs and reads settings, scenes and prefabs
    from them, `pack_test`.
-3. Project settings II: input bindings (keyboard and gamepad to Button) in
+3. ~~Project settings II: input bindings (keyboard and gamepad to Button) in
    project.json with a rebinding UI, audio settings (master and per-group
    volume), player settings file (window mode, volume, bindings) saved in
-   the user's folder.
+   the user's folder.~~ Done: `core/input_map.h` (InputBindings by name,
+   compiled tables, App samples through them), `AudioMix` with sfx/music/ui
+   groups on `Audio::play`, `core/player_settings.h` (settings.json in
+   SDL's per-user folder, game block), `App::player_settings`, Settings
+   section in the overlay and a Player settings panel in the editor with
+   press-to-bind, `settings_test`.
 4. Core: save games with a version tag and a migration hook, screenshot
    capture, localisation (string tables per language, `tr()`), a settings
    struct games can extend.
