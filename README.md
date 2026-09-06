@@ -284,6 +284,23 @@ frames, a bar timeline of the last frame nested by depth (hover for exact
 times), and totals per region. The cost is one clock read per scope, so
 leaving scopes in shipping code is fine.
 
+## Rewind Defense
+
+A complete small game on top of everything above: `towerdefense`. Enemies
+walk a path, you place arrow, cannon and frost towers with the mouse,
+upgrade them by clicking again, sell with the right button, and call waves
+early for bonus gold. Waves escalate and a boss arrives every tenth. Lose
+the gate and the game tells you to hold F4: rewinding three minutes of
+history and replaying a wave with different towers is the whole point.
+
+Everything in it is deterministic. The mouse is part of the input frame
+(`mouse_x`, `mouse_y` in render-target pixels, `Button::MouseLeft`,
+`MouseRight`, `MouseMiddle`), so every click is recorded, rewinds, replays
+and would roll back over the network like any other input. Enemies, towers,
+projectiles and particles are entities; the whole run is a reflected world,
+so the inspector can edit gold or lives mid-game and the timeline records
+that as an edit.
+
 ## Rollback netcode
 
 Multiplayer that feels local, built on the timeline. Run the `duel` sample
@@ -449,6 +466,7 @@ tools/runner/         rewind_run, the hot-reload host
 samples/bounce/       shapes, entities, rewind, desync detector
 samples/pixels/       sprites, animation, tilemap, sound, pixel mode, gamepad
 samples/duel/         two players over rollback netcode
+samples/towerdefense/ Rewind Defense: waves, towers, economy, mouse input
 tests/                headless tests: core, timeline, assets, world, reflect, ecs, net, shader, hot reload
 ```
 

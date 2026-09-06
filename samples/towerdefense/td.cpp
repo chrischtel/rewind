@@ -30,9 +30,10 @@ namespace {
 constexpr int kTile = 32;
 constexpr int kCols = 20;
 constexpr int kRows = 11;
-constexpr int kViewW = kCols * kTile; // 640
-constexpr int kViewH = 360;           // one 8 px HUD strip above the map
-constexpr int kMapTop = 8;
+constexpr int kViewW = kCols * kTile;              // 640
+constexpr int kMapTop = 10;                        // HUD strip above the map
+constexpr int kMapBottom = kMapTop + kRows * kTile; // 362
+constexpr int kViewH = kMapBottom + 22;            // tower bar below the map: 384, scales 2x into 1280x768
 
 // '#' path, '.' buildable, 'S' spawn, 'E' exit, '~' water (not buildable).
 const std::vector<std::string> kMap = {
@@ -197,7 +198,7 @@ public:
     void configure(AppConfig& cfg) override {
         cfg.title = "Rewind Defense";
         cfg.width = 1280;
-        cfg.height = 720;
+        cfg.height = 768;
         cfg.render_width = kViewW;
         cfg.render_height = kViewH;
         cfg.integer_scale = true;
@@ -644,27 +645,27 @@ public:
         std::snprintf(buf, sizeof buf, "GOLD %d   LIVES %d   WAVE %d   SCORE %d", gold_, lives_, wave_, score_);
         r.draw_text(4, 1, buf, rgb(255, 230, 140));
 
-        // Bottom strip: tower selection.
-        const float bottom = static_cast<float>(kMapTop + kRows * kTile); // 360, off the target: use last rows
-        (void)bottom;
+        // Bottom strip: tower selection on the left, wave status on the right.
+        r.fill_rect(0, kMapBottom, kViewW, kViewH - kMapBottom, rgb(14, 16, 20));
         float x = 4;
-        const float y = kViewH - 9;
+        const float y = kMapBottom + 4;
         for (int i = 0; i < kTowerKinds; ++i) {
             const TowerSpec& s = kTowers[i];
             std::snprintf(buf, sizeof buf, "%s %s %d", i == selected_ ? ">" : " ", s.name, s.cost);
-            const Color c = i == selected_ ? rgb(255, 255, 255) : s.color;
-            r.fill_rect(x - 2, y - 1, 6.0f * static_cast<float>(std::strlen(buf)) + 4, 9, rgba(0, 0, 0, 150));
-            r.draw_text(x, y, buf, c);
-            x += 6.0f * static_cast<float>(std::strlen(buf)) + 10;
+            const float w = 6.0f * static_cast<float>(std::strlen(buf)) + 4;
+            if (i == selected_) r.fill_rect(x - 2, y - 2, w, 12, rgba(255, 255, 255, 40));
+            r.fill_rect(x, y + 10, w - 4, 1, s.color);
+            r.draw_text(x, y, buf, i == selected_ ? rgb(255, 255, 255) : s.color);
+            x += w + 8;
         }
+        r.draw_text(x + 6, y, "X: NEXT TOWER   RIGHT CLICK: SELL", rgb(110, 120, 140));
         if (!wave_active_) {
-            std::snprintf(buf, sizeof buf, "NEXT WAVE IN %d   (ENTER: CALL EARLY +%d GOLD)", static_cast<int>(countdown_) + 1,
+            std::snprintf(buf, sizeof buf, "NEXT WAVE IN %d   ENTER: CALL EARLY +%d GOLD", static_cast<int>(countdown_) + 1,
                           static_cast<int>(countdown_) * 3);
         } else {
             std::snprintf(buf, sizeof buf, "WAVE %d   %d LEFT TO SPAWN", wave_, to_spawn_);
         }
-        r.fill_rect(kViewW - 6.0f * static_cast<float>(std::strlen(buf)) - 8, y - 1, 6.0f * static_cast<float>(std::strlen(buf)) + 6, 9, rgba(0, 0, 0, 150));
-        r.draw_text(kViewW - 6.0f * static_cast<float>(std::strlen(buf)) - 5, y, buf, rgb(200, 220, 255));
+        r.draw_text(kViewW - 6.0f * static_cast<float>(std::strlen(buf)) - 4, y, buf, rgb(200, 220, 255));
 
         if (game_over_) {
             r.fill_rect(0, 0, kViewW, kViewH, rgba(0, 0, 0, 150));
