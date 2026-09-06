@@ -23,12 +23,15 @@ struct FieldMeta {
     /// dropdown. `{.names = kKinds, .name_count = 3}`.
     const char* const* names = nullptr;
     u32 name_count = 0;
+    /// For AssetRef fields: only assets of this type ("texture", "audio",
+    /// "font", ...) are offered by the picker. nullptr = any.
+    const char* asset_type = nullptr;
 };
 
 /// How a struct wants to be shown. Engine types announce this themselves
 /// at the start of their reflect(), so a Color is a color picker wherever
 /// it appears and nobody has to annotate the field.
-enum class Widget : u8 { Default, Color, Vec2, Rect, Entity, Path };
+enum class Widget : u8 { Default, Color, Vec2, Rect, Entity, Path, Asset };
 
 /// A type that can describe its fields: `void reflect(rw::Visitor&)`.
 template <class T>

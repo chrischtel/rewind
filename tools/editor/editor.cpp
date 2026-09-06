@@ -305,6 +305,14 @@ void load_scene_into(rw::App& app, const std::string& name) {
     RW_LOG_INFO("editor", "%s", g_editor.status.c_str());
 }
 
+/// The global id index the pickers and loaders use follows the database.
+void refresh_asset_index() {
+    if (!g_editor.assets) return;
+    rw::AssetIndex& index = rw::AssetIndex::global();
+    index.clear();
+    for (const rw::AssetRecord& r : g_editor.assets->records()) index.add(r.meta.id, r.path, r.meta.type);
+}
+
 void cook_assets(bool force) {
     if (!g_editor.assets) return;
     g_editor.assets->scan();
@@ -316,6 +324,7 @@ void cook_assets(bool force) {
     g_editor.status = buf;
     RW_LOG_INFO("assets", "%s", buf);
     g_editor.assets->scan();
+    refresh_asset_index();
 }
 
 void draw_menu(rw::App& app) {
@@ -624,7 +633,10 @@ void draw_scene(rw::App& app) {
 void draw_assets() {
     if (!g_editor.show_assets || !g_editor.assets) return;
     if (ImGui::Begin("Assets", &g_editor.show_assets)) {
-        if (ImGui::Button("Rescan")) g_editor.assets->scan();
+        if (ImGui::Button("Rescan")) {
+            g_editor.assets->scan();
+            refresh_asset_index();
+        }
         ImGui::SameLine();
         if (ImGui::Button("Cook changed")) cook_assets(false);
         ImGui::SameLine();
@@ -643,7 +655,18 @@ void draw_assets() {
             for (const rw::AssetRecord& r : records) {
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
-                ImGui::TextUnformatted(r.path.c_str());
+                // Rows drag into asset reference fields of the Inspector.
+                ImGui::Selectable((r.path + "##" + r.meta.id).c_str(), false, ImGuiSelectableFlags_SpanAllColumns);
+                if (ImGui::BeginDragDropSource()) {
+                    ImGui::SetDragDropPayload("REWIND_ASSET", r.meta.id.c_str(), r.meta.id.size() + 1);
+                    ImGui::TextUnformatted(r.path.c_str());
+                    ImGui::EndDragDropSource();
+                }
+                if (ImGui::BeginPopupContextItem()) {
+                    if (ImGui::MenuItem("Copy id")) ImGui::SetClipboardText(r.meta.id.c_str());
+                    if (ImGui::MenuItem("Copy path")) ImGui::SetClipboardText(r.path.c_str());
+                    ImGui::EndPopup();
+                }
                 ImGui::TableSetColumnIndex(1);
                 ImGui::TextUnformatted(r.meta.type.c_str());
                 ImGui::TableSetColumnIndex(2);
@@ -926,6 +949,7 @@ int main(int argc, char** argv) {
         rw::use_project_paths(g_editor.project);
         g_editor.assets = std::make_unique<rw::AssetDatabase>(g_editor.project);
         g_editor.assets->scan();
+        refresh_asset_index();
         g_editor.project_file = g_editor.project.file();
         g_editor.state_file = g_editor.project.root / (g_editor.project.name + ".state.json");
     } else {

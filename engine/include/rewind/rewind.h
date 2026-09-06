@@ -5,6 +5,7 @@
 #include "rewind/assets/aseprite.h"
 #include "rewind/assets/png.h"
 #include "rewind/project/asset_db.h"
+#include "rewind/project/asset_ref.h"
 #include "rewind/project/cooked.h"
 #include "rewind/project/project.h"
 #include "rewind/project/scene.h"

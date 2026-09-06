@@ -1207,6 +1207,33 @@ Texture* Renderer2D::create_render_target(const std::string& name, int width, in
     return impl_->make_texture(name, width, height, true, pixel_art_);
 }
 
+Texture* Renderer2D::load_texture(const AssetRef& ref) {
+    const std::string file = resolve_asset(ref);
+    if (file.empty()) {
+        RW_LOG_WARN("gpu", "load_texture: asset reference '%s' (%s) resolves to nothing", ref.path.c_str(), ref.id.c_str());
+        return nullptr;
+    }
+    return load_texture(file);
+}
+
+Font* Renderer2D::load_font(const AssetRef& ref, float pixel_size) {
+    const std::string file = resolve_asset(ref);
+    if (file.empty()) {
+        RW_LOG_WARN("gpu", "load_font: asset reference '%s' (%s) resolves to nothing", ref.path.c_str(), ref.id.c_str());
+        return nullptr;
+    }
+    return load_font(file, pixel_size);
+}
+
+Material* Renderer2D::load_material(const AssetRef& ref) {
+    const std::string file = resolve_asset(ref);
+    if (file.empty()) {
+        RW_LOG_WARN("gpu", "load_material: asset reference '%s' (%s) resolves to nothing", ref.path.c_str(), ref.id.c_str());
+        return nullptr;
+    }
+    return load_material(file);
+}
+
 Texture* Renderer2D::load_texture(const std::string& path) {
     Impl& im = *impl_;
     Texture* existing = find_texture(path);

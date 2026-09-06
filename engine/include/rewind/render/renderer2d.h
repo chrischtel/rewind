@@ -4,6 +4,7 @@
 #include "rewind/core/math.h"
 #include "rewind/core/types.h"
 #include "rewind/render/mesh.h"
+#include "rewind/project/asset_ref.h"
 #include "rewind/render/texture.h"
 
 #include <memory>
@@ -160,6 +161,7 @@ public:
     /// size, re-baked when the file changes. Returns a font with ok == false
     /// (and draws nothing) when the file cannot be read.
     Font* load_font(const std::string& path, float pixel_size);
+    Font* load_font(const AssetRef& ref, float pixel_size);
 
     /// Draw UTF-8 text with (x, y) at the top-left of the first line. Screen
     /// space by default; `world` applies the camera. `scale` multiplies the
@@ -173,6 +175,8 @@ public:
     /// unless the file changed on disk, in which case it is re-read into the
     /// same Texture object. The file is tracked for asset hot reload.
     Texture* load_texture(const std::string& path);
+    /// Same through an asset reference (project/asset_ref.h); nullptr when it resolves to nothing.
+    Texture* load_texture(const AssetRef& ref);
 
     /// Create or update a texture from RGBA8 pixels (row-major, 4 bytes per
     /// pixel). Cached by name. An existing texture is updated in place, even
@@ -208,6 +212,7 @@ public:
     /// same Material object. A failed load keeps the previous pipeline and
     /// reports in `material->error`.
     Material* load_material(const std::string& spv_path);
+    Material* load_material(const AssetRef& ref);
     Material* find_material(const std::string& spv_path) const;
 
     /// Use `material` for the sprites and shapes drawn from now on in this

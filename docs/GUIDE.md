@@ -519,6 +519,37 @@ build/bin/Release/rewind.exe cook mygame
   a project folder directly. The editor's Assets panel shows the same
   database and cooks from a button.
 
+### Asset references
+
+State, scenes and prefabs point at assets with an `AssetRef`: the asset's
+stable id from its sidecar plus the path as a readable fallback. The id
+survives renames and moves (the sidecar moves with the file), the path
+keeps files diffable and works without a project.
+
+```cpp
+struct Enemy {
+    AssetRef sprite;                          // {"id": "3f9a...", "path": "sprites/enemy.png"}
+    AssetRef hit_sound;
+    void reflect(Visitor& v) {
+        v.field("sprite", sprite, {.asset_type = "texture"});   // the picker offers only textures
+        v.field("hit_sound", hit_sound, {.asset_type = "audio"});
+    }
+};
+
+Texture* tex = renderer.load_texture(enemy.sprite);   // by id, then path, then the asset roots
+Sound* snd = audio.load_wav(enemy.hit_sound);         // nullptr with a warning when unresolved
+```
+
+`use_project_paths()` fills the global `AssetIndex` from the sidecars in
+`assets/` (only the small `.meta.json` files are read), and the editor
+keeps it in step with its database. `resolve_asset(ref)` gives the file
+to load, cooked variants first. In the Inspector an `AssetRef` is a
+button showing the path (red when the id is unknown to the project, with
+an arrow when the file moved), a picker with a filter, a clear button,
+and a drop target: drag a row out of the Assets panel onto it. Rows there
+also offer "Copy id" and "Copy path". `AssetIndex::refresh(ref)` updates
+a reference after a move, for tools that rewrite files.
+
 ### Scenes and prefabs
 
 A scene file in `scenes/` lists entities with their components by name, as

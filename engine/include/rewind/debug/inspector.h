@@ -70,7 +70,9 @@ private:
         std::vector<float*> floats;
         std::vector<u32*> ints;
         std::vector<bool*> bools;
+        std::vector<std::string*> strings;
     };
+    bool asset_widget(Frame& f);
 
     usize max_elements_;
     bool changed_ = false;

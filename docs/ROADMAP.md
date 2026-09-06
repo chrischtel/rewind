@@ -90,8 +90,11 @@ reflected state with hints.
    right-click placement menu in the scene (create, spawn prefab, move,
    duplicate, delete), Ctrl+Z/Y/D and Del.~~ Done: `debug/edit_history.h`,
    `edit_history_test`, editor.
-2. Asset references: an `AssetRef` field type with a hint, a picker in the
-   Inspector fed by the asset database, drag from the Assets panel.
+2. ~~Asset references: an `AssetRef` field type with a hint, a picker in the
+   Inspector fed by the asset database, drag from the Assets panel.~~ Done:
+   `project/asset_ref.h` (AssetRef = id + path, AssetIndex from sidecars,
+   `resolve_asset`), loader overloads on Renderer2D and Audio, Inspector
+   picker with type filter and drop target, `asset_ref_test`.
 3. Scene management: new scene, scene list, switch scene, unsaved-changes
    marker, save on Ctrl+S; entity hierarchy through an optional parent link.
 4. Editor polish: dark theme with accent, toolbar icons, status bar with

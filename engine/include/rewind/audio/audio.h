@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rewind/core/types.h"
+#include "rewind/project/asset_ref.h"
 
 #include <memory>
 #include <string>
@@ -47,6 +48,7 @@ public:
     /// Load a WAV file. Cached by path; re-read into the same Sound object
     /// when the file changed on disk. Tracked for asset hot reload.
     Sound* load_wav(const std::string& path);
+    Sound* load_wav(const AssetRef& ref);
 
     void set_file_watcher(FileWatcher* watcher) { watcher_ = watcher; }
     void invalidate_file(const std::string& path) {

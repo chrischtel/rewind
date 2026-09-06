@@ -50,6 +50,15 @@ Sound* Audio::find_sound(const std::string& name) const {
     return it == sounds_.end() ? nullptr : it->second.get();
 }
 
+Sound* Audio::load_wav(const AssetRef& ref) {
+    const std::string file = resolve_asset(ref);
+    if (file.empty()) {
+        RW_LOG_WARN("audio", "load_wav: asset reference '%s' (%s) resolves to nothing", ref.path.c_str(), ref.id.c_str());
+        return nullptr;
+    }
+    return load_wav(file);
+}
+
 Sound* Audio::load_wav(const std::string& path) {
     Sound* existing = find_sound(path);
     const bool stale = stale_files_.erase(path) > 0;

@@ -86,14 +86,20 @@ It is not for 3D games, and not for people who want a no-code workflow.
   today.
 
 **Tooling**
-- Editor with dockable Scene, Timeline, Inspector, Assets, Console,
-  Profiler and Project panels.
-- Projects with a fixed layout, stable asset ids in sidecars, and an
-  incremental, content-hash-based asset cook. A `rewind` command line for
+- Editor with dockable Scene, Entities, Timeline, Inspector, Assets,
+  Console, Profiler and Project panels. Edit and play modes (Stop returns
+  to the edited state), undo and redo, a free camera, gizmos with snapping,
+  right-click placement, entity names and search.
+- Projects with a fixed layout, stable asset ids in sidecars, an
+  incremental, content-hash-based asset cook, scenes and prefabs with
+  per-instance overrides, asset references by id with a picker and
+  drag-and-drop from the asset browser. A `rewind` command line for
   creating, inspecting, cooking, running and editing projects.
+- Inspector widgets from hints: color pickers, points, rectangles, entity
+  links, enums by name, curve previews, asset pickers.
 - Always-on profiler, engine log with an in-game console, gamepad, mouse
-  and keyboard input as part of the deterministic input record.
-- Eleven headless test suites and a CI workflow for Windows and Ubuntu.
+  (with wheel) and keyboard input as part of the deterministic input record.
+- Twenty-one headless test suites and a CI workflow for Windows and Ubuntu.
 
 Four samples show all of it: `bounce`, `pixels`, `duel` (netcode) and
 `towerdefense`, a complete small game.
@@ -102,18 +108,19 @@ Four samples show all of it: `bounce`, `pixels`, `duel` (netcode) and
 
 In rough order.
 
-- **Scenes and prefabs** as project files, with per-instance overrides.
-- **Richer properties**: enums with names, color pickers, entity links,
-  asset references with a picker, categories. An entity list in the editor.
+- **Scene management** in the editor: new scene, scene list, unsaved
+  marker, Ctrl+S, entity hierarchy.
+- **Editor polish**: theme, toolbar icons, status bar, welcome screen.
+- **3D and isometric tools**: 3D camera, vertex shaders in materials,
+  transform hierarchies, glTF import, picking (the renderer is 3D-ready).
 - **Post-processing and 2D lighting** on top of materials.
 - **More importers** and packing cooked assets into archives for shipping.
-- **Undo** built on the timeline's edit records.
 - **More than two players** and a lobby handshake for the netcode.
 - **Fixed-point math option** for bit-exact determinism between different
   CPUs over the internet.
 - **Linux on a real machine**, then macOS.
-- **Editor polish**: custom theme, multi-viewport windows, an asset browser
-  with thumbnails, sub-pixel camera smoothing, positional audio.
+- **Multi-viewport windows**, an asset browser with thumbnails, positional
+  audio.
 
 ## Quick start
 

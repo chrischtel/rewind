@@ -51,6 +51,7 @@ endif()
 add_library(rewind SHARED
     src/app.cpp
     src/aseprite.cpp
+    src/asset_ref.cpp
     src/camera.cpp
     src/asset_db.cpp
     src/audio.cpp

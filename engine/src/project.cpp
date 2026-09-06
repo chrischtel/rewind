@@ -1,5 +1,7 @@
 #include "rewind/project/project.h"
 
+#include "rewind/project/asset_ref.h"
+
 #include "rewind/assets/png.h"
 #include "rewind/core/log.h"
 #include "rewind/core/paths.h"
@@ -95,8 +97,11 @@ void use_project_paths(const Project& project) {
     clear_asset_roots();
     add_asset_root(project.cooked_dir().string(), true);
     add_asset_root(project.asset_dir().string(), false);
-    RW_LOG_INFO("project", "%s: assets in %s, cooked in %s", project.name.c_str(), project.asset_dir().string().c_str(),
-                project.cooked_dir().string().c_str());
+    AssetIndex& index = AssetIndex::global();
+    index.clear();
+    const usize known = index.load_sidecars(project.asset_dir().string());
+    RW_LOG_INFO("project", "%s: assets in %s, cooked in %s, %zu asset ids", project.name.c_str(),
+                project.asset_dir().string().c_str(), project.cooked_dir().string().c_str(), known);
 }
 
 } // namespace rw

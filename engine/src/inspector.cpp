@@ -1,5 +1,7 @@
 #include "rewind/debug/inspector.h"
 
+#include "rewind/project/asset_ref.h"
+
 #include <imgui.h>
 
 #include <algorithm>
@@ -129,7 +131,11 @@ void InspectorVisitor::visit(std::string_view n, u64& v, const FieldMeta& m) { i
 void InspectorVisitor::visit(std::string_view n, double& v, const FieldMeta& m) { if (!collecting()) scalar(n, v, m, ImGuiDataType_Double); }
 
 void InspectorVisitor::visit(std::string_view n, std::string& v, const FieldMeta& m) {
-    if (collecting() || !prepare()) return;
+    if (collecting()) {
+        frames_.back().strings.push_back(&v);
+        return;
+    }
+    if (!prepare()) return;
     const std::string id = label(n);
     char buffer[256];
     std::strncpy(buffer, v.c_str(), sizeof buffer - 1);
@@ -176,6 +182,7 @@ void InspectorVisitor::end_struct() {
         parent.floats.insert(parent.floats.end(), f.floats.begin(), f.floats.end());
         parent.ints.insert(parent.ints.end(), f.ints.begin(), f.ints.end());
         parent.bools.insert(parent.bools.end(), f.bools.begin(), f.bools.end());
+        parent.strings.insert(parent.strings.end(), f.strings.begin(), f.strings.end());
         return;
     }
     if (f.widget == Widget::Default) {
@@ -229,10 +236,92 @@ void InspectorVisitor::end_struct() {
         }
         break;
     case Widget::Path: edited = path_widget(f); break;
+    case Widget::Asset: edited = asset_widget(f); break;
     case Widget::Default: break;
     }
     ImGui::EndDisabled();
     after_edit(edited, m);
+}
+
+// An asset reference: the current path, a picker over the global asset
+// index (filtered by the field's asset_type), a clear button, and a drop
+// target for rows dragged out of an Assets panel (payload "REWIND_ASSET").
+bool InspectorVisitor::asset_widget(Frame& f) {
+    if (f.strings.size() < 2) return false;
+    std::string& id = *f.strings[0];
+    std::string& path = *f.strings[1];
+    const std::string name = f.label.substr(0, f.label.find("##"));
+    const char* type = f.meta.asset_type;
+    bool edited = false;
+    ImGui::PushID(f.label.c_str());
+
+    const AssetIndex& index = AssetIndex::global();
+    const AssetEntry* entry = id.empty() ? nullptr : index.find_id(id);
+    std::string shown = path.empty() ? (id.empty() ? "(none)" : id) : path;
+    if (entry && entry->path != path) shown += " -> " + entry->path; // moved since the reference was made
+    const bool missing = !id.empty() && !entry && index.size() > 0;
+
+    if (missing) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 0.45f, 0.45f, 1));
+    if (ImGui::Button(shown.c_str(), ImVec2(-ImGui::GetFrameHeight() * 2 - ImGui::CalcTextSize(name.c_str()).x - 16, 0)))
+        ImGui::OpenPopup("pick");
+    if (missing) ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered()) {
+        if (missing) ImGui::SetTooltip("asset id %s is not in the project", id.c_str());
+        else if (!id.empty()) ImGui::SetTooltip("id %s%s%s", id.c_str(), type ? "\ntype " : "", type ? type : "");
+        else ImGui::SetTooltip("click to pick%s%s, or drop an asset here", type ? " a " : "", type ? type : "");
+    }
+    if (ImGui::BeginDragDropTarget()) {
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("REWIND_ASSET")) {
+            const std::string dropped(static_cast<const char*>(payload->Data));
+            if (const AssetEntry* e = index.find_id(dropped)) {
+                if (!type || e->type == type) {
+                    id = e->id;
+                    path = e->path;
+                    edited = true;
+                }
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("x") && !f.meta.read_only) {
+        id.clear();
+        path.clear();
+        edited = true;
+    }
+    ImGui::SameLine();
+    ImGui::TextUnformatted(name.c_str());
+
+    if (ImGui::BeginPopup("pick")) {
+        static char filter[64] = "";
+        if (ImGui::IsWindowAppearing()) {
+            filter[0] = '\0';
+            ImGui::SetKeyboardFocusHere();
+        }
+        ImGui::SetNextItemWidth(260);
+        ImGui::InputTextWithHint("##filter", type ? type : "filter", filter, sizeof filter);
+        ImGui::Separator();
+        if (index.size() == 0) ImGui::TextDisabled("no project assets (open a project folder)");
+        if (ImGui::BeginChild("##list", ImVec2(260, 200))) {
+            for (const AssetEntry& e : index.entries()) {
+                if (type && e.type != type) continue;
+                if (filter[0] && e.path.find(filter) == std::string::npos) continue;
+                if (ImGui::Selectable(e.path.c_str(), e.id == id)) {
+                    if (!f.meta.read_only) {
+                        id = e.id;
+                        path = e.path;
+                        edited = true;
+                    }
+                    ImGui::CloseCurrentPopup();
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s  %s", e.type.c_str(), e.id.c_str());
+            }
+        }
+        ImGui::EndChild();
+        ImGui::EndPopup();
+    }
+    ImGui::PopID();
+    return edited && !f.meta.read_only;
 }
 
 // A path: preview of the curve, closed flag, and the control points as rows.
