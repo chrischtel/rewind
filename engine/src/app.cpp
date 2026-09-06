@@ -430,6 +430,10 @@ void App::render_frame(float alpha) {
         RW_PROFILE_SCOPE("game.render");
         game_->render(*renderer_, alpha);
     }
+    if (scene_) {
+        RW_PROFILE_SCOPE("scene tools");
+        scene_(*this, *renderer_);
+    }
     if (target_) {
         if (cfg_.embedded) {
             present_to_view();

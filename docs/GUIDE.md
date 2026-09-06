@@ -262,6 +262,37 @@ controller: wheel zooms around the cursor, right or middle drag pans, and
 `Renderer2D::set_camera_override()` makes the game's own camera calls
 inert while it is on.
 
+### Gizmos
+
+`debug/gizmo.h` has immediate-mode handles for tools and debug views:
+
+```cpp
+Gizmos g;                                  // keep one across frames
+GizmoInput in{mouse_render_px, left_down, alt, shift, view_hovered};
+g.begin(in, renderer.camera(), view_w, view_h);
+g.snap().enabled = true; g.snap().grid = 16; g.snap().angle_deg = 15;
+if (g.point(1, spawn)) ...                 // round grab point, true when it moved
+g.move(2, position);                       // centre = free, arrow tips = one axis
+g.rect(3, trigger_area);                   // corners, edges, centre
+g.rotate(4, position, heading);            // ring, snaps to the angle step
+g.path(5, route);                          // anchors drag with their tangents, tangents stay aligned
+g.end();
+g.draw(renderer);                          // world space, sizes stay in pixels
+```
+
+Hover is resolved at `end()` and applies the next frame, like Dear ImGui.
+Holding Alt bypasses snapping, Shift locks a drag to one axis;
+`clicked_empty()` reports a press that hit no handle, for selection.
+Drawing is a list of shapes (`shapes()`), so the logic is testable without
+a GPU. `GizmoVisitor` walks reflected state and turns every struct hinted
+`Vec2`, `Rect` or `Path` into a handle description; `apply()` runs the
+matching gizmo and writes back. That is what the editor does for the
+selected entity: hint your position struct with `v.hint(Widget::Vec2)`
+and it gets a move gizmo and click-to-select in the Scene panel, with a
+Snap toolbar (grid and angle). A `Path` field draws in the Inspector as a
+preview with a closed flag and its control points, and in the scene as an
+editable curve.
+
 ### Spatial index
 
 `SpatialGrid<T>` in `core/spatial.h` answers "what is near here" for any
@@ -504,7 +535,11 @@ build/bin/Release/rewind_editor.exe build/bin/Release/towerdefense_hot.dll
 
 - **Scene** shows the running game, integer-scaled in pixel mode, with the
   mouse mapped into game pixels. Click it to give the game your input; while
-  another panel has focus the game receives nothing.
+  another panel has focus the game receives nothing. Its toolbar has the
+  **Free camera** (wheel zooms around the cursor, right or middle drag
+  pans) and **Gizmos** with a snap grid and angle: the selected entity's
+  hinted `Vec2`, `Rect` and `Path` fields get handles in the view, and a
+  click near an entity's position selects it.
 - **Timeline** holds the transport, scrubber, determinism status, hot reload
   and network state. **Inspector** holds the game's debug UI and its whole
   reflected state, editable live. **Console** and **Profiler** are the same

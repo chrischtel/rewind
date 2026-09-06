@@ -54,6 +54,8 @@ private:
     void after_edit(bool edited, const FieldMeta& m);
     bool prepare();
     bool collecting() const { return !frames_.empty() && frames_.back().widget != Widget::Default; }
+    struct Frame;
+    bool path_widget(Frame& f);
 
     /// A struct being drawn: either a tree node opened lazily on its first
     /// field, or a combined widget collecting its fields' addresses.
@@ -67,12 +69,14 @@ private:
         std::vector<u8*> bytes;
         std::vector<float*> floats;
         std::vector<u32*> ints;
+        std::vector<bool*> bools;
     };
 
     usize max_elements_;
     bool changed_ = false;
     std::vector<usize> index_stack_;
     std::vector<Frame> frames_;
+    std::vector<bool> array_collecting_; ///< per open array: entered while collecting (no tree node)
     int id_counter_ = 0;
 };
 

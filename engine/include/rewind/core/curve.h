@@ -123,6 +123,7 @@ struct Path {
     std::vector<Vec2> offset(float distance, float tolerance = 0.25f, float miter_limit = 4) const;
 
     void reflect(Visitor& v) {
+        v.hint(Widget::Path);
         v.field("segments", segments);
         v.field("closed", closed);
     }

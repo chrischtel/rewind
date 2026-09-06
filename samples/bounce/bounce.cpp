@@ -24,6 +24,7 @@ using namespace rw;
 struct Transform {
     float x = 0, y = 0;
     void reflect(Visitor& v) {
+        v.hint(Widget::Vec2); // two floats = a point: the inspector shows one row, the editor a move gizmo
         v.field("x", x);
         v.field("y", y);
     }

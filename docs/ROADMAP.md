@@ -64,8 +64,11 @@ building blocks that any game uses. Engine-level only, never game-specific.
    (grid or quadtree) for proximity queries.~~ Done: `render/camera.h`
    (CameraController, editor free camera, `InputFrame::wheel`),
    `core/spatial.h` (SpatialGrid), `camera_test`, `spatial_test`.
-4. Editor gizmos: draggable handles, tangent handles, snapping; property
-   widgets for curves.
+4. ~~Editor gizmos: draggable handles, tangent handles, snapping; property
+   widgets for curves.~~ Done: `debug/gizmo.h` (Gizmos: point, tangent,
+   move, rect, rotate, path; GizmoVisitor), editor scene gizmos with
+   click-to-select and snap toolbar, `Widget::Path` inspector widget,
+   `App::set_scene_callback`, `gizmo_test`.
 5. Generic graph module with weighted edges and shortest-path search;
    steering helpers (follow curve, arrive, keep distance); reflected timers
    and state machines.

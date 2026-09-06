@@ -124,6 +124,11 @@ public:
     /// the place for a host to load a startup scene into the game's world.
     void set_start_callback(UiCallback callback) { start_ = std::move(callback); }
 
+    /// Called right after Game::render() with the same target and camera
+    /// still set: tools draw gizmos and guides into the game's view here.
+    using SceneCallback = std::function<void(App&, Renderer2D&)>;
+    void set_scene_callback(SceneCallback callback) { scene_ = std::move(callback); }
+
     /// The texture the game was drawn into this frame, sized by set_view_size().
     Texture* view_texture() const { return view_; }
 
@@ -184,6 +189,7 @@ private:
     HotReloadInfo hot_;
     EventQueue events_;
     UiCallback ui_;
+    SceneCallback scene_;
     UiCallback start_;
     Game* game_ = nullptr;
     GameModule* module_ = nullptr;

@@ -60,6 +60,7 @@ add_library(rewind SHARED
     src/file_watcher.cpp
     src/font.cpp
     src/game_module.cpp
+    src/gizmo.cpp
     src/inspector.cpp
     src/log.cpp
     src/math.cpp

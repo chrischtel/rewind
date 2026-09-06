@@ -2,6 +2,7 @@
 
 #include <imgui.h>
 
+#include <algorithm>
 #include <cstring>
 
 namespace rw {
@@ -83,6 +84,10 @@ template <class T> void InspectorVisitor::scalar(std::string_view n, T& v, const
 }
 
 void InspectorVisitor::visit(std::string_view n, bool& v, const FieldMeta& m) {
+    if (collecting()) {
+        frames_.back().bools.push_back(&v);
+        return;
+    }
     if (!prepare()) return;
     const std::string id = label(n);
     ImGui::BeginDisabled(m.read_only);
@@ -170,6 +175,7 @@ void InspectorVisitor::end_struct() {
         parent.bytes.insert(parent.bytes.end(), f.bytes.begin(), f.bytes.end());
         parent.floats.insert(parent.floats.end(), f.floats.begin(), f.floats.end());
         parent.ints.insert(parent.ints.end(), f.ints.begin(), f.ints.end());
+        parent.bools.insert(parent.bools.end(), f.bools.begin(), f.bools.end());
         return;
     }
     if (f.widget == Widget::Default) {
@@ -222,14 +228,87 @@ void InspectorVisitor::end_struct() {
             }
         }
         break;
+    case Widget::Path: edited = path_widget(f); break;
     case Widget::Default: break;
     }
     ImGui::EndDisabled();
     after_edit(edited, m);
 }
 
+// A path: preview of the curve, closed flag, and the control points as rows.
+bool InspectorVisitor::path_widget(Frame& f) {
+    const usize segs = f.floats.size() / 8;
+    const std::string name = f.label.substr(0, f.label.find("##"));
+    bool edited = false;
+    ImGui::PushID(f.label.c_str());
+    ImGui::Text("%s: %zu segment%s", name.c_str(), segs, segs == 1 ? "" : "s");
+    if (!f.bools.empty()) {
+        ImGui::SameLine();
+        bool closed = *f.bools[0];
+        if (ImGui::Checkbox("closed", &closed) && !f.meta.read_only) {
+            *f.bools[0] = closed;
+            edited = true;
+        }
+    }
+    if (segs > 0) {
+        // Preview: fit every control point into a strip.
+        auto pt = [&](usize i) { return ImVec2(*f.floats[2 * i], *f.floats[2 * i + 1]); };
+        float min_x = pt(0).x, max_x = min_x, min_y = pt(0).y, max_y = min_y;
+        for (usize i = 1; i < segs * 4; ++i) {
+            min_x = std::min(min_x, pt(i).x); max_x = std::max(max_x, pt(i).x);
+            min_y = std::min(min_y, pt(i).y); max_y = std::max(max_y, pt(i).y);
+        }
+        const ImVec2 size(std::max(ImGui::GetContentRegionAvail().x, 60.0f), 90.0f);
+        const ImVec2 origin = ImGui::GetCursorScreenPos();
+        ImGui::InvisibleButton("##preview", size);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->AddRectFilled(origin, ImVec2(origin.x + size.x, origin.y + size.y), IM_COL32(0, 0, 0, 60));
+        const float pad = 8;
+        const float sx = (max_x - min_x) > 1e-6f ? (size.x - 2 * pad) / (max_x - min_x) : 1;
+        const float sy = (max_y - min_y) > 1e-6f ? (size.y - 2 * pad) / (max_y - min_y) : 1;
+        const float s = std::min(sx, sy);
+        const float ox = origin.x + pad + ((size.x - 2 * pad) - (max_x - min_x) * s) * 0.5f;
+        const float oy = origin.y + pad + ((size.y - 2 * pad) - (max_y - min_y) * s) * 0.5f;
+        auto map = [&](ImVec2 p) { return ImVec2(ox + (p.x - min_x) * s, oy + (p.y - min_y) * s); };
+        for (usize sg = 0; sg < segs; ++sg) {
+            const ImVec2 p0 = pt(sg * 4), p1 = pt(sg * 4 + 1), p2 = pt(sg * 4 + 2), p3 = pt(sg * 4 + 3);
+            dl->AddBezierCubic(map(p0), map(p1), map(p2), map(p3), IM_COL32(120, 200, 255, 255), 1.5f, 12);
+            dl->AddCircleFilled(map(p0), 2.5f, IM_COL32(255, 255, 255, 255));
+            if (sg + 1 == segs) dl->AddCircleFilled(map(p3), 2.5f, IM_COL32(255, 255, 255, 255));
+        }
+        if (ImGui::TreeNode("points")) {
+            for (usize sg = 0; sg < segs; ++sg) {
+                ImGui::PushID(static_cast<int>(sg));
+                const char* names[4] = {"anchor", "out", "in", "end"};
+                for (usize k = 0; k < 4; ++k) {
+                    if (k == 3 && sg + 1 < segs) continue; // shared with the next anchor
+                    float v[2] = {*f.floats[(sg * 4 + k) * 2], *f.floats[(sg * 4 + k) * 2 + 1]};
+                    if (ImGui::DragFloat2(names[k], v, f.meta.speed) && !f.meta.read_only) {
+                        *f.floats[(sg * 4 + k) * 2] = v[0];
+                        *f.floats[(sg * 4 + k) * 2 + 1] = v[1];
+                        if (k == 0 && sg > 0) { // keep the previous segment's end on the anchor
+                            *f.floats[((sg - 1) * 4 + 3) * 2] = v[0];
+                            *f.floats[((sg - 1) * 4 + 3) * 2 + 1] = v[1];
+                        }
+                        edited = true;
+                    }
+                }
+                ImGui::PopID();
+            }
+            ImGui::TreePop();
+        }
+    }
+    ImGui::PopID();
+    return edited;
+}
+
 bool InspectorVisitor::begin_array(std::string_view n, usize& count, const FieldMeta& m) {
-    if (collecting() || !prepare()) return false;
+    if (collecting()) {
+        array_collecting_.push_back(true);
+        return true; // nested structs keep collecting (a Path's segments)
+    }
+    if (!prepare()) return false;
+    array_collecting_.push_back(false);
     std::string id = label(n);
     const usize pos = id.find("##");
     const std::string shown = id.substr(0, pos) + " [" + std::to_string(count) + "]";
@@ -237,10 +316,15 @@ bool InspectorVisitor::begin_array(std::string_view n, usize& count, const Field
     const bool open = ImGui::TreeNodeEx(id.c_str());
     if (m.tooltip && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", m.tooltip);
     if (open && count > max_elements_) ImGui::TextDisabled("showing first %zu of %zu", max_elements_, count);
+    if (!open) array_collecting_.pop_back(); // end_array() is not called for closed arrays
     return open;
 }
 
-void InspectorVisitor::end_array() { ImGui::TreePop(); }
+void InspectorVisitor::end_array() {
+    const bool collecting_array = !array_collecting_.empty() && array_collecting_.back();
+    if (!array_collecting_.empty()) array_collecting_.pop_back();
+    if (!collecting_array) ImGui::TreePop();
+}
 
 bool InspectorVisitor::begin_element(usize index) {
     if (index >= max_elements_) return false;

@@ -50,6 +50,12 @@ struct EditorState {
     bool free_camera = false;
     rw::CameraController free_cam;
     rw::Camera free_cam_out;
+    // Gizmos in the scene view: the selected entity's Vec2, Rect and Path
+    // fields get handles; clicking near an entity's position selects it.
+    bool show_gizmos = true;
+    rw::Gizmos gizmos;
+    bool scene_hovered = false;
+    float scene_scale = 1;
 };
 
 EditorState g_editor;
@@ -245,6 +251,65 @@ void draw_menu(rw::App& app) {
     ImGui::EndMainMenuBar();
 }
 
+// Runs inside the frame right after the game drew, with its camera still
+// set: gizmos for the selected entity, and click-to-select on empty space.
+void draw_scene_tools(rw::App& app, rw::Renderer2D& renderer) {
+    if (!g_editor.show_scene || !g_editor.show_gizmos) return;
+    rw::World* world = app.game().world();
+    if (!world) return;
+    const ImGuiIO& io = ImGui::GetIO();
+    const rw::AppConfig& cfg = app.config();
+    rw::Gizmos& g = g_editor.gizmos;
+
+    rw::GizmoInput in;
+    in.mouse = renderer.window_to_render(io.MousePos.x, io.MousePos.y);
+    in.down = io.MouseDown[ImGuiMouseButton_Left];
+    in.alt = io.KeyAlt;
+    in.shift = io.KeyShift;
+    in.enabled = g_editor.scene_hovered;
+    g.begin(in, renderer.camera(), static_cast<float>(cfg.render_width), static_cast<float>(cfg.render_height));
+
+    bool edited = false;
+    const rw::Entity selected = g_editor.selected;
+    if (world->alive(selected)) {
+        rw::u32 id_base = 1000;
+        for (const std::string& name : world->component_names(selected)) {
+            rw::GizmoVisitor v;
+            world->reflect_component(selected, name, v);
+            edited = v.apply(g, id_base) || edited;
+            id_base += 1000;
+        }
+    }
+    g.end();
+
+    // A click on nothing selects the entity whose position is nearest (within 12 px).
+    if (g.clicked_empty() && g_editor.scene_hovered) {
+        const float max_dist = 12.0f / std::max(renderer.camera().zoom, 1e-6f);
+        float best = max_dist;
+        rw::Entity pick;
+        world->each_entity([&](rw::Entity e) {
+            rw::GizmoVisitor v;
+            world->visit_entity(e, v);
+            for (const rw::GizmoVisitor::Target& t : v.targets()) {
+                if (t.kind != rw::Widget::Vec2 || t.floats.size() < 2) continue;
+                const float d = rw::distance(rw::Vec2{*t.floats[0], *t.floats[1]}, g.mouse_world());
+                if (d < best) {
+                    best = d;
+                    pick = e;
+                }
+            }
+        });
+        if (!pick.is_null()) g_editor.selected = pick;
+    }
+
+    g.draw(renderer);
+    if (edited) {
+        app.timeline().recapture(app.game());
+        if (app.time_control().mode == rw::TimeMode::Replaying || app.time_control().mode == rw::TimeMode::Rewinding)
+            app.time_control().mode = rw::TimeMode::Paused;
+    }
+}
+
 void draw_scene(rw::App& app) {
     if (!g_editor.show_scene) {
         app.set_game_input_focus(false);
@@ -276,7 +341,11 @@ void draw_scene(rw::App& app) {
 
         const bool hovered = ImGui::IsItemHovered();
         const bool focused = ImGui::IsWindowFocused();
-        app.set_game_input_focus(focused && (hovered || !ImGui::IsAnyItemActive()));
+        g_editor.scene_hovered = hovered;
+        g_editor.scene_scale = scale;
+        // While a gizmo is being dragged the game must not see the mouse button.
+        const bool gizmo_busy = g_editor.show_gizmos && (g_editor.gizmos.dragging() || g_editor.gizmos.hot() != 0);
+        app.set_game_input_focus(focused && !gizmo_busy && (hovered || !ImGui::IsAnyItemActive()));
         if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) ImGui::SetWindowFocus();
 
         // Free camera: wheel zooms around the cursor, right or middle drag pans.
@@ -317,6 +386,21 @@ void draw_scene(rw::App& app) {
             }
             ImGui::SameLine();
             ImGui::TextDisabled("%.2fx  (%.0f, %.0f)", cam.zoom(), cam.center().x, cam.center().y);
+        }
+        ImGui::SameLine(0, 16);
+        ImGui::Checkbox("Gizmos", &g_editor.show_gizmos);
+        if (g_editor.show_gizmos) {
+            rw::GizmoSnap& snap = g_editor.gizmos.snap();
+            ImGui::SameLine();
+            ImGui::Checkbox("Snap", &snap.enabled);
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(60);
+            ImGui::DragFloat("##grid", &snap.grid, 1, 1, 512, "%.0f px");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(60);
+            ImGui::DragFloat("##angle", &snap.angle_deg, 1, 0, 90, "%.0f deg");
+            ImGui::SameLine();
+            ImGui::TextDisabled("(Alt: no snap, Shift: one axis)");
         }
         ImGui::PopStyleVar();
     } else {
@@ -655,6 +739,7 @@ int main(int argc, char** argv) {
 
     rw::App app(config);
     app.set_ui_callback(editor_ui);
+    app.set_scene_callback(draw_scene_tools);
     if (g_editor.has_project) {
         reload_prefabs();
         app.set_start_callback([](rw::App& a) {

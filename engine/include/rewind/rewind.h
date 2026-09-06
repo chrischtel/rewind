@@ -19,6 +19,7 @@
 #include "rewind/core/profiler.h"
 #include "rewind/core/spatial.h"
 #include "rewind/core/types.h"
+#include "rewind/debug/gizmo.h"
 #include "rewind/debug/inspector.h"
 #include "rewind/debug/overlay.h"
 #include "rewind/game_entry.h"

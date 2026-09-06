@@ -62,6 +62,9 @@ It is not for 3D games, and not for people who want a no-code workflow.
 - Camera controller with smooth pan and zoom around the cursor, bounds,
   follow with dead zone, shake, culling and a level-of-detail hint; a
   spatial hash grid for rectangle, circle, segment and nearest queries.
+- Gizmos: immediate-mode move, rect, rotate, point and Bezier path handles
+  with grid and angle snapping, driven from reflected fields, so the editor
+  places and reshapes things in the scene without game-specific code.
 - Materials: your own GLSL fragment shaders with extra textures and
   parameters, one source for both backends.
 - Native Aseprite import: layers, tags, slices, tilesets, tilemap layers.
