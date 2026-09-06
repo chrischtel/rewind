@@ -1,7 +1,9 @@
 #include "rewind/project/asset_db.h"
 
 #include "rewind/assets/aseprite.h"
+#include "rewind/assets/audio_decode.h"
 #include "rewind/core/log.h"
+#include "rewind/render/shader_cross.h"
 #include "rewind/project/cooked.h"
 #include "rewind/sim/serialize.h"
 #include "rewind/sim/text_format.h"
@@ -88,7 +90,7 @@ std::string AssetDatabase::type_for(const fs::path& file) {
     const std::string ext = lower(file.extension().string());
     if (ext == ".png") return "texture";
     if (ext == ".aseprite" || ext == ".ase") return "aseprite";
-    if (ext == ".wav") return "audio";
+    if (ext == ".wav" || ext == ".ogg") return "audio";
     if (ext == ".ttf" || ext == ".otf") return "font";
     if (ext == ".frag" || ext == ".vert" || ext == ".glsl") return "shader";
     if (ext == ".json") return "data";
@@ -102,8 +104,13 @@ AssetDatabase::AssetDatabase(const Project& project) : project_(project) {}
 void AssetDatabase::scan() {
     records_.clear();
     load_index();
+    // Two source folders: assets/ (paths relative to it) and shaders/ (paths keep the "shaders/" prefix).
+    scan_dir(project_.asset_dir(), "");
+    scan_dir(project_.shader_dir(), "shaders/");
+}
+
+void AssetDatabase::scan_dir(const fs::path& root, const std::string& prefix) {
     std::error_code ec;
-    const fs::path root = project_.asset_dir();
     if (!fs::is_directory(root, ec)) return;
 
     for (const auto& entry : fs::recursive_directory_iterator(root, ec)) {
@@ -111,9 +118,11 @@ void AssetDatabase::scan() {
         const fs::path& file = entry.path();
         const std::string name = file.filename().string();
         if (name.size() > 10 && name.compare(name.size() - 10, 10, ".meta.json") == 0) continue; // sidecar
+        if (name.size() > 4 && name.compare(name.size() - 4, 4, ".spv") == 0) continue;           // compiled next to a source shader
 
         AssetRecord rec;
-        rec.path = relative_slashes(file, root);
+        rec.path = prefix + relative_slashes(file, root);
+        rec.source_file = file.string();
 
         // Sidecar: read it, or create it with a fresh id.
         const fs::path meta_path = file.string() + ".meta.json";
@@ -132,9 +141,11 @@ void AssetDatabase::scan() {
         if (read_bytes(file, bytes)) {
             Writer settings;
             settings.pod<u8>(rec.meta.texture.nearest ? 1 : 0);
+            settings.pod<u8>(rec.meta.audio.mono ? 1 : 0);
             rec.source_hash = hash_bytes(settings.bytes().data(), settings.bytes().size(), hash_bytes(bytes));
         }
-        if (rec.meta.type == "texture" || rec.meta.type == "aseprite") rec.cooked = rec.path + ".cooked";
+        const std::string& t = rec.meta.type;
+        if (t == "texture" || t == "aseprite" || t == "audio" || t == "shader") rec.cooked = rec.path + ".cooked";
         auto it = index_.find(rec.path);
         if (it != index_.end()) rec.cooked_hash = it->second;
         if (!rec.cooked.empty() && !fs::is_regular_file(cooked_path(rec), ec)) rec.cooked_hash = 0;
@@ -158,6 +169,11 @@ const AssetRecord* AssetDatabase::find_by_id(const std::string& id) const {
 fs::path AssetDatabase::cooked_path(const AssetRecord& record) const {
     if (record.cooked.empty()) return {};
     return project_.cooked_dir() / record.cooked;
+}
+
+bool AssetDatabase::save_meta(const AssetRecord& record, std::string* error) const {
+    AssetMeta meta = record.meta;
+    return save_json_file(record.source_file + ".meta.json", meta, error);
 }
 
 // ---- index ---------------------------------------------------------------------------
@@ -215,7 +231,7 @@ CookReport AssetDatabase::cook(bool force, const std::function<void(const std::s
 }
 
 bool AssetDatabase::cook_one(AssetRecord& r, std::string& error) {
-    const fs::path source = project_.asset_dir() / r.path;
+    const fs::path source = r.source_file.empty() ? project_.asset_dir() / r.path : fs::path(r.source_file);
     std::vector<u8> bytes;
     if (!read_bytes(source, bytes)) {
         error = "could not read the source file";
@@ -242,6 +258,31 @@ bool AssetDatabase::cook_one(AssetRecord& r, std::string& error) {
         AseDocument doc;
         if (!parse_aseprite(bytes.data(), bytes.size(), doc, error)) return false;
         encode_cooked_sheet(cook_aseprite(doc, r.source_hash, r.meta.texture.nearest), out);
+    } else if (r.meta.type == "audio") {
+        DecodedAudio decoded;
+        if (!decode_audio(bytes, decoded, error)) return false;
+        if (r.meta.audio.mono) downmix_to_mono(decoded);
+        CookedAudio a;
+        a.sample_rate = decoded.sample_rate;
+        a.channels = decoded.channels;
+        a.source_hash = r.source_hash;
+        a.samples = std::move(decoded.samples);
+        encode_cooked_audio(a, out);
+    } else if (r.meta.type == "shader") {
+        // SPIR-V straight from glslc; the file carries its own magic number.
+        if (!glslc_available()) {
+            error = "glslc is not available (install the Vulkan SDK and rebuild the engine)";
+            return false;
+        }
+        const fs::path target = cooked_path(r);
+        std::error_code ec;
+        fs::create_directories(target.parent_path(), ec);
+        std::string log;
+        if (!compile_glsl_file(source.string(), target.string(), log)) {
+            error = log.empty() ? "glslc failed" : log;
+            return false;
+        }
+        return true;
     } else {
         error = "no importer for type '" + r.meta.type + "'";
         return false;

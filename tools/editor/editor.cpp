@@ -82,6 +82,7 @@ struct EditorState {
     std::vector<std::string> recent;
     bool show_status_bar = true;
     bool theme_applied = false;
+    std::string selected_asset; ///< path of the row picked in the Assets panel (Inspector shows its import settings)
 };
 
 EditorState g_editor;
@@ -832,7 +833,50 @@ void draw_scene(rw::App& app) {
     ImGui::End();
 }
 
-void draw_assets() {
+/// Import settings of the asset picked in the Assets panel, saved to its
+/// sidecar on change; the database rescans so the asset shows as stale.
+void draw_selected_asset(rw::App& app) {
+    if (!g_editor.assets || g_editor.selected_asset.empty()) {
+        ImGui::TextDisabled("select an asset in the Assets panel");
+        return;
+    }
+    const rw::AssetRecord* found = g_editor.assets->find_by_path(g_editor.selected_asset);
+    if (!found) {
+        ImGui::TextDisabled("%s is gone (rescan)", g_editor.selected_asset.c_str());
+        return;
+    }
+    rw::AssetRecord record = *found;
+    ImGui::TextUnformatted(record.path.c_str());
+    ImGui::TextDisabled("%s  %s", record.meta.type.c_str(), record.meta.id.c_str());
+    if (record.meta.type == "texture") {
+        if (rw::Texture* t = app.renderer().load_texture(record.path); t && t->handle) {
+            const float max_w = std::max(ImGui::GetContentRegionAvail().x, 64.0f);
+            const float scale = std::min(1.0f, std::min(max_w / static_cast<float>(t->width), 160.0f / static_cast<float>(t->height)));
+            ImGui::Image(reinterpret_cast<ImTextureID>(t->handle), ImVec2(t->width * scale, t->height * scale));
+            ImGui::TextDisabled("%d x %d", t->width, t->height);
+        }
+    }
+    if (!record.error.empty()) ImGui::TextColored(ImVec4(1, 0.35f, 0.35f, 1), "%s", record.error.c_str());
+    else if (!record.cooked.empty()) ImGui::TextDisabled("%s", record.cooked_hash == 0 ? "not cooked" : record.stale() ? "stale, cook to update" : "cooked");
+
+    rw::InspectorVisitor inspector;
+    record.meta.reflect(inspector);
+    if (inspector.changed()) {
+        std::string error;
+        if (g_editor.assets->save_meta(record, &error)) {
+            g_editor.assets->scan();
+            refresh_asset_index();
+            g_editor.status = "import settings saved for " + record.path;
+        } else {
+            g_editor.status = error;
+        }
+    }
+    if (!record.cooked.empty() && ImGui::Button("Cook this asset")) {
+        cook_assets(false);
+    }
+}
+
+void draw_assets(rw::App& app) {
     if (!g_editor.show_assets || !g_editor.assets) return;
     if (ImGui::Begin("Assets", &g_editor.show_assets)) {
         if (ImGui::Button("Rescan")) {
@@ -847,18 +891,30 @@ void draw_assets() {
         ImGui::TextDisabled("%s", g_editor.project.asset_dir().string().c_str());
 
         const auto& records = g_editor.assets->records();
-        if (ImGui::BeginTable("##assets", 4, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
+        const float row_h = 22.0f;
+        if (ImGui::BeginTable("##assets", 5, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
                               ImVec2(0, 0))) {
+            ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, row_h);
             ImGui::TableSetupColumn("asset");
             ImGui::TableSetupColumn("type");
             ImGui::TableSetupColumn("id");
             ImGui::TableSetupColumn("state");
             ImGui::TableHeadersRow();
             for (const rw::AssetRecord& r : records) {
-                ImGui::TableNextRow();
+                ImGui::TableNextRow(0, row_h);
                 ImGui::TableSetColumnIndex(0);
-                // Rows drag into asset reference fields of the Inspector.
-                ImGui::Selectable((r.path + "##" + r.meta.id).c_str(), false, ImGuiSelectableFlags_SpanAllColumns);
+                if (r.meta.type == "texture") {
+                    // Thumbnail: the renderer caches it by path, cooked or loose.
+                    if (rw::Texture* t = app.renderer().load_texture(r.path); t && t->handle) {
+                        const float scale = std::min(row_h / static_cast<float>(t->width), row_h / static_cast<float>(t->height));
+                        ImGui::Image(reinterpret_cast<ImTextureID>(t->handle), ImVec2(t->width * scale, t->height * scale));
+                    }
+                }
+                ImGui::TableSetColumnIndex(1);
+                // Rows select (Inspector shows the import settings) and drag into asset reference fields.
+                if (ImGui::Selectable((r.path + "##" + r.meta.id).c_str(), g_editor.selected_asset == r.path,
+                                      ImGuiSelectableFlags_SpanAllColumns))
+                    g_editor.selected_asset = r.path;
                 if (ImGui::BeginDragDropSource()) {
                     ImGui::SetDragDropPayload("REWIND_ASSET", r.meta.id.c_str(), r.meta.id.size() + 1);
                     ImGui::TextUnformatted(r.path.c_str());
@@ -869,11 +925,11 @@ void draw_assets() {
                     if (ImGui::MenuItem("Copy path")) ImGui::SetClipboardText(r.path.c_str());
                     ImGui::EndPopup();
                 }
-                ImGui::TableSetColumnIndex(1);
-                ImGui::TextUnformatted(r.meta.type.c_str());
                 ImGui::TableSetColumnIndex(2);
-                ImGui::TextDisabled("%s", r.meta.id.c_str());
+                ImGui::TextUnformatted(r.meta.type.c_str());
                 ImGui::TableSetColumnIndex(3);
+                ImGui::TextDisabled("%s", r.meta.id.c_str());
+                ImGui::TableSetColumnIndex(4);
                 if (!r.error.empty()) ImGui::TextColored(ImVec4(1, 0.35f, 0.35f, 1), "%s", r.error.c_str());
                 else if (r.cooked.empty()) ImGui::TextDisabled("copied as is");
                 else if (r.cooked_hash == 0) ImGui::TextColored(ImVec4(1, 0.85f, 0.35f, 1), "not cooked");
@@ -1094,6 +1150,7 @@ void draw_panels(rw::App& app) {
     if (g_editor.show_inspector) {
         if (ImGui::Begin("Inspector", &g_editor.show_inspector)) {
             if (ImGui::CollapsingHeader("Entity", ImGuiTreeNodeFlags_DefaultOpen)) draw_selected_entity(app);
+            if (g_editor.has_project && ImGui::CollapsingHeader("Asset", ImGuiTreeNodeFlags_DefaultOpen)) draw_selected_asset(app);
             if (ImGui::CollapsingHeader("Game", ImGuiTreeNodeFlags_DefaultOpen)) app.game().debug_ui();
             if (ImGui::CollapsingHeader("State")) rw::draw_state_panel(app.timeline(), app.time_control(), app.game());
         }
@@ -1119,7 +1176,7 @@ void draw_panels(rw::App& app) {
         ImGui::End();
     }
 
-    draw_assets();
+    draw_assets(app);
 
     if (g_editor.show_project) {
         if (ImGui::Begin("Project", &g_editor.show_project)) {

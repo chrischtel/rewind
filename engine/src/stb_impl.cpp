@@ -11,6 +11,12 @@
 #include <stb_image.h>
 #define STB_TRUETYPE_IMPLEMENTATION
 #include <stb_truetype.h>
+// stb_vorbis.c carries its implementation unless STB_VORBIS_HEADER_ONLY is set.
+#if defined(_MSC_VER)
+#pragma warning(disable : 4245 4267 4701 4702 4127 4189 4459 4244)
+#endif
+#define STB_VORBIS_NO_PUSHDATA_API
+#include <stb_vorbis.c>
 #if defined(_MSC_VER)
 #pragma warning(pop)
 #endif

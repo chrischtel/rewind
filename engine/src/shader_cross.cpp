@@ -9,6 +9,7 @@
 #pragma warning(pop)
 #endif
 
+#include <cstdio>
 #include <cstring>
 #include <vector>
 
@@ -101,6 +102,51 @@ bool spirv_to_hlsl(const u8* data, usize size, std::string& hlsl, std::string& e
         error = e.what();
         return false;
     }
+}
+
+bool compile_glsl_file(const std::string& source, const std::string& output, std::string& log) {
+#if defined(REWIND_GLSLC_PATH)
+    std::string command = std::string("\"") + REWIND_GLSLC_PATH + "\" -O \"" + source + "\" -o \"" + output + "\" 2>&1";
+#if defined(_WIN32)
+    command = "\"" + command + "\""; // cmd.exe quoting: wrap the whole line once more
+    std::FILE* pipe = _popen(command.c_str(), "r");
+#else
+    std::FILE* pipe = popen(command.c_str(), "r");
+#endif
+    if (!pipe) {
+        log = "could not start glslc";
+        return false;
+    }
+    log.clear();
+    char buffer[512];
+    while (std::fgets(buffer, sizeof buffer, pipe)) log += buffer;
+#if defined(_WIN32)
+    const int status = _pclose(pipe);
+#else
+    const int status = pclose(pipe);
+#endif
+    return status == 0;
+#else
+    (void)source;
+    (void)output;
+    log = "glslc was not available when the engine was built";
+    return false;
+#endif
+}
+
+bool glslc_available() {
+#if defined(REWIND_GLSLC_PATH)
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool is_spirv(const u8* data, usize size) {
+    if (!data || size < 4) return false;
+    u32 magic = 0;
+    std::memcpy(&magic, data, 4);
+    return magic == 0x07230203u;
 }
 
 } // namespace rw

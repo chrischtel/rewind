@@ -97,6 +97,7 @@ void use_project_paths(const Project& project) {
     clear_asset_roots();
     add_asset_root(project.cooked_dir().string(), true);
     add_asset_root(project.asset_dir().string(), false);
+    add_asset_root(project.root.string(), false); // project shaders/ and other root-level files
     AssetIndex& index = AssetIndex::global();
     index.clear();
     const usize known = index.load_sidecars(project.asset_dir().string());

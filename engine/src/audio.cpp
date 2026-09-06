@@ -1,4 +1,5 @@
 #include "rewind/audio/audio.h"
+#include "rewind/assets/audio_decode.h"
 #include "rewind/core/log.h"
 
 #include "rewind/core/file_watcher.h"
@@ -50,26 +51,37 @@ Sound* Audio::find_sound(const std::string& name) const {
     return it == sounds_.end() ? nullptr : it->second.get();
 }
 
-Sound* Audio::load_wav(const AssetRef& ref) {
+Sound* Audio::load_sound(const AssetRef& ref) {
     const std::string file = resolve_asset(ref);
     if (file.empty()) {
-        RW_LOG_WARN("audio", "load_wav: asset reference '%s' (%s) resolves to nothing", ref.path.c_str(), ref.id.c_str());
+        RW_LOG_WARN("audio", "load_sound: asset reference '%s' (%s) resolves to nothing", ref.path.c_str(), ref.id.c_str());
         return nullptr;
     }
-    return load_wav(file);
+    return load_sound(file);
 }
 
-Sound* Audio::load_wav(const std::string& path) {
+Sound* Audio::load_sound(const std::string& path) {
     Sound* existing = find_sound(path);
     const bool stale = stale_files_.erase(path) > 0;
     if (existing && !stale) return existing;
 
-    SDL_AudioSpec spec{};
-    u8* buffer = nullptr;
-    u32 length = 0;
     const std::string file = resolve_asset_path(path);
-    if (!SDL_LoadWAV(file.c_str(), &spec, &buffer, &length)) {
-        RW_LOG_INFO("audio", "load_wav(%s): %s", path.c_str(), SDL_GetError());
+    std::vector<u8> bytes;
+    std::string error;
+    DecodedAudio decoded;
+    {
+        std::FILE* f = std::fopen(file.c_str(), "rb");
+        if (!f) {
+            RW_LOG_INFO("audio", "load_sound(%s): could not open %s", path.c_str(), file.c_str());
+            return existing;
+        }
+        u8 buffer[64 * 1024];
+        usize n;
+        while ((n = std::fread(buffer, 1, sizeof buffer, f)) > 0) bytes.insert(bytes.end(), buffer, buffer + n);
+        std::fclose(f);
+    }
+    if (!decode_audio(bytes, decoded, error)) {
+        RW_LOG_INFO("audio", "load_sound(%s): %s", path.c_str(), error.c_str());
         return existing; // keep the last good version
     }
     Sound* sound = existing;
@@ -78,11 +90,11 @@ Sound* Audio::load_wav(const std::string& path) {
         sound = owned.get();
         sounds_[path] = std::move(owned);
     }
-    sound->sample_rate = spec.freq;
-    sound->channels = spec.channels;
-    sound->format = spec.format;
-    sound->data.assign(buffer, buffer + length);
-    SDL_free(buffer);
+    sound->sample_rate = decoded.sample_rate;
+    sound->channels = decoded.channels;
+    sound->format = SDL_AUDIO_S16;
+    sound->data.resize(decoded.samples.size() * sizeof(i16));
+    if (!decoded.samples.empty()) std::memcpy(sound->data.data(), decoded.samples.data(), sound->data.size());
     if (watcher_) watcher_->track(file);
     if (file != path) aliases_[file] = path;
     return sound;

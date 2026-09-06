@@ -506,10 +506,19 @@ build/bin/Release/rewind.exe cook mygame
   or a `git checkout` re-cooks exactly what changed and nothing else. Cooked
   files are loose, mirroring the asset layout with `.cooked` appended, with a
   magic number so loaders recognise them by content.
-- **Importers today:** PNG to a cooked texture, and Aseprite to a cooked sheet
-  with the atlas, frame durations, tags, slices, tilesets and tilemap layers.
-  Other types are read from source. The runtime loads by source name and
-  transparently gets the cooked file when it exists.
+- **Importers:** PNG to a cooked texture; Aseprite to a cooked sheet with
+  the atlas, frame durations, tags, slices, tilesets and tilemap layers;
+  WAV and Ogg Vorbis to cooked 16-bit PCM (`audio.mono` in the sidecar
+  downmixes); GLSL in the project's `shaders/` folder to SPIR-V through
+  glslc (a loose `.frag` also compiles when a material loads it). Fonts
+  and data files are read from source. The runtime loads by source name
+  (`load_texture("sprites/hero.png")`, `load_sound("sfx/jump.ogg")`,
+  `load_material("shaders/glow.frag")`) and transparently gets the cooked
+  file when it exists.
+- **Import settings** live in the sidecar and show in the Inspector when an
+  asset is selected in the Assets panel (with a preview for textures);
+  changing one saves the sidecar and marks the asset stale, since the
+  content hash covers the settings.
 - **Settings as overrides.** The project file stores only the app settings
   that differ from what the game's `configure()` asks for, applied on top
   of them at start. A project made from a template therefore never

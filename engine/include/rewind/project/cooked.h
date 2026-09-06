@@ -14,6 +14,7 @@ namespace rw {
 
 constexpr u32 kCookedTextureMagic = 0x58455452u; // "RTEX"
 constexpr u32 kCookedSheetMagic = 0x54485352u;   // "RSHT"
+constexpr u32 kCookedAudioMagic = 0x44554152u;   // "RAUD"
 
 struct CookedTexture {
     int width = 0;
@@ -40,6 +41,17 @@ struct CookedSheet {
     std::vector<AseTileset> tilesets;
     std::vector<AseTilemap> tilemaps;
 };
+
+/// Decoded PCM, 16-bit interleaved, ready to play without any decoder.
+struct CookedAudio {
+    int sample_rate = 48000;
+    int channels = 1;
+    u64 source_hash = 0;
+    std::vector<i16> samples;
+};
+
+void encode_cooked_audio(const CookedAudio& audio, std::vector<u8>& out);
+bool decode_cooked_audio(const std::vector<u8>& bytes, CookedAudio& out);
 
 void encode_cooked_texture(const CookedTexture& texture, std::vector<u8>& out);
 bool decode_cooked_texture(const std::vector<u8>& bytes, CookedTexture& out);

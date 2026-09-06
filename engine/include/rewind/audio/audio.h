@@ -47,8 +47,12 @@ public:
 
     /// Load a WAV file. Cached by path; re-read into the same Sound object
     /// when the file changed on disk. Tracked for asset hot reload.
-    Sound* load_wav(const std::string& path);
-    Sound* load_wav(const AssetRef& ref);
+    /// Load a WAV, Ogg Vorbis or cooked sound. Cached by path, re-read when
+    /// the file changes. load_wav() is the same call under its old name.
+    Sound* load_sound(const std::string& path);
+    Sound* load_sound(const AssetRef& ref);
+    Sound* load_wav(const std::string& path) { return load_sound(path); }
+    Sound* load_wav(const AssetRef& ref) { return load_sound(ref); }
 
     void set_file_watcher(FileWatcher* watcher) { watcher_ = watcher; }
     void invalidate_file(const std::string& path) {

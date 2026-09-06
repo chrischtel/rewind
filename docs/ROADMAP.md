@@ -110,6 +110,31 @@ reflected state with hints.
 
 This list is complete.
 
+## Active: engine core
+
+Decided 2026-09-06: no 3D yet; the core grows first. Assets, network,
+project settings, save games, localisation.
+
+1. ~~Asset pipeline II: audio importer (WAV and Ogg Vorbis to cooked PCM,
+   mono downmix setting), shader importer (project shaders/ cooked to
+   SPIR-V, loose GLSL compiled on load), import settings edited in the
+   Inspector and written to the sidecar, texture thumbnails in the Assets
+   panel.~~ Done: `assets/audio_decode.h`, `CookedAudio`,
+   `Audio::load_sound`, `compile_glsl_file`, `AssetDatabase::save_meta`,
+   `audio_test`.
+2. Archives: pack the cooked folder into one `.rwpak` with an index,
+   `add_asset_root` accepts a pack, `rewind pack` in the CLI, the runtime
+   reads from it transparently.
+3. Project settings II: input bindings (keyboard and gamepad to Button) in
+   project.json with a rebinding UI, audio settings (master and per-group
+   volume), player settings file (window mode, volume, bindings) saved in
+   the user's folder.
+4. Core: save games with a version tag and a migration hook, screenshot
+   capture, localisation (string tables per language, `tr()`), a settings
+   struct games can extend.
+5. Network II: sessions with up to four players, lobby with slots, ready
+   state and start countdown, the duel sample grows into an arena.
+
 ## Later
 
 **3D and isometric 3D tools** (a stated goal): 3D camera and projection,

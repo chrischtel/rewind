@@ -15,7 +15,31 @@ u32 cooked_magic(const std::vector<u8>& bytes) {
     if (bytes.size() < 8) return 0;
     u32 magic = 0;
     std::memcpy(&magic, bytes.data(), 4);
-    return magic == kCookedTextureMagic || magic == kCookedSheetMagic ? magic : 0;
+    return magic == kCookedTextureMagic || magic == kCookedSheetMagic || magic == kCookedAudioMagic ? magic : 0;
+}
+
+// ---- audio -------------------------------------------------------------------------
+
+void encode_cooked_audio(const CookedAudio& a, std::vector<u8>& out) {
+    Writer w;
+    w.pod(kCookedAudioMagic);
+    w.pod(kVersion);
+    w.pod<i32>(a.sample_rate);
+    w.pod<i32>(a.channels);
+    w.pod(a.source_hash);
+    w.vec(a.samples);
+    out = std::move(w.bytes());
+}
+
+bool decode_cooked_audio(const std::vector<u8>& bytes, CookedAudio& out) {
+    Reader r(bytes);
+    if (r.pod<u32>() != kCookedAudioMagic || r.pod<u32>() != kVersion) return false;
+    out = CookedAudio{};
+    out.sample_rate = r.pod<i32>();
+    out.channels = r.pod<i32>();
+    out.source_hash = r.pod<u64>();
+    r.vec(out.samples);
+    return r.ok() && out.sample_rate > 0 && out.channels > 0 && out.samples.size() % static_cast<usize>(out.channels) == 0;
 }
 
 // ---- texture -----------------------------------------------------------------------

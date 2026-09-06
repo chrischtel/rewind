@@ -24,4 +24,13 @@ bool reflect_spirv(const u8* data, usize size, ShaderInfo& out, std::string& err
 /// point in the output is always `main`.
 bool spirv_to_hlsl(const u8* data, usize size, std::string& hlsl, std::string& error);
 
+/// Compile a GLSL file to SPIR-V with glslc (the Vulkan SDK's compiler the
+/// build found). False with the compiler's output in `log`, or when the
+/// engine was built without glslc. `glslc_available()` says which.
+bool compile_glsl_file(const std::string& source_file, const std::string& output_file, std::string& log);
+bool glslc_available();
+
+/// Whether a buffer starts with the SPIR-V magic number.
+bool is_spirv(const u8* data, usize size);
+
 } // namespace rw

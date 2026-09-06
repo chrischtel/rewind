@@ -55,6 +55,7 @@ add_library(rewind SHARED
     src/camera.cpp
     src/asset_db.cpp
     src/audio.cpp
+    src/audio_decode.cpp
     src/cooked.cpp
     src/curve.cpp
     src/debug_font.cpp

@@ -134,36 +134,6 @@ bool compile_dxbc(const char* source, const char* entry, const char* target, std
 }
 #endif
 
-/// Run glslc on a material source. Returns false with the compiler's output in `log`.
-bool run_glslc(const std::string& source, const std::string& output, std::string& log) {
-#if defined(REWIND_GLSLC_PATH)
-    std::string command = std::string("\"") + REWIND_GLSLC_PATH + "\" -O \"" + source + "\" -o \"" + output + "\" 2>&1";
-#if defined(_WIN32)
-    command = "\"" + command + "\""; // cmd.exe quoting: wrap the whole line once more
-    std::FILE* pipe = _popen(command.c_str(), "r");
-#else
-    std::FILE* pipe = popen(command.c_str(), "r");
-#endif
-    if (!pipe) {
-        log = "could not start glslc";
-        return false;
-    }
-    log.clear();
-    char buffer[512];
-    while (std::fgets(buffer, sizeof buffer, pipe)) log += buffer;
-#if defined(_WIN32)
-    const int status = _pclose(pipe);
-#else
-    const int status = pclose(pipe);
-#endif
-    return status == 0;
-#else
-    (void)source;
-    (void)output;
-    log = "glslc was not available when the engine was built";
-    return false;
-#endif
-}
 
 } // namespace
 
@@ -1346,8 +1316,23 @@ Material* Renderer2D::load_material(const std::string& path) {
         im.materials[path] = std::move(owned);
     }
     // The .spv may only exist next to the executable; the sidecar names the source.
-    const std::string file = resolve_asset_path(path);
+    std::string file = resolve_asset_path(path);
     if (m->source_path.empty()) m->source_path = read_text(file + ".src");
+    {
+        // A loose GLSL file (project shaders/ before a cook): compile it next to itself.
+        std::vector<u8> head;
+        if (read_file(file, head) && !head.empty() && !is_spirv(head.data(), head.size())) {
+            m->source_path = file;
+            const std::string spv = file + ".spv";
+            std::string log;
+            if (!compile_glsl_file(file, spv, log)) {
+                m->error = log.empty() ? "glslc failed" : log;
+                RW_LOG_ERROR("gpu", "material %s: %s", path.c_str(), m->error.c_str());
+                return m;
+            }
+            file = spv;
+        }
+    }
     if (file != path) {
         im.aliases[file] = path;
         // The .spv might not exist yet (glslc missing): still watch the path we resolved to.
@@ -1358,7 +1343,7 @@ Material* Renderer2D::load_material(const std::string& path) {
     if (source_stale) {
         // The GLSL changed: rebuild the SPIR-V with the same compiler the build uses.
         std::string log;
-        if (!run_glslc(m->source_path, file, log)) {
+        if (!compile_glsl_file(m->source_path, file, log)) {
             m->error = log.empty() ? "glslc failed" : log;
             RW_LOG_ERROR("gpu", "material %s: %s", std::filesystem::path(m->source_path).filename().string().c_str(),
                          m->error.c_str());

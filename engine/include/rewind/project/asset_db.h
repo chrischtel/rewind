@@ -19,6 +19,12 @@ struct TextureImportSettings {
     void reflect(Visitor& v) { v.field("nearest", nearest, {.tooltip = "nearest-neighbour sampling (pixel art)"}); }
 };
 
+struct AudioImportSettings {
+    bool mono = false; ///< Downmix to one channel when cooking (sound effects rarely need stereo).
+
+    void reflect(Visitor& v) { v.field("mono", mono, {.tooltip = "downmix to one channel when cooking"}); }
+};
+
 /// The .meta.json next to every source asset. The id never changes once
 /// assigned, so references survive renames and moves as long as the sidecar
 /// moves with the file.
@@ -26,17 +32,20 @@ struct AssetMeta {
     std::string id;   ///< 16 hex digits.
     std::string type; ///< "texture", "aseprite", "audio", "font", "shader", "data", "other"
     TextureImportSettings texture;
+    AudioImportSettings audio;
 
     void reflect(Visitor& v) {
         v.field("id", id, {.read_only = true});
         v.field("type", type, {.read_only = true});
-        v.field("texture", texture);
+        if (type == "texture" || type == "aseprite") v.field("texture", texture);
+        if (type == "audio") v.field("audio", audio);
     }
 };
 
 /// One source asset as the database sees it.
 struct AssetRecord {
-    std::string path; ///< Relative to the asset root, forward slashes.
+    std::string path; ///< Relative to the asset root, forward slashes ("shaders/x.frag" for project shaders).
+    std::string source_file; ///< Absolute path of the source.
     AssetMeta meta;
     u64 source_hash = 0;   ///< Content hash of the file plus its import settings.
     u64 cooked_hash = 0;   ///< source_hash the current cooked output was made from, 0 if none.
@@ -77,12 +86,17 @@ public:
     /// Cooked output path for a source path, or empty.
     std::filesystem::path cooked_path(const AssetRecord& record) const;
 
+    /// Write a record's import settings back to its sidecar. Rescan afterwards
+    /// so the content hash (which includes the settings) marks it stale.
+    bool save_meta(const AssetRecord& record, std::string* error = nullptr) const;
+
     /// Type by file extension, used when a sidecar is created.
     static std::string type_for(const std::filesystem::path& file);
     static std::string new_id();
 
 private:
     bool cook_one(AssetRecord& record, std::string& error);
+    void scan_dir(const std::filesystem::path& root, const std::string& prefix);
     void load_index();
     void save_index();
 
