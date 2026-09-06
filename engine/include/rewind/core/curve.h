@@ -105,6 +105,8 @@ struct Path {
     void split(usize segment, float t, Path& first, Path& second) const;
     /// Insert a point at (segment, t) without changing the shape (one segment becomes two).
     void subdivide(usize segment, float t);
+    /// The stretch between two distances from the start (clamped; empty when d1 <= d0).
+    Path sub_path(float d0, float d1, float tolerance = 0.25f) const;
     /// Append another path; a straight segment bridges any gap.
     void join(const Path& other);
     Path reversed() const;

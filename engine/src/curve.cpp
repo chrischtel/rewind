@@ -311,6 +311,31 @@ void Path::subdivide(usize segment, float t) {
     segments.insert(segments.begin() + static_cast<std::ptrdiff_t>(segment) + 1, b);
 }
 
+Path Path::sub_path(float d0, float d1, float tolerance) const {
+    Path out;
+    if (segments.empty()) return out;
+    PathSampler sampler(*this, tolerance);
+    const float total = sampler.length();
+    d0 = clampf(d0, 0, total);
+    d1 = clampf(d1, 0, total);
+    if (d1 <= d0 + 1e-5f) return out;
+    if (d0 <= 0 && d1 >= total) {
+        out = *this;
+        out.closed = false;
+        return out;
+    }
+    const PathPoint a = sampler.at(d0), b = sampler.at(d1);
+    Path head, tail, cut, rest;
+    Path open = *this;
+    open.closed = false;
+    open.split(b.segment, b.t, cut, rest);
+    if (a.segment < cut.segments.size()) {
+        cut.split(a.segment, a.t, head, tail);
+        return tail;
+    }
+    return cut;
+}
+
 void Path::join(const Path& other) {
     if (other.segments.empty()) return;
     if (segments.empty()) {

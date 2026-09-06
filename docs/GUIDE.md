@@ -292,6 +292,40 @@ are the other steering helpers. The state machine is data only (current,
 previous, time in state, transitions, a one-tick `entered` flag); the
 logic is a switch in your tick, and the names show up in the inspector.
 
+### Curve networks
+
+`sim/network.h` connects curves into something agents can travel: roads
+with lanes, rails, rivers, pipes, belts, footpaths. The network never
+learns which.
+
+```cpp
+CurveNetwork net;
+u32 a = net.add_node({0, 0}), b = net.add_node({300, 0}, /*elevation=*/8);
+u32 e = net.add_curved_edge(a, b, {1, 0}, {1, 0});   // or add_edge(a, b, &path)
+net.set_tracks(e, 2, 2, 4);                        // two tracks each way, 4 wide, keep right
+net.rebuild();                                     // after any edit: snaps ends, derives everything
+
+Route r = net.route(TrackRef{e, 2}, TrackRef{other, 0});   // over connectors and sideways changes
+Path drive = net.route_path(r, &from, &to);                // one Path for a PathFollower
+Location here; net.locate(mouse, here, 20);                // nearest track and distance along it
+```
+
+Nodes carry an elevation for bridges and dips. Edges are Bezier paths
+whose ends follow their nodes; tracks are offset copies running with or
+against the centreline. At every node each arriving track gets a
+connector curve (tangent-continuous cubic) to each leaving track on
+another edge; `set_connect_filter()` decides which pairs exist (only
+straight ahead, matching lanes, no left turns, whatever the game wants).
+Parallel tracks on one edge are linked sideways. From tracks, connectors
+and links comes a routing graph (`route_graph()`, an ordinary `Graph`):
+costs are lengths, changes add `change_penalty`. `conflicts()` lists
+connector pairs at a node whose curves cross, for the game's yielding
+rules. `split_edge`, `move_node`, `remove_node`, `nearest_node`,
+`nearest_edge` and `edges_at` are the editing side; everything reflects,
+derived data rebuilds on load. `draw_network()` in `render/network_draw.h`
+shows surfaces, tracks with arrows, connectors, links, conflicts and nodes
+for tools and prototypes.
+
 ### Gizmos
 
 `debug/gizmo.h` has immediate-mode handles for tools and debug views:

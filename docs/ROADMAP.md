@@ -154,6 +154,33 @@ project settings, save games, localisation.
 
 This list is complete.
 
+## Active: networks and agents
+
+Generic building blocks for anything that moves along connected curves:
+roads, rails, rivers, pipes, footpaths, conveyor belts. Nothing in here
+knows what a car is. Decided 2026-09-06.
+
+1. ~~Curve network (`sim/network.h`): nodes with elevation, curved edges
+   with width and parallel tracks (offset, direction), connectors between
+   tracks at nodes with tangent continuity, adjacent-track links, derived
+   routing graph with turn costs, conflict pairs at nodes, queries
+   (nearest node/edge/track, locate a point on a track), split and merge,
+   route planning to a concatenated Path. Reflects; derived data rebuilds.
+   Debug drawing in `render/network_draw.h`.~~ Done: `CurveNetwork`,
+   `draw_network`, `network_test`.
+2. Routing at scale: edge-based costs with dynamic updates and re-route,
+   route cache, bidirectional A*.
+3. Network agents: follow a track with spacing to the agent ahead (track
+   occupancy), change tracks along a transition curve, wait at conflict
+   zones and signals (state machines), deterministic and reflected.
+4. Editor tool API: tools a game registers (click, drag, snap, cancel),
+   node and track snapping, split and join edges in the scene view.
+5. Game UI and time scale: skinned widgets for HUD and menus, pause and
+   1x/2x/4x simulation speed.
+6. Data tables: definitions in JSON with ids and asset references.
+7. Curve fitting for drawn strokes, particles, positional audio, per-draw
+   sort keys.
+
 ## Later
 
 **3D and isometric 3D tools** (a stated goal): 3D camera and projection,
