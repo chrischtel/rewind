@@ -60,3 +60,8 @@ Engine-level only, never game-specific (no car model, no lane pathfinding).
 Post-processing and 2D lighting, more than two network players and a
 lobby, fixed-point math option, Linux on a real machine, macOS, editor
 polish (theme, multi-viewport, thumbnails), positional audio.
+
+Option, not a step: swapping the GPU backend from SDL GPU to NVRHI. Only
+`Renderer2D`'s implementation, the App's device and swapchain setup and the
+ImGui backend would change; revisit if SDL GPU ever lacks a needed feature
+or platform.
