@@ -284,6 +284,34 @@ frames, a bar timeline of the last frame nested by depth (hover for exact
 times), and totals per region. The cost is one clock read per scope, so
 leaving scopes in shipping code is fine.
 
+## Editor
+
+`rewind_editor` is the editor shell: it hosts a game DLL exactly like
+`rewind_run`, but the game renders into a Scene panel and every engine tool
+is a dockable window on the ImGui docking branch.
+
+```bash
+build/bin/Release/rewind_editor.exe build/bin/Release/towerdefense_hot.dll
+```
+
+- **Scene** shows the running game, integer-scaled in pixel mode, with the
+  mouse mapped into game pixels. Click it to give the game your input; while
+  another panel has focus the game receives nothing.
+- **Timeline** holds the transport, scrubber, determinism status, hot reload
+  and network state. **Inspector** holds the game's debug UI and its whole
+  reflected state, editable live. **Console** and **Profiler** are the same
+  tools as in the overlay. **Keys** lists the hotkeys.
+- **Project** shows the settings the game asked for in `configure()`. Edit
+  them and save to `project.json` next to the DLL; the editor applies that
+  file over the game's defaults on the next start. This is the seed of the
+  project settings and asset pipeline work.
+- **File** saves and loads the entire simulation state as JSON, and rebuilding
+  the game target swaps the code in with the state intact, as always.
+
+The layout resets from the View menu. Under the hood the App has an embedded
+mode: it renders into a texture that a host shows anywhere, and the host
+draws its own UI through a callback, so other tools can be built the same way.
+
 ## Rewind Defense
 
 A complete small game on top of everything above: `towerdefense`. Enemies
@@ -463,6 +491,7 @@ engine/shaders/       sprite.vert / sprite.frag (SPIR-V) and sprite.hlsl (DXBC)
   debug/overlay.h     ImGui overlay and TimeControl
   debug/inspector.h   InspectorVisitor: reflected state as ImGui widgets
 tools/runner/         rewind_run, the hot-reload host
+tools/editor/         rewind_editor, the dockable editor shell
 samples/bounce/       shapes, entities, rewind, desync detector
 samples/pixels/       sprites, animation, tilemap, sound, pixel mode, gamepad
 samples/duel/         two players over rollback netcode
@@ -487,7 +516,8 @@ In rough order:
 - **More than two players** and a lobby handshake for the session.
 - **Prefabs and scene composition** on top of the world and the text format.
 - Linux verified on a real machine, then macOS.
-- An editor on top of all of the above.
+- **Editor growth**: entity list and scene editing, asset browser, undo on
+  top of timeline edits, multi-viewport windows, a custom theme and font.
 
 ## License
 

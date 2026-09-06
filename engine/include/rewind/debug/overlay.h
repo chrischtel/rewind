@@ -62,9 +62,28 @@ struct HotReloadInfo {
 
 const char* time_mode_name(TimeMode mode);
 
+// ---- panels ------------------------------------------------------------------------
+// Building blocks of the overlay. The editor docks each into its own window;
+// draw_debug_overlay() stacks them into one. All must run between
+// ImGui::NewFrame() and ImGui::Render().
+
+/// Frame stats, mode, determinism status, transport buttons and scrubber.
+void draw_timeline_panel(Timeline& timeline, TimeControl& time, const FrameStats& stats);
+/// Code and asset hot reload status.
+void draw_hot_reload_panel(const HotReloadInfo& hot);
+/// Rollback session status, or nothing when `net` is null.
+void draw_network_panel(const net::SessionStats* net);
+/// Frame graph, nested bar timeline of the last frame, totals per region.
+void draw_profiler_panel();
+/// The engine log with filtering.
+void draw_console_panel();
+/// The game's reflected state as editable widgets; edits are recorded in the timeline.
+void draw_state_panel(Timeline& timeline, TimeControl& time, Game& game);
+/// Hotkey reference.
+void draw_keys_panel();
+
 /// Draws the engine's Dear ImGui overlay: stats, timeline scrubber, determinism
-/// status, hot reload status, and the game's own debug_ui(). Must be called
-/// between ImGui::NewFrame() and ImGui::Render().
+/// status, hot reload status, and the game's own debug_ui().
 void draw_debug_overlay(Timeline& timeline, TimeControl& time, Game& game, const FrameStats& stats,
                         const HotReloadInfo& hot);
 

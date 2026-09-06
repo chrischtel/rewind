@@ -73,6 +73,12 @@ bool App::init_platform() {
     renderer_->set_file_watcher(&assets_);
     audio_.set_file_watcher(&assets_);
 
+    if (cfg_.embedded && cfg_.render_width <= 0) {
+        // The host shows the game in a panel: render at the configured window size.
+        cfg_.render_width = cfg_.width;
+        cfg_.render_height = cfg_.height;
+        cfg_.integer_scale = false;
+    }
     if (cfg_.render_width > 0 && cfg_.render_height > 0) {
         target_ = renderer_->create_render_target("__pixel_target", cfg_.render_width, cfg_.render_height);
         if (!target_) {
@@ -87,6 +93,10 @@ bool App::init_platform() {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr; // do not litter the working directory
+    if (cfg_.embedded) {
+        io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+        time_.show_overlay = false;
+    }
     ImGui::StyleColorsDark();
     ImGui_ImplSDL3_InitForSDLGPU(window_);
     ImGui_ImplSDLGPU3_InitInfo init{};
@@ -177,7 +187,7 @@ void App::handle_events() {
 
 InputFrame App::sample_input() const {
     InputFrame in;
-    const bool keyboard = !ImGui::GetIO().WantCaptureKeyboard;
+    const bool keyboard = cfg_.embedded ? input_focus_ : !ImGui::GetIO().WantCaptureKeyboard;
 
     static const bool no_keys[SDL_SCANCODE_COUNT] = {};
     const bool* k = keyboard ? SDL_GetKeyboardState(nullptr) : no_keys;
@@ -237,7 +247,8 @@ InputFrame App::sample_input() const {
     const Vec2 rp = renderer_->window_to_render(mx, my);
     in.mouse_x = static_cast<i16>(std::clamp(rp.x, -32000.0f, 32000.0f));
     in.mouse_y = static_cast<i16>(std::clamp(rp.y, -32000.0f, 32000.0f));
-    if (!ImGui::GetIO().WantCaptureMouse) {
+    const bool mouse = cfg_.embedded ? input_focus_ : !ImGui::GetIO().WantCaptureMouse;
+    if (mouse) {
         in.set(Button::MouseLeft, (mb & SDL_BUTTON_LMASK) != 0);
         in.set(Button::MouseRight, (mb & SDL_BUTTON_RMASK) != 0);
         in.set(Button::MouseMiddle, (mb & SDL_BUTTON_MMASK) != 0);
@@ -408,18 +419,74 @@ void App::render_frame(float alpha) {
         game_->render(*renderer_, alpha);
     }
     if (target_) {
-        renderer_->set_target(nullptr);
-        present_target();
+        if (cfg_.embedded) {
+            present_to_view();
+        } else {
+            renderer_->set_target(nullptr);
+            present_target();
+        }
     }
 
     if (time_.show_overlay) {
         RW_PROFILE_SCOPE("overlay");
         draw_debug_overlay(timeline_, time_, *game_, stats_, hot_);
     }
+    if (ui_) {
+        RW_PROFILE_SCOPE("host ui");
+        ui_(*this);
+    }
 
     ImGui::Render();
     RW_PROFILE_SCOPE("submit");
     renderer_->end_frame(drawing ? ImGui::GetDrawData() : nullptr);
+}
+
+void App::set_view_size(int width, int height) {
+    view_w_ = std::max(width, 1);
+    view_h_ = std::max(height, 1);
+}
+
+void App::set_view_rect(const Rect& rect) {
+    if (!target_ || rect.w <= 0) return;
+    renderer_->set_presentation(rect, rect.w / static_cast<float>(target_->width));
+}
+
+void App::present_to_view() {
+    // Scale the game's target into the view texture the host shows. Done here,
+    // with our own sampler, so pixel art stays crisp regardless of how the
+    // host's UI toolkit samples textures.
+    if (view_w_ <= 0 || view_h_ <= 0) {
+        renderer_->set_target(nullptr);
+        return;
+    }
+    if (!view_ || view_->width != view_w_ || view_->height != view_h_) {
+        view_ = renderer_->create_render_target("__view", view_w_, view_h_);
+        if (!view_) return;
+    }
+    const float rw = static_cast<float>(target_->width);
+    const float rh = static_cast<float>(target_->height);
+    float scale = std::min(static_cast<float>(view_w_) / rw, static_cast<float>(view_h_) / rh);
+    if (cfg_.integer_scale) scale = std::max(1.0f, std::floor(scale));
+    const float x = std::floor((static_cast<float>(view_w_) - rw * scale) * 0.5f);
+    const float y = std::floor((static_cast<float>(view_h_) - rh * scale) * 0.5f);
+
+    renderer_->set_target(view_);
+    renderer_->set_camera(Camera{});
+    renderer_->clear(rgb(0, 0, 0));
+    SpriteOptions o;
+    o.scale_x = scale;
+    o.scale_y = scale;
+    renderer_->draw_texture(*target_, x, y, o);
+    renderer_->set_target(nullptr);
+}
+
+bool App::load_state(const std::vector<u8>& bytes) {
+    Reader reader(bytes);
+    game_->load(reader);
+    if (!reader.ok() || reader.remaining() != 0) return false;
+    timeline_.recapture(*game_);
+    accumulator_ = 0;
+    return true;
 }
 
 int App::run(Game& game) {

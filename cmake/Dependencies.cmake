@@ -20,7 +20,7 @@ FetchContent_Declare(SDL3
 # ---- Dear ImGui -------------------------------------------------------------
 FetchContent_Declare(imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
-    GIT_TAG        v1.92.9
+    GIT_TAG        v1.92.9-docking
     GIT_SHALLOW    TRUE)
 
 # ---- stb (stb_image: PNG decoding and the zlib inflate Aseprite files need) --

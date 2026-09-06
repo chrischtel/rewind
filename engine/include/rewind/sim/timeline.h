@@ -14,6 +14,13 @@ struct TimelineConfig {
     u32 history_ticks = 60 * 60; ///< How far back you can rewind. Default: one minute.
     u32 keyframe_interval = 1;   ///< Snapshot every N ticks. 1 = instant rewind, most memory.
     bool verify_hashes = true;   ///< Fingerprint every re-simulated tick and flag mismatches.
+
+    void reflect(Visitor& v) {
+        v.field("tick_rate", tick_rate, {.min = 1, .max = 240, .tooltip = "simulation steps per second"});
+        v.field("history_ticks", history_ticks, {.min = 60, .max = 60 * 600, .tooltip = "how far back you can rewind"});
+        v.field("keyframe_interval", keyframe_interval, {.min = 1, .max = 60});
+        v.field("verify_hashes", verify_hashes);
+    }
 };
 
 /// A tick whose re-simulation produced a different state than the original run.
