@@ -262,6 +262,36 @@ controller: wheel zooms around the cursor, right or middle drag pans, and
 `Renderer2D::set_camera_override()` makes the game's own camera calls
 inert while it is on.
 
+### Graphs, steering, timers and state machines
+
+Simulation building blocks in `sim/`, all deterministic and reflected:
+
+```cpp
+Graph g = Graph::grid(w, h, 16, /*diagonals=*/true, [&](u32 x, u32 y) { return !wall(x, y); });
+u32 a = g.add_node({10, 10}); g.connect(a, b);          // or add_edge(a, b, cost, directed)
+GraphPath route = g.shortest_path(from, to);             // A* on positions (weight 0 = Dijkstra)
+std::vector<float> reach = g.distances_from(from, 200);  // Dijkstra flood, e.g. movement range
+Path curve = Path::from_catmull_rom(g.positions(route)); // smooth it and follow it
+
+PathSampler sampler(curve);                              // derived: rebuild after load
+PathFollower follower;                                   // reflected: distance, speed, lookahead, done
+velocity = follower.update(sampler, position, dt);
+velocity = arrive(position, target, max_speed, slow_radius);
+velocity += separation(position, neighbours, radius, max_speed);
+heading = turn_toward(heading, angle_of(velocity), max_turn * dt);
+
+Timer spawn; spawn.start(2.0f, /*loop=*/true);  if (spawn.tick(dt)) spawn_enemy();
+Cooldown fire;  if (fire.ready()) { shoot(); fire.use(0.3f); }  fire.tick(dt);
+StateMachine<Mood> fsm(Mood::Idle, kMoodNames, 3);
+fsm.tick(dt); if (fsm.is(Mood::Idle) && fsm.time_in_state > 2) fsm.change(Mood::Chase);
+```
+
+Graph searches break ties by node id, so every machine finds the same
+route. `seek`, `flee`, `pursue`, `keep_distance`, `separation` and `limit`
+are the other steering helpers. The state machine is data only (current,
+previous, time in state, transitions, a one-tick `entered` flag); the
+logic is a switch in your tick, and the names show up in the inspector.
+
 ### Gizmos
 
 `debug/gizmo.h` has immediate-mode handles for tools and debug views:

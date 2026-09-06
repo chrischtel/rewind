@@ -65,6 +65,10 @@ It is not for 3D games, and not for people who want a no-code workflow.
 - Gizmos: immediate-mode move, rect, rotate, point and Bezier path handles
   with grid and angle snapping, driven from reflected fields, so the editor
   places and reshapes things in the scene without game-specific code.
+- Gameplay blocks: weighted graphs with deterministic A* and Dijkstra
+  floods, grid graphs, steering (seek, arrive, pursue, keep distance,
+  separation, path following), and reflected timers, cooldowns and state
+  machines that rewind with the rest of the state.
 - Materials: your own GLSL fragment shaders with extra textures and
   parameters, one source for both backends.
 - Native Aseprite import: layers, tags, slices, tilesets, tilemap layers.

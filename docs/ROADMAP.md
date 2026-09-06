@@ -46,7 +46,7 @@ later, nothing depends on them): asset references with a picker, importers
 for audio, fonts and shaders, archives for shipping, undo on top of timeline
 edits.
 
-## Next: generic engine functionality
+## Done: generic engine functionality
 
 Rendering, geometry, spatial queries, editor interaction and simulation
 building blocks that any game uses. Engine-level only, never game-specific.
@@ -69,9 +69,16 @@ building blocks that any game uses. Engine-level only, never game-specific.
    move, rect, rotate, path; GizmoVisitor), editor scene gizmos with
    click-to-select and snap toolbar, `Widget::Path` inspector widget,
    `App::set_scene_callback`, `gizmo_test`.
-5. Generic graph module with weighted edges and shortest-path search;
+5. ~~Generic graph module with weighted edges and shortest-path search;
    steering helpers (follow curve, arrive, keep distance); reflected timers
-   and state machines.
+   and state machines.~~ Done: `sim/graph.h` (Graph, grid, A*/Dijkstra,
+   floods), `sim/steering.h` (seek, flee, arrive, pursue, keep_distance,
+   separation, turn_toward, PathFollower), `sim/timer.h` (Timer, Cooldown,
+   StateMachine), `graph_test`, `gameplay_test`.
+
+All five items are done; this list is complete. The next list is not yet
+chosen (candidates: the deferred project items above, 3D and isometric
+groundwork, editor growth such as undo and an asset picker).
 
 ## Later
 

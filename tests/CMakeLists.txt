@@ -20,6 +20,8 @@ rewind_add_test(curve_test)
 rewind_add_test(camera_test)
 rewind_add_test(spatial_test)
 rewind_add_test(gizmo_test)
+rewind_add_test(graph_test)
+rewind_add_test(gameplay_test)
 rewind_add_test(shader_test)
 target_include_directories(shader_test PRIVATE ${CMAKE_BINARY_DIR}/generated)
 
