@@ -3,6 +3,10 @@
 // Umbrella header: everything a game needs.
 
 #include "rewind/assets/aseprite.h"
+#include "rewind/assets/png.h"
+#include "rewind/project/asset_db.h"
+#include "rewind/project/cooked.h"
+#include "rewind/project/project.h"
 #include "rewind/audio/audio.h"
 #include "rewind/core/app.h"
 #include "rewind/core/file_watcher.h"

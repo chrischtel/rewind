@@ -13,6 +13,7 @@ rewind_add_test(reflect_test)
 rewind_add_test(ecs_test)
 rewind_add_test(net_test)
 rewind_add_test(text_test)
+rewind_add_test(project_test)
 rewind_add_test(shader_test)
 target_include_directories(shader_test PRIVATE ${CMAKE_BINARY_DIR}/generated)
 

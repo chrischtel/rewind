@@ -26,6 +26,18 @@ struct JsonValue {
 /// Parse JSON text. On failure `error` names the line and column.
 bool parse_json(std::string_view text, JsonValue& out, std::string& error);
 
+/// Pretty-print a document.
+std::string write_json(const JsonValue& value);
+
+/// Members of `current` that differ from `base`, recursively for objects.
+/// Arrays and scalars are compared whole. Used to store only the settings a
+/// project changed from the game's defaults.
+JsonValue json_diff(const JsonValue& base, const JsonValue& current);
+
+/// Apply the fields present in `value` onto a reflected object; everything
+/// else keeps its current value.
+template <class T> void apply_json(const JsonValue& value, T& object);
+
 /// Writes reflected state as pretty JSON, field names included, so files stay
 /// readable and diffable and survive fields being added, removed or reordered.
 class JsonWriteVisitor final : public Visitor {
@@ -109,6 +121,18 @@ template <Reflectable T> std::string to_json(T& object, bool include_transient =
     JsonWriteVisitor w(include_transient);
     object.reflect(w);
     return w.finish();
+}
+
+template <Reflectable T> JsonValue to_json_value(T& object) {
+    JsonValue v;
+    std::string error;
+    parse_json(to_json(object), v, error);
+    return v;
+}
+
+template <class T> void apply_json(const JsonValue& value, T& object) {
+    JsonLoadVisitor v(value);
+    object.reflect(v);
 }
 
 template <Reflectable T> bool from_json(std::string_view text, T& object, std::string* error = nullptr) {

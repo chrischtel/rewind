@@ -57,10 +57,17 @@ struct SpriteSheet {
 SpriteSheet sprite_sheet_from_grid(Texture* texture, int frame_width, int frame_height,
                                    int frame_count, u32 duration_ms);
 
-/// Load an .aseprite / .ase file straight from disk: layers are composited,
-/// frames packed into one texture (cached under the file path), tags and
-/// slices carried over. Returns false and fills `error` on failure.
+/// Load an .aseprite / .ase file straight from disk, or its cooked form when
+/// the project was cooked: layers are composited, frames packed into one
+/// texture (cached under the file path), tags and slices carried over.
+/// Returns false and fills `error` on failure.
 bool load_aseprite_sheet(Renderer2D& renderer, const std::string& path, SpriteSheet& out,
+                         std::string* error = nullptr);
+
+struct AseTilemap;
+struct AseTileset;
+/// The tilemap layers and tilesets of an .aseprite file or its cooked form.
+bool load_sheet_tilemaps(const std::string& path, std::vector<AseTilemap>& tilemaps, std::vector<AseTileset>& tilesets,
                          std::string* error = nullptr);
 
 } // namespace rw

@@ -3,6 +3,7 @@
 #include "rewind/assets/aseprite.h"
 #include "rewind/core/paths.h"
 #include "rewind/render/renderer2d.h"
+#include "rewind/render/sprite.h"
 
 #include <algorithm>
 #include <cmath>
@@ -177,25 +178,22 @@ TileMap tilemap_from_text(const std::vector<std::string>& rows, std::string_view
 
 bool load_aseprite_tilemap(Renderer2D& renderer, const std::string& path, std::string_view layer_name,
                            TileMap& out, std::string* error) {
-    AseDocument doc;
-    std::string err;
-    if (!load_aseprite(path, doc, err)) {
-        if (error) *error = err;
-        return false;
-    }
+    std::vector<AseTilemap> tilemaps;
+    std::vector<AseTileset> tilesets;
+    if (!load_sheet_tilemaps(path, tilemaps, tilesets, error)) return false;
 
     const AseTilemap* layer = nullptr;
-    for (const AseTilemap& t : doc.tilemaps)
+    for (const AseTilemap& t : tilemaps)
         if (t.layer_name == layer_name) layer = &t;
     if (!layer) {
         if (error) *error = "no tilemap layer named '" + std::string(layer_name) + "' in " + path;
         return false;
     }
-    if (layer->tileset >= doc.tilesets.size()) {
+    if (layer->tileset >= tilesets.size()) {
         if (error) *error = "tilemap layer refers to a missing tileset";
         return false;
     }
-    const AseTileset& ts = doc.tilesets[layer->tileset];
+    const AseTileset& ts = tilesets[layer->tileset];
     if (ts.rgba.empty()) {
         if (error) *error = "tileset '" + ts.name + "' keeps its tiles in an external file, which is not supported";
         return false;

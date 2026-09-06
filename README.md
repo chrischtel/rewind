@@ -291,6 +291,52 @@ frames, a bar timeline of the last frame nested by depth (hover for exact
 times), and totals per region. The cost is one clock read per scope, so
 leaving scopes in shipping code is fine.
 
+## Projects and the asset pipeline
+
+A project is a folder with a fixed layout and a `project.json`:
+
+```
+project.json        name, game module, startup scene, app setting overrides
+assets/             source assets, each with a .meta.json sidecar
+scenes/             scene and prefab files (JSON)
+shaders/            GLSL materials
+build/cooked/       cooked assets, one file per source, regenerated
+```
+
+```bash
+build/bin/Release/rewind.exe new mygame "My Game"
+```
+
+```bash
+build/bin/Release/rewind.exe cook mygame
+```
+
+- **Stable ids.** Every asset gets a random id in its sidecar the first time
+  the database sees it. Move or rename a file together with its sidecar and
+  every reference keeps working. The sidecar also holds import settings,
+  such as nearest or linear sampling for a texture.
+- **Content-hash cooking.** The database hashes each file plus its import
+  settings and cooks only what differs from the last cook, so a fresh clone
+  or a `git checkout` re-cooks exactly what changed and nothing else. Cooked
+  files are loose, mirroring the asset layout with `.cooked` appended, with a
+  magic number so loaders recognise them by content.
+- **Importers today:** PNG to a cooked texture, and Aseprite to a cooked sheet
+  with the atlas, frame durations, tags, slices, tilesets and tilemap layers.
+  Other types are read from source. The runtime loads by source name and
+  transparently gets the cooked file when it exists.
+- **Settings as overrides.** The project file stores only the app settings
+  that differ from what the game's `configure()` asks for, applied on top
+  of them at start. A project made from a template therefore never
+  overrides a game's pixel mode or tick rate by accident.
+- `rewind info` lists assets with ids and cook state; `rewind run` and
+  `rewind edit` open a project in the runner or the editor, which also accept
+  a project folder directly. The editor's Assets panel shows the same
+  database and cooks from a button.
+
+Next in this area: scene and prefab files, asset references as properties
+with a picker, more importers, and packing cooked files into archives for
+shipping.
+
 ## Editor
 
 `rewind_editor` is the editor shell: it hosts a game DLL exactly like
@@ -495,16 +541,21 @@ engine/shaders/       sprite.vert / sprite.frag (SPIR-V) and sprite.hlsl (DXBC)
   net/transport.h     Transport interface, LoopbackPair for tests
   net/udp.h           UdpTransport
   audio/audio.h       Sound and the polyphonic Audio player
-  assets/aseprite.h   the .aseprite parser (sprites, tilesets, tilemaps)
+  assets/aseprite.h   the .aseprite parser
+  assets/png.h        tiny PNG encoder for templates, tests and screenshots
+  project/project.h   Project file and layout, path setup
+  project/asset_db.h  AssetDatabase: sidecars, ids, hashing, cooking
+  project/cooked.h    cooked texture and sheet formats (sprites, tilesets, tilemaps)
   debug/overlay.h     ImGui overlay and TimeControl
   debug/inspector.h   InspectorVisitor: reflected state as ImGui widgets
 tools/runner/         rewind_run, the hot-reload host
 tools/editor/         rewind_editor, the dockable editor shell
+tools/cli/            rewind: new, info, cook, run, edit
 samples/bounce/       shapes, entities, rewind, desync detector
 samples/pixels/       sprites, animation, tilemap, sound, pixel mode, gamepad
 samples/duel/         two players over rollback netcode
 samples/towerdefense/ Rewind Defense: waves, towers, economy, mouse input
-tests/                headless tests: core, timeline, assets, world, reflect, ecs, net, shader, text, hot reload
+tests/                headless tests: core, timeline, assets, world, reflect, ecs, net, shader, text, project, hot reload
 ```
 
 The engine builds as a shared library so that SDL, ImGui, and the engine

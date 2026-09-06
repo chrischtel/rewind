@@ -4,6 +4,7 @@
 #include "rewind/core/file_watcher.h"
 #include "rewind/core/log.h"
 #include "rewind/core/paths.h"
+#include "rewind/project/cooked.h"
 #include "rewind/render/font.h"
 #include "rewind/render/material.h"
 #include "rewind/render/shader_cross.h"
@@ -1008,14 +1009,29 @@ Texture* Renderer2D::load_texture(const std::string& path) {
     if (existing && !stale) return existing;
 
     const std::string file = resolve_asset_path(path);
-    int width = 0, height = 0, channels = 0;
-    stbi_uc* pixels = stbi_load(file.c_str(), &width, &height, &channels, 4);
-    if (!pixels) {
-        RW_LOG_ERROR("gpu", "load_texture(%s): %s", path.c_str(), stbi_failure_reason());
-        return existing; // keep showing the last good version
+    Texture* texture = nullptr;
+
+    // Cooked textures are recognised by content, so games load by source name
+    // and get whichever the project provides.
+    std::vector<u8> bytes;
+    CookedTexture cooked;
+    if (read_file(file, bytes) && cooked_magic(bytes) == kCookedTextureMagic) {
+        if (!decode_cooked_texture(bytes, cooked)) {
+            RW_LOG_ERROR("gpu", "load_texture(%s): damaged cooked texture", path.c_str());
+            return existing;
+        }
+        texture = create_texture(path, cooked.width, cooked.height, cooked.rgba.data());
+        if (texture) texture->nearest = cooked.nearest;
+    } else {
+        int width = 0, height = 0, channels = 0;
+        stbi_uc* pixels = stbi_load(file.c_str(), &width, &height, &channels, 4);
+        if (!pixels) {
+            RW_LOG_ERROR("gpu", "load_texture(%s): %s", path.c_str(), stbi_failure_reason());
+            return existing; // keep showing the last good version
+        }
+        texture = create_texture(path, width, height, pixels);
+        stbi_image_free(pixels);
     }
-    Texture* texture = create_texture(path, width, height, pixels);
-    stbi_image_free(pixels);
     track_file(file);
     if (file != path) im.aliases[file] = path;
     return texture;

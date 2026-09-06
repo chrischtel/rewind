@@ -250,6 +250,99 @@ bool parse_json(std::string_view text, JsonValue& out, std::string& error) {
     return true;
 }
 
+// ---- document writer and diff ---------------------------------------------------
+
+namespace {
+
+void write_value(const JsonValue& v, std::string& out, int depth) {
+    auto newline = [&](int d) {
+        out += '\n';
+        out.append(static_cast<usize>(d) * 2, ' ');
+    };
+    switch (v.type) {
+    case JsonValue::Type::Null: out += "null"; break;
+    case JsonValue::Type::Bool: out += v.boolean ? "true" : "false"; break;
+    case JsonValue::Type::Number: out += v.text; break;
+    case JsonValue::Type::String: out += escape(v.text); break;
+    case JsonValue::Type::Array:
+        out += '[';
+        for (usize i = 0; i < v.items.size(); ++i) {
+            if (i) out += ',';
+            newline(depth + 1);
+            write_value(v.items[i], out, depth + 1);
+        }
+        if (!v.items.empty()) newline(depth);
+        out += ']';
+        break;
+    case JsonValue::Type::Object:
+        out += '{';
+        for (usize i = 0; i < v.members.size(); ++i) {
+            if (i) out += ',';
+            newline(depth + 1);
+            out += escape(v.members[i].first);
+            out += ": ";
+            write_value(v.members[i].second, out, depth + 1);
+        }
+        if (!v.members.empty()) newline(depth);
+        out += '}';
+        break;
+    }
+}
+
+bool same_value(const JsonValue& a, const JsonValue& b) {
+    if (a.type != b.type) return false;
+    switch (a.type) {
+    case JsonValue::Type::Null: return true;
+    case JsonValue::Type::Bool: return a.boolean == b.boolean;
+    case JsonValue::Type::Number:
+        return a.text == b.text || std::strtod(a.text.c_str(), nullptr) == std::strtod(b.text.c_str(), nullptr);
+    case JsonValue::Type::String: return a.text == b.text;
+    case JsonValue::Type::Array:
+        if (a.items.size() != b.items.size()) return false;
+        for (usize i = 0; i < a.items.size(); ++i)
+            if (!same_value(a.items[i], b.items[i])) return false;
+        return true;
+    case JsonValue::Type::Object:
+        if (a.members.size() != b.members.size()) return false;
+        for (const auto& [k, v] : a.members) {
+            const JsonValue* other = b.find(k);
+            if (!other || !same_value(v, *other)) return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+} // namespace
+
+std::string write_json(const JsonValue& value) {
+    std::string out;
+    write_value(value, out, 0);
+    out += '\n';
+    return out;
+}
+
+JsonValue json_diff(const JsonValue& base, const JsonValue& current) {
+    if (current.type != JsonValue::Type::Object || base.type != JsonValue::Type::Object) return current;
+    JsonValue out;
+    out.type = JsonValue::Type::Object;
+    for (const auto& [key, value] : current.members) {
+        const JsonValue* before = base.find(key);
+        if (!before) {
+            out.members.emplace_back(key, value);
+            continue;
+        }
+        if (same_value(*before, value)) continue;
+        if (value.type == JsonValue::Type::Object && before->type == JsonValue::Type::Object) {
+            JsonValue sub = json_diff(*before, value);
+            if (!sub.members.empty()) out.members.emplace_back(key, std::move(sub));
+        } else {
+            out.members.emplace_back(key, value);
+        }
+    }
+    return out;
+}
+
 // ---- writer ---------------------------------------------------------------------
 
 JsonWriteVisitor::JsonWriteVisitor(bool include_transient) : include_transient_(include_transient) {

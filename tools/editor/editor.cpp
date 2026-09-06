@@ -1,12 +1,13 @@
 // rewind_editor: the editor shell. Hosts a game DLL like rewind_run, but the
 // game renders into a panel and the engine's tools live in dockable windows.
 //
+//   rewind_editor path/to/project [game arguments...]
 //   rewind_editor path/to/mygame_hot.dll [game arguments...]
 //
 // Panels: Scene (the running game; click it to give it your input), Timeline
 // (transport, scrubber, determinism), Inspector (the game's debug UI and its
-// whole reflected state), Console, Profiler, and Project (settings saved to
-// project.json next to the DLL and applied on the next start).
+// whole reflected state), Console, Profiler, Assets (the project's asset
+// database and cook), and Project (settings saved to project.json).
 
 #include <rewind/rewind.h>
 
@@ -17,6 +18,7 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -25,15 +27,19 @@ namespace fs = std::filesystem;
 namespace {
 
 struct EditorState {
-    fs::path project_dir;
+    bool has_project = false;
+    rw::Project project;
+    std::unique_ptr<rw::AssetDatabase> assets;
     fs::path project_file;
     fs::path state_file;
-    rw::AppConfig settings;     ///< edited in the Project panel
+    rw::AppConfig settings;   ///< edited in the Project panel
+    rw::AppConfig defaults;   ///< what the game's configure() asked for
     bool settings_dirty = false;
     bool layout_done = false;
     bool show_scene = true, show_timeline = true, show_inspector = true, show_console = true, show_profiler = true,
-         show_project = true, show_keys = false;
+         show_project = true, show_assets = true, show_keys = false;
     std::string status;
+    std::vector<std::string> cook_log;
 };
 
 EditorState g_editor;
@@ -52,6 +58,7 @@ void default_layout(ImGuiID dockspace) {
     ImGui::DockBuilderDockWindow("Inspector", right);
     ImGui::DockBuilderDockWindow("Project", right);
     ImGui::DockBuilderDockWindow("Timeline", bottom);
+    ImGui::DockBuilderDockWindow("Assets", bottom);
     ImGui::DockBuilderDockWindow("Console", bottom);
     ImGui::DockBuilderDockWindow("Profiler", bottom);
     ImGui::DockBuilderDockWindow("Keys", bottom);
@@ -60,7 +67,15 @@ void default_layout(ImGuiID dockspace) {
 
 void save_project(rw::App& app) {
     std::string error;
-    if (rw::save_json_file(g_editor.project_file.string(), g_editor.settings, &error)) {
+    bool ok;
+    if (g_editor.has_project) {
+        rw::Project p = g_editor.project;
+        p.app = g_editor.settings;
+        ok = rw::save_project(p, &g_editor.defaults, &error);
+    } else {
+        ok = rw::save_json_file(g_editor.project_file.string(), g_editor.settings, &error);
+    }
+    if (ok) {
         g_editor.settings_dirty = false;
         g_editor.status = "saved " + g_editor.project_file.filename().string() + " (applies on next start)";
         RW_LOG_INFO("editor", "%s", g_editor.status.c_str());
@@ -72,8 +87,6 @@ void save_project(rw::App& app) {
 }
 
 void save_state(rw::App& app) {
-    rw::Writer w;
-    app.game().save(w);
     std::string error;
     const std::string json = rw::to_json(app.game());
     if (rw::write_text_file(g_editor.state_file.string(), json, &error)) {
@@ -98,10 +111,25 @@ void load_state(rw::App& app) {
     RW_LOG_INFO("editor", "%s", g_editor.status.c_str());
 }
 
+void cook_assets(bool force) {
+    if (!g_editor.assets) return;
+    g_editor.assets->scan();
+    const rw::CookReport report = g_editor.assets->cook(force);
+    g_editor.cook_log = report.messages;
+    char buf[128];
+    std::snprintf(buf, sizeof buf, "cook: %u cooked, %u up to date, %u failed", report.cooked, report.skipped,
+                  report.failed);
+    g_editor.status = buf;
+    RW_LOG_INFO("assets", "%s", buf);
+    g_editor.assets->scan();
+}
+
 void draw_menu(rw::App& app) {
     if (!ImGui::BeginMainMenuBar()) return;
     if (ImGui::BeginMenu("File")) {
-        if (ImGui::MenuItem("Save project settings", nullptr, false, true)) save_project(app);
+        if (ImGui::MenuItem("Save project settings")) save_project(app);
+        if (g_editor.has_project && ImGui::MenuItem("Cook changed assets")) cook_assets(false);
+        if (g_editor.has_project && ImGui::MenuItem("Cook all assets")) cook_assets(true);
         ImGui::Separator();
         if (ImGui::MenuItem("Save state as JSON")) save_state(app);
         if (ImGui::MenuItem("Load state from JSON")) load_state(app);
@@ -124,6 +152,7 @@ void draw_menu(rw::App& app) {
         ImGui::MenuItem("Scene", nullptr, &g_editor.show_scene);
         ImGui::MenuItem("Timeline", nullptr, &g_editor.show_timeline);
         ImGui::MenuItem("Inspector", nullptr, &g_editor.show_inspector);
+        ImGui::MenuItem("Assets", nullptr, &g_editor.show_assets, g_editor.has_project);
         ImGui::MenuItem("Console", nullptr, &g_editor.show_console);
         ImGui::MenuItem("Profiler", nullptr, &g_editor.show_profiler);
         ImGui::MenuItem("Project", nullptr, &g_editor.show_project);
@@ -133,7 +162,7 @@ void draw_menu(rw::App& app) {
         ImGui::EndMenu();
     }
     const char* mode = rw::time_mode_name(app.time_control().mode);
-    ImGui::SameLine(ImGui::GetWindowWidth() - 420);
+    ImGui::SameLine(ImGui::GetWindowWidth() - 460);
     ImGui::TextDisabled("%s   tick %llu   %.0f fps   %s", mode, static_cast<unsigned long long>(app.timeline().head()),
                         app.stats().fps, g_editor.status.c_str());
     ImGui::EndMainMenuBar();
@@ -179,26 +208,66 @@ void draw_scene(rw::App& app) {
     ImGui::End();
 }
 
-void draw_panels(rw::App& app) {
-    if (g_editor.show_timeline && ImGui::Begin("Timeline", &g_editor.show_timeline)) {
-        rw::draw_timeline_panel(app.timeline(), app.time_control(), app.stats());
-        ImGui::Separator();
-        rw::draw_hot_reload_panel(app.hot_reload());
-        if (app.stats().net) {
-            ImGui::Separator();
-            rw::draw_network_panel(app.stats().net);
+void draw_assets() {
+    if (!g_editor.show_assets || !g_editor.assets) return;
+    if (ImGui::Begin("Assets", &g_editor.show_assets)) {
+        if (ImGui::Button("Rescan")) g_editor.assets->scan();
+        ImGui::SameLine();
+        if (ImGui::Button("Cook changed")) cook_assets(false);
+        ImGui::SameLine();
+        if (ImGui::Button("Cook all")) cook_assets(true);
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", g_editor.project.asset_dir().string().c_str());
+
+        const auto& records = g_editor.assets->records();
+        if (ImGui::BeginTable("##assets", 4, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
+                              ImVec2(0, 0))) {
+            ImGui::TableSetupColumn("asset");
+            ImGui::TableSetupColumn("type");
+            ImGui::TableSetupColumn("id");
+            ImGui::TableSetupColumn("state");
+            ImGui::TableHeadersRow();
+            for (const rw::AssetRecord& r : records) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::TextUnformatted(r.path.c_str());
+                ImGui::TableSetColumnIndex(1);
+                ImGui::TextUnformatted(r.meta.type.c_str());
+                ImGui::TableSetColumnIndex(2);
+                ImGui::TextDisabled("%s", r.meta.id.c_str());
+                ImGui::TableSetColumnIndex(3);
+                if (!r.error.empty()) ImGui::TextColored(ImVec4(1, 0.35f, 0.35f, 1), "%s", r.error.c_str());
+                else if (r.cooked.empty()) ImGui::TextDisabled("copied as is");
+                else if (r.cooked_hash == 0) ImGui::TextColored(ImVec4(1, 0.85f, 0.35f, 1), "not cooked");
+                else if (r.stale()) ImGui::TextColored(ImVec4(1, 0.85f, 0.35f, 1), "stale");
+                else ImGui::TextColored(ImVec4(0.45f, 0.95f, 0.55f, 1), "cooked");
+            }
+            ImGui::EndTable();
         }
-        ImGui::End();
-    } else if (g_editor.show_timeline) {
+    }
+    ImGui::End();
+}
+
+void draw_panels(rw::App& app) {
+    if (g_editor.show_timeline) {
+        if (ImGui::Begin("Timeline", &g_editor.show_timeline)) {
+            rw::draw_timeline_panel(app.timeline(), app.time_control(), app.stats());
+            ImGui::Separator();
+            rw::draw_hot_reload_panel(app.hot_reload());
+            if (app.stats().net) {
+                ImGui::Separator();
+                rw::draw_network_panel(app.stats().net);
+            }
+        }
         ImGui::End();
     }
 
-    if (g_editor.show_inspector && ImGui::Begin("Inspector", &g_editor.show_inspector)) {
-        if (ImGui::CollapsingHeader("Game", ImGuiTreeNodeFlags_DefaultOpen)) app.game().debug_ui();
-        if (ImGui::CollapsingHeader("State", ImGuiTreeNodeFlags_DefaultOpen))
-            rw::draw_state_panel(app.timeline(), app.time_control(), app.game());
-        ImGui::End();
-    } else if (g_editor.show_inspector) {
+    if (g_editor.show_inspector) {
+        if (ImGui::Begin("Inspector", &g_editor.show_inspector)) {
+            if (ImGui::CollapsingHeader("Game", ImGuiTreeNodeFlags_DefaultOpen)) app.game().debug_ui();
+            if (ImGui::CollapsingHeader("State", ImGuiTreeNodeFlags_DefaultOpen))
+                rw::draw_state_panel(app.timeline(), app.time_control(), app.game());
+        }
         ImGui::End();
     }
 
@@ -221,11 +290,18 @@ void draw_panels(rw::App& app) {
         ImGui::End();
     }
 
+    draw_assets();
+
     if (g_editor.show_project) {
         if (ImGui::Begin("Project", &g_editor.show_project)) {
             ImGui::TextDisabled("%s", g_editor.project_file.string().c_str());
-            ImGui::TextWrapped("Settings the game asked for, overridable per project. Saved values apply the next "
-                               "time the game starts.");
+            if (g_editor.has_project) {
+                ImGui::TextWrapped("Only settings that differ from what the game asks for are stored. Saved values "
+                                   "apply the next time the game starts.");
+            } else {
+                ImGui::TextWrapped("No project: settings are saved next to the DLL and applied on the next start. "
+                                   "Create a project with `rewind new` to get an asset pipeline too.");
+            }
             ImGui::PushItemWidth(170);
             rw::InspectorVisitor inspector;
             g_editor.settings.reflect(inspector);
@@ -233,12 +309,17 @@ void draw_panels(rw::App& app) {
             if (inspector.changed()) g_editor.settings_dirty = true;
             ImGui::Separator();
             ImGui::BeginDisabled(!g_editor.settings_dirty);
-            if (ImGui::Button("Save project.json")) save_project(app);
+            if (ImGui::Button("Save")) save_project(app);
             ImGui::EndDisabled();
             ImGui::SameLine();
             if (ImGui::Button("Revert")) {
                 g_editor.settings = app.config();
                 g_editor.settings_dirty = false;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Game defaults")) {
+                g_editor.settings = g_editor.defaults;
+                g_editor.settings_dirty = true;
             }
         }
         ImGui::End();
@@ -260,27 +341,49 @@ void editor_ui(rw::App& app) {
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: rewind_editor <game dll> [game arguments...]\n");
+        std::fprintf(stderr, "usage: rewind_editor <project dir | game dll> [game arguments...]\n");
         return 2;
     }
 
-    rw::GameModule module(argv[1]);
+    std::string module_path = argv[1];
+    std::error_code ec;
+    if (rw::is_project_dir(argv[1])) {
+        std::string error;
+        if (!rw::load_project(argv[1], g_editor.project, &error)) {
+            std::fprintf(stderr, "rewind_editor: %s\n", error.c_str());
+            return 1;
+        }
+        if (g_editor.project.module.empty()) {
+            std::fprintf(stderr, "rewind_editor: project.json has no \"module\"; set it to the game DLL first\n");
+            return 1;
+        }
+        g_editor.has_project = true;
+        module_path = g_editor.project.module_path().string();
+        rw::use_project_paths(g_editor.project);
+        g_editor.assets = std::make_unique<rw::AssetDatabase>(g_editor.project);
+        g_editor.assets->scan();
+        g_editor.project_file = g_editor.project.file();
+        g_editor.state_file = g_editor.project.root / (g_editor.project.name + ".state.json");
+    } else {
+        const fs::path dir = fs::absolute(fs::path(argv[1])).parent_path();
+        g_editor.project_file = dir / "project.json";
+        g_editor.state_file = dir / (fs::path(argv[1]).stem().string() + ".state.json");
+    }
+
+    rw::GameModule module(module_path);
     if (!module.load()) {
         std::fprintf(stderr, "rewind_editor: %s\n", module.error().c_str());
         return 1;
     }
 
-    g_editor.project_dir = fs::absolute(fs::path(argv[1])).parent_path();
-    g_editor.project_file = g_editor.project_dir / "project.json";
-    g_editor.state_file = g_editor.project_dir / (fs::path(argv[1]).stem().string() + ".state.json");
-
     rw::AppConfig config;
     for (int i = 2; i < argc; ++i) config.args.push_back(argv[i]);
     module.game()->configure(config);
+    g_editor.defaults = config;
 
-    // The project file overrides what the game asked for.
-    std::error_code ec;
-    if (fs::exists(g_editor.project_file, ec)) {
+    if (g_editor.has_project) {
+        rw::apply_project_app(g_editor.project, config);
+    } else if (fs::exists(g_editor.project_file, ec)) {
         std::string error;
         if (!rw::load_json_file(g_editor.project_file.string(), config, &error))
             std::fprintf(stderr, "rewind_editor: %s\n", error.c_str());

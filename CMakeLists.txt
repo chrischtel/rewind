@@ -23,6 +23,7 @@ include(cmake/RewindGame.cmake)
 add_subdirectory(engine)
 add_subdirectory(tools/runner)
 add_subdirectory(tools/editor)
+add_subdirectory(tools/cli)
 
 if(REWIND_BUILD_SAMPLES)
     add_subdirectory(samples/bounce)

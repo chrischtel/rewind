@@ -1,13 +1,31 @@
 #include "rewind/render/sprite.h"
 
 #include "rewind/assets/aseprite.h"
+#include "rewind/core/log.h"
 #include "rewind/core/paths.h"
+#include "rewind/project/cooked.h"
 #include "rewind/render/renderer2d.h"
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 namespace rw {
+
+namespace {
+
+bool read_all(const std::string& path, std::vector<u8>& out) {
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    out.clear();
+    u8 buffer[64 * 1024];
+    usize n;
+    while ((n = std::fread(buffer, 1, sizeof buffer, f)) > 0) out.insert(out.end(), buffer, buffer + n);
+    std::fclose(f);
+    return true;
+}
+
+} // namespace
 
 int SpriteSheet::find_tag(std::string_view name) const {
     for (usize i = 0; i < tags.size(); ++i)
@@ -42,53 +60,56 @@ SpriteSheet sprite_sheet_from_grid(Texture* texture, int frame_width, int frame_
     return sheet;
 }
 
-bool load_aseprite_sheet(Renderer2D& renderer, const std::string& path, SpriteSheet& out,
-                         std::string* error) {
+/// Load either a cooked sheet or a source .aseprite into the intermediate form.
+static bool load_sheet_data(const std::string& path, CookedSheet& out, std::string& error) {
+    const std::string file = resolve_asset_path(path);
+    std::vector<u8> bytes;
+    if (!read_all(file, bytes)) {
+        error = "could not open " + path;
+        return false;
+    }
+    if (cooked_magic(bytes) == kCookedSheetMagic) {
+        if (!decode_cooked_sheet(bytes, out)) {
+            error = "damaged cooked sheet " + path;
+            return false;
+        }
+        return true;
+    }
     AseDocument doc;
+    if (!parse_aseprite(bytes.data(), bytes.size(), doc, error)) return false;
+    out = cook_aseprite(doc, 0, true);
+    return true;
+}
+
+bool load_aseprite_sheet(Renderer2D& renderer, const std::string& path, SpriteSheet& out, std::string* error) {
+    CookedSheet data;
     std::string err;
-    if (!load_aseprite(path, doc, err)) {
+    if (!load_sheet_data(path, data, err)) {
         if (error) *error = err;
         return false;
     }
 
-    // Pack frames into a near-square grid.
-    const int count = static_cast<int>(doc.frames.size());
-    const int columns = static_cast<int>(std::ceil(std::sqrt(static_cast<double>(count))));
-    const int rows = (count + columns - 1) / columns;
-    const int atlas_w = columns * doc.width;
-    const int atlas_h = rows * doc.height;
-
-    std::vector<u8> atlas(static_cast<usize>(atlas_w) * atlas_h * 4, 0);
-    for (int i = 0; i < count; ++i) {
-        const int ox = (i % columns) * doc.width;
-        const int oy = (i / columns) * doc.height;
-        const std::vector<u8>& src = doc.frames[static_cast<usize>(i)].rgba;
-        for (int y = 0; y < doc.height; ++y) {
-            std::memcpy(&atlas[(static_cast<usize>(oy + y) * atlas_w + ox) * 4],
-                        &src[static_cast<usize>(y) * doc.width * 4], static_cast<usize>(doc.width) * 4);
-        }
-    }
-
-    Texture* texture = renderer.create_texture(path, atlas_w, atlas_h, atlas.data());
+    Texture* texture = renderer.create_texture(path, data.atlas_width, data.atlas_height, data.rgba.data());
     if (!texture) {
         if (error) *error = "could not create texture for " + path;
         return false;
     }
-    renderer.track_file(resolve_asset_path(path)); // edits in Aseprite show up in the running game
+    renderer.track_file(resolve_asset_path(path)); // edits in Aseprite (or a re-cook) show up in the running game
 
     out = SpriteSheet{};
     out.texture = texture;
-    out.frame_width = doc.width;
-    out.frame_height = doc.height;
-    for (int i = 0; i < count; ++i) {
+    out.frame_width = data.frame_width;
+    out.frame_height = data.frame_height;
+    for (usize i = 0; i < data.durations_ms.size(); ++i) {
         SpriteFrame frame;
-        frame.src = Rect{static_cast<float>((i % columns) * doc.width),
-                         static_cast<float>((i / columns) * doc.height),
-                         static_cast<float>(doc.width), static_cast<float>(doc.height)};
-        frame.duration_ms = doc.frames[static_cast<usize>(i)].duration_ms;
+        const int col = static_cast<int>(i) % data.columns;
+        const int row = static_cast<int>(i) / data.columns;
+        frame.src = Rect{static_cast<float>(col * data.frame_width), static_cast<float>(row * data.frame_height),
+                         static_cast<float>(data.frame_width), static_cast<float>(data.frame_height)};
+        frame.duration_ms = data.durations_ms[i];
         out.frames.push_back(frame);
     }
-    for (const AseTag& t : doc.tags) {
+    for (const AseTag& t : data.tags) {
         SpriteTag tag;
         tag.name = t.name;
         tag.from = t.from;
@@ -97,7 +118,7 @@ bool load_aseprite_sheet(Renderer2D& renderer, const std::string& path, SpriteSh
         tag.repeat = t.repeat;
         out.tags.push_back(std::move(tag));
     }
-    for (const AseSlice& s : doc.slices) {
+    for (const AseSlice& s : data.slices) {
         SpriteSlice slice;
         slice.name = s.name;
         slice.bounds = Rect{static_cast<float>(s.x), static_cast<float>(s.y), static_cast<float>(s.w),
@@ -106,6 +127,19 @@ bool load_aseprite_sheet(Renderer2D& renderer, const std::string& path, SpriteSh
         slice.pivot = Vec2{static_cast<float>(s.pivot_x), static_cast<float>(s.pivot_y)};
         out.slices.push_back(std::move(slice));
     }
+    return true;
+}
+
+bool load_sheet_tilemaps(const std::string& path, std::vector<AseTilemap>& tilemaps, std::vector<AseTileset>& tilesets,
+                         std::string* error) {
+    CookedSheet data;
+    std::string err;
+    if (!load_sheet_data(path, data, err)) {
+        if (error) *error = err;
+        return false;
+    }
+    tilemaps = std::move(data.tilemaps);
+    tilesets = std::move(data.tilesets);
     return true;
 }
 

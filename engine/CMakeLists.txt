@@ -51,7 +51,9 @@ endif()
 add_library(rewind SHARED
     src/app.cpp
     src/aseprite.cpp
+    src/asset_db.cpp
     src/audio.cpp
+    src/cooked.cpp
     src/debug_font.cpp
     src/file_watcher.cpp
     src/font.cpp
@@ -63,7 +65,9 @@ add_library(rewind SHARED
     src/net_udp.cpp
     src/overlay.cpp
     src/paths.cpp
+    src/png.cpp
     src/profiler.cpp
+    src/project.cpp
     src/reflect.cpp
     src/renderer2d.cpp
     src/shader_cross.cpp
