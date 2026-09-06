@@ -1,6 +1,7 @@
 #include "rewind/project/scene.h"
 
 #include "rewind/core/log.h"
+#include "rewind/core/paths.h"
 
 #include <filesystem>
 
@@ -165,8 +166,20 @@ bool save_prefab(const std::string& path, const Prefab& prefab, std::string* err
 
 bool load_prefab(const std::string& path, Prefab& out, std::string* error) {
     std::string text;
-    if (!read_text_file(path, text, error)) return false;
+    if (!read_asset_text(path, text)) {
+        if (error) *error = "could not open " + path;
+        return false;
+    }
     return prefab_from_json(text, out, error);
+}
+
+void PrefabLibrary::load_packed(const std::string& prefix) {
+    for (const std::string& name : packed_asset_names(prefix)) {
+        Prefab p;
+        std::string error;
+        if (load_prefab(name, p, &error)) add(std::move(p));
+        else RW_LOG_WARN("scene", "prefab %s: %s", name.c_str(), error.c_str());
+    }
 }
 
 // ---- scenes ------------------------------------------------------------------------------
@@ -293,7 +306,10 @@ bool save_scene(const std::string& path, const Scene& scene, std::string* error)
 
 bool load_scene(const std::string& path, Scene& out, std::string* error) {
     std::string text;
-    if (!read_text_file(path, text, error)) return false;
+    if (!read_asset_text(path, text)) {
+        if (error) *error = "could not open " + path;
+        return false;
+    }
     return scene_from_json(text, out, error);
 }
 

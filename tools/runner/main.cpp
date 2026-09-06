@@ -8,6 +8,8 @@
 
 #include <rewind/core/app.h>
 #include <rewind/core/game_module.h>
+#include <rewind/core/paths.h>
+#include <rewind/sim/text_format.h>
 #include <rewind/project/project.h>
 #include <rewind/project/scene.h>
 #include <rewind/sim/game.h>
@@ -24,7 +26,7 @@ int main(int argc, char** argv) {
 
     std::string module_path = argv[1];
     rw::Project project;
-    const bool has_project = rw::is_project_dir(argv[1]);
+    bool has_project = rw::is_project_dir(argv[1]);
     if (has_project) {
         std::string error;
         if (!rw::load_project(argv[1], project, &error)) {
@@ -37,6 +39,29 @@ int main(int argc, char** argv) {
         }
         module_path = project.module_path().string();
         rw::use_project_paths(project);
+    }
+
+    // A shipped game: every .rwpak next to the executable or the DLL is mounted,
+    // and project.json inside the first one supplies settings and the startup scene.
+    bool packed = false;
+    if (!has_project) {
+        std::error_code ec;
+        for (const std::filesystem::path dir : {std::filesystem::path(rw::executable_dir()),
+                                                std::filesystem::absolute(module_path, ec).parent_path()}) {
+            for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+                if (!entry.is_regular_file(ec) || entry.path().extension() != ".rwpak") continue;
+                std::string error;
+                if (rw::add_asset_pack(entry.path().string(), &error)) packed = true;
+                else std::fprintf(stderr, "rewind_run: %s\n", error.c_str());
+            }
+            if (packed) break;
+        }
+        std::string text;
+        if (packed && rw::read_asset_text("project.json", text)) {
+            std::string error;
+            if (rw::from_json(text, project, &error)) has_project = true;
+            else std::fprintf(stderr, "rewind_run: packed project.json: %s\n", error.c_str());
+        }
     }
 
     rw::GameModule module(module_path);
@@ -52,19 +77,21 @@ int main(int argc, char** argv) {
 
     rw::App app(config);
     if (has_project && !project.startup_scene.empty()) {
-        app.set_start_callback([&project](rw::App& a) {
+        app.set_start_callback([&project, packed](rw::App& a) {
             rw::World* world = a.game().world();
             if (!world) return;
             std::string file = project.startup_scene;
             if (file.size() < 5 || file.compare(file.size() - 5, 5, ".json") != 0) file += ".json";
             rw::Scene scene;
             std::string error;
-            if (!rw::load_scene((project.scene_dir() / file).string(), scene, &error)) {
+            const std::string scene_file = packed ? "scenes/" + file : (project.scene_dir() / file).string();
+            if (!rw::load_scene(scene_file, scene, &error)) {
                 std::fprintf(stderr, "rewind_run: startup scene: %s\n", error.c_str());
                 return;
             }
             rw::PrefabLibrary prefabs;
-            prefabs.load_dir((project.scene_dir() / "prefabs").string());
+            if (packed) prefabs.load_packed();
+            else prefabs.load_dir((project.scene_dir() / "prefabs").string());
             rw::apply_scene(scene, *world, &prefabs);
         });
     }

@@ -122,9 +122,12 @@ project settings, save games, localisation.
    panel.~~ Done: `assets/audio_decode.h`, `CookedAudio`,
    `Audio::load_sound`, `compile_glsl_file`, `AssetDatabase::save_meta`,
    `audio_test`.
-2. Archives: pack the cooked folder into one `.rwpak` with an index,
+2. ~~Archives: pack the cooked folder into one `.rwpak` with an index,
    `add_asset_root` accepts a pack, `rewind pack` in the CLI, the runtime
-   reads from it transparently.
+   reads from it transparently.~~ Done: `project/pack.h`, `add_asset_pack`
+   and `read_asset_bytes` in `core/paths.h` (all loaders use it), `rewind
+   pack`, runner auto-mounts packs and reads settings, scenes and prefabs
+   from them, `pack_test`.
 3. Project settings II: input bindings (keyboard and gamepad to Button) in
    project.json with a rebinding UI, audio settings (master and per-group
    volume), player settings file (window mode, volume, bindings) saved in

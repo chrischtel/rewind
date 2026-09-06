@@ -95,16 +95,7 @@ struct Segment {
     usize batch_count = 0;
 };
 
-bool read_file(const std::string& path, std::vector<u8>& out) {
-    std::FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return false;
-    out.clear();
-    u8 buffer[16 * 1024];
-    usize n;
-    while ((n = std::fread(buffer, 1, sizeof buffer, f)) > 0) out.insert(out.end(), buffer, buffer + n);
-    std::fclose(f);
-    return true;
-}
+bool read_file(const std::string& path, std::vector<u8>& out) { return read_asset_bytes(path, out); }
 
 std::string read_text(const std::string& path) {
     std::vector<u8> bytes;

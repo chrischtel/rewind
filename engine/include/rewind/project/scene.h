@@ -60,6 +60,8 @@ public:
 
     /// Read every *.json in `dir` as a prefab. Missing dir is fine.
     void load_dir(const std::string& dir);
+    /// Prefabs from mounted packs (names starting with `prefix`).
+    void load_packed(const std::string& prefix = "scenes/prefabs/");
 
 private:
     std::map<std::string, Prefab> prefabs_;

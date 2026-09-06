@@ -69,16 +69,9 @@ Sound* Audio::load_sound(const std::string& path) {
     std::vector<u8> bytes;
     std::string error;
     DecodedAudio decoded;
-    {
-        std::FILE* f = std::fopen(file.c_str(), "rb");
-        if (!f) {
-            RW_LOG_INFO("audio", "load_sound(%s): could not open %s", path.c_str(), file.c_str());
-            return existing;
-        }
-        u8 buffer[64 * 1024];
-        usize n;
-        while ((n = std::fread(buffer, 1, sizeof buffer, f)) > 0) bytes.insert(bytes.end(), buffer, buffer + n);
-        std::fclose(f);
+    if (!read_asset_bytes(path, bytes)) {
+        RW_LOG_INFO("audio", "load_sound(%s): could not open %s", path.c_str(), file.c_str());
+        return existing;
     }
     if (!decode_audio(bytes, decoded, error)) {
         RW_LOG_INFO("audio", "load_sound(%s): %s", path.c_str(), error.c_str());

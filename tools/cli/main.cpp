@@ -3,18 +3,21 @@
 //   rewind new <dir> [name]     create a project with the standard layout
 //   rewind info <project>       list assets, ids and cook state
 //   rewind cook <project>       cook every changed asset (--force for all)
+//   rewind pack <project> [out] cook, then pack cooked and loose assets, scenes and settings into one file
 //   rewind run <project>        run the project's game module in the runner
 //   rewind edit <project>       open the project in the editor
 
 #include <rewind/core/log.h>
 #include <rewind/core/paths.h>
 #include <rewind/project/asset_db.h>
+#include <rewind/project/pack.h>
 #include <rewind/project/project.h>
 
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -26,6 +29,7 @@ int usage() {
                  "  rewind new <dir> [name]\n"
                  "  rewind info <project dir>\n"
                  "  rewind cook <project dir> [--force]\n"
+                 "  rewind pack <project dir> [output.rwpak]\n"
                  "  rewind run <project dir> [game args...]\n"
                  "  rewind edit <project dir> [game args...]\n");
     return 2;
@@ -90,6 +94,70 @@ int cmd_cook(int argc, char** argv) {
     return report.failed ? 1 : 0;
 }
 
+bool read_all(const fs::path& path, std::vector<rw::u8>& out) {
+    std::FILE* f = std::fopen(path.string().c_str(), "rb");
+    if (!f) return false;
+    out.clear();
+    rw::u8 buffer[64 * 1024];
+    size_t n;
+    while ((n = std::fread(buffer, 1, sizeof buffer, f)) > 0) out.insert(out.end(), buffer, buffer + n);
+    std::fclose(f);
+    return true;
+}
+
+/// Everything a shipped game reads: cooked outputs, uncooked sources,
+/// scenes and prefabs, and project.json for the app settings.
+int cmd_pack(int argc, char** argv) {
+    if (argc < 3) return usage();
+    rw::Project project;
+    if (!open(argv[2], project)) return 1;
+    rw::AssetDatabase db(project);
+    db.scan();
+    const rw::CookReport report = db.cook(false);
+    if (report.failed) {
+        for (const std::string& m : report.messages)
+            if (m.rfind("FAILED", 0) == 0) std::printf("%s\n", m.c_str());
+        std::fprintf(stderr, "rewind: %u assets failed to cook, not packing\n", report.failed);
+        return 1;
+    }
+    std::vector<rw::PackInput> inputs;
+    auto add = [&](const std::string& name, const fs::path& file) {
+        rw::PackInput in;
+        in.name = name;
+        if (!read_all(file, in.bytes)) {
+            std::fprintf(stderr, "rewind: could not read %s\n", file.string().c_str());
+            return false;
+        }
+        inputs.push_back(std::move(in));
+        return true;
+    };
+    for (const rw::AssetRecord& r : db.records()) {
+        const bool ok = r.cooked.empty() ? add(r.path, r.source_file) : add(r.cooked, db.cooked_path(r));
+        if (!ok) return 1;
+    }
+    std::error_code ec;
+    if (fs::is_directory(project.scene_dir(), ec))
+        for (const auto& entry : fs::recursive_directory_iterator(project.scene_dir(), ec)) {
+            if (!entry.is_regular_file(ec) || entry.path().extension() != ".json") continue;
+            const std::string rel = fs::relative(entry.path(), project.root, ec).generic_string();
+            if (!add(rel, entry.path())) return 1;
+        }
+    if (!add("project.json", project.file())) return 1;
+
+    const fs::path out = argc > 3 ? fs::path(argv[3]) : project.build_dir() / (project.name + ".rwpak");
+    fs::create_directories(out.parent_path(), ec);
+    std::string error;
+    if (!rw::write_pack(out.string(), inputs, &error)) {
+        std::fprintf(stderr, "rewind: %s\n", error.c_str());
+        return 1;
+    }
+    size_t total = 0;
+    for (const rw::PackInput& in : inputs) total += in.bytes.size();
+    std::printf("packed %zu files (%.1f MB) into %s\n", inputs.size(), static_cast<double>(total) / (1024.0 * 1024.0),
+                out.string().c_str());
+    return 0;
+}
+
 int cmd_launch(int argc, char** argv, const char* tool) {
     if (argc < 3) return usage();
     rw::Project project;
@@ -115,6 +183,7 @@ int main(int argc, char** argv) {
     if (cmd == "new") return cmd_new(argc, argv);
     if (cmd == "info") return cmd_info(argc, argv);
     if (cmd == "cook") return cmd_cook(argc, argv);
+    if (cmd == "pack") return cmd_pack(argc, argv);
     if (cmd == "run") return cmd_launch(argc, argv, "rewind_run");
     if (cmd == "edit") return cmd_launch(argc, argv, "rewind_editor");
     return usage();

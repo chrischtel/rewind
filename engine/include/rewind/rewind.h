@@ -8,6 +8,7 @@
 #include "rewind/project/asset_db.h"
 #include "rewind/project/asset_ref.h"
 #include "rewind/project/cooked.h"
+#include "rewind/project/pack.h"
 #include "rewind/project/project.h"
 #include "rewind/project/scene.h"
 #include "rewind/audio/audio.h"

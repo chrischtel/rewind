@@ -14,16 +14,7 @@ namespace rw {
 
 namespace {
 
-bool read_all(const std::string& path, std::vector<u8>& out) {
-    std::FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return false;
-    out.clear();
-    u8 buffer[64 * 1024];
-    usize n;
-    while ((n = std::fread(buffer, 1, sizeof buffer, f)) > 0) out.insert(out.end(), buffer, buffer + n);
-    std::fclose(f);
-    return true;
-}
+bool read_all(const std::string& path, std::vector<u8>& out) { return read_asset_bytes(path, out); }
 
 } // namespace
 

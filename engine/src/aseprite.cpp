@@ -578,16 +578,11 @@ bool parse_aseprite(const u8* data, usize size, AseDocument& out, std::string& e
 }
 
 bool load_aseprite(const std::string& path, AseDocument& out, std::string& error) {
-    std::FILE* file = std::fopen(resolve_asset_path(path).c_str(), "rb");
-    if (!file) {
+    std::vector<u8> bytes;
+    if (!read_asset_bytes(path, bytes)) {
         error = "could not open " + path;
         return false;
     }
-    std::vector<u8> bytes;
-    u8 buffer[64 * 1024];
-    usize n;
-    while ((n = std::fread(buffer, 1, sizeof buffer, file)) > 0) bytes.insert(bytes.end(), buffer, buffer + n);
-    std::fclose(file);
     return parse_aseprite(bytes.data(), bytes.size(), out, error);
 }
 

@@ -527,6 +527,16 @@ build/bin/Release/rewind.exe cook mygame
   `rewind edit` open a project in the runner or the editor, which also accept
   a project folder directly. The editor's Assets panel shows the same
   database and cooks from a button.
+- **Shipping.** `rewind pack mygame` cooks what changed and writes
+  `build/mygame.rwpak`: every cooked file, every uncooked source asset,
+  the scenes and prefabs, and `project.json`. Ship the runner, the engine
+  DLL, the game DLL and the pack in one folder. The runner mounts every
+  `.rwpak` next to the executable or the DLL, takes the app settings and
+  startup scene from the packed `project.json`, and every loader reads
+  from the pack first (`read_asset_bytes` in `core/paths.h` is the one
+  call they share), so nothing else needs to be on disk. Packs are plain
+  sequential files with a name table (`project/pack.h`); mount more of
+  them with `add_asset_pack`, later mounts win.
 
 ### Asset references
 

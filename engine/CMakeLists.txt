@@ -72,6 +72,7 @@ add_library(rewind SHARED
     src/net_session.cpp
     src/net_udp.cpp
     src/overlay.cpp
+    src/pack.cpp
     src/paths.cpp
     src/png.cpp
     src/profiler.cpp
