@@ -15,6 +15,7 @@
 #include <imgui_impl_sdlgpu3.h>
 #include <stb_image.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -39,12 +40,12 @@ constexpr usize kMaxParamsBytes = 256;
 
 // Fallback for Windows builds made without glslc: the sprite shader as HLSL.
 const char kSpriteHlsl[] = R"HLSL(
-cbuffer Uniforms : register(b0, space1) { float2 scale; float2 offset; };
-struct VSIn { float2 pos : TEXCOORD0; float2 uv : TEXCOORD1; float4 color : TEXCOORD2; };
+cbuffer Uniforms : register(b0, space1) { float4x4 view_projection; };
+struct VSIn { float3 pos : TEXCOORD0; float2 uv : TEXCOORD1; float4 color : TEXCOORD2; };
 struct VSOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; float4 color : TEXCOORD1; };
 VSOut vs_main(VSIn i) {
     VSOut o;
-    o.pos = float4(i.pos * scale + offset, 0.0, 1.0);
+    o.pos = mul(view_projection, float4(i.pos, 1.0));
     o.uv = i.uv;
     o.color = i.color;
     return o;
@@ -54,15 +55,17 @@ SamplerState smp : register(s0, space2);
 float4 ps_main(VSOut i) : SV_Target { return tex.Sample(smp, i.uv) * i.color; }
 )HLSL";
 
+/// GPU vertex: matches MeshVertex byte for byte, and the attribute layout
+/// in make_pipeline().
 struct Vertex {
-    float x, y;
+    float x, y, z;
     float u, v;
     float r, g, b, a;
 };
+static_assert(sizeof(Vertex) == sizeof(MeshVertex), "Vertex and MeshVertex must match");
 
 struct Uniforms {
-    float scale_x, scale_y;
-    float offset_x, offset_y;
+    float view_projection[16]; ///< column-major, see Mat4
 };
 
 struct Batch {
@@ -76,12 +79,18 @@ struct Batch {
     u32 params_size;
     u32 first_index;
     u32 index_count;
+    i32 layer;
 };
 
+/// A stretch of drawing with one target, one view-projection and one depth
+/// setting. Each becomes a render pass.
 struct Segment {
     Texture* target; ///< nullptr = window
     bool has_clear = false;
     Color clear_color{};
+    bool custom_vp = false;
+    Mat4 vp;
+    bool depth = false;
     usize first_batch = 0;
     usize batch_count = 0;
 };
@@ -166,6 +175,13 @@ struct Renderer2D::Impl {
     SDL_GPUTextureFormat target_format = SDL_GPU_TEXTUREFORMAT_INVALID;
     SDL_GPUShader* sprite_vs = nullptr;
     SDL_GPUGraphicsPipeline* pipeline = nullptr;
+    SDL_GPUGraphicsPipeline* pipeline_depth = nullptr;
+    SDL_GPUTextureFormat depth_format = SDL_GPU_TEXTUREFORMAT_INVALID;
+    struct DepthBuffer {
+        u32 w, h;
+        SDL_GPUTexture* texture;
+    };
+    std::vector<DepthBuffer> depth_buffers; ///< one per target size, made on demand
     SDL_GPUSampler* sampler_nearest = nullptr;
     SDL_GPUSampler* sampler_linear = nullptr;
 
@@ -189,6 +205,10 @@ struct Renderer2D::Impl {
     u32 swapchain_w = 0, swapchain_h = 0;
     bool frame_active = false;
     Texture* current_target = nullptr;
+    bool current_custom_vp = false;
+    Mat4 current_vp;
+    bool current_depth = false;
+    i32 current_layer = 0;
     Material* current_material = nullptr;
     u8 current_params[kMaxParamsBytes] = {};
     u32 current_params_size = 0;
@@ -277,16 +297,51 @@ struct Renderer2D::Impl {
 #endif
     }
 
-    SDL_GPUGraphicsPipeline* make_pipeline(SDL_GPUShader* vs, SDL_GPUShader* fs, std::string& error) {
+    /// Pick a depth format the driver supports. Called once.
+    void choose_depth_format() {
+        const SDL_GPUTextureFormat candidates[] = {SDL_GPU_TEXTUREFORMAT_D32_FLOAT, SDL_GPU_TEXTUREFORMAT_D24_UNORM,
+                                                   SDL_GPU_TEXTUREFORMAT_D16_UNORM};
+        for (SDL_GPUTextureFormat f : candidates)
+            if (SDL_GPUTextureSupportsFormat(device, f, SDL_GPU_TEXTURETYPE_2D, SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET)) {
+                depth_format = f;
+                return;
+            }
+    }
+
+    SDL_GPUTexture* depth_buffer_for(u32 w, u32 h) {
+        for (const DepthBuffer& d : depth_buffers)
+            if (d.w == w && d.h == h) return d.texture;
+        SDL_GPUTextureCreateInfo info{};
+        info.type = SDL_GPU_TEXTURETYPE_2D;
+        info.format = depth_format;
+        info.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
+        info.width = w;
+        info.height = h;
+        info.layer_count_or_depth = 1;
+        info.num_levels = 1;
+        info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+        SDL_GPUTexture* t = SDL_CreateGPUTexture(device, &info);
+        if (!t) {
+            RW_LOG_ERROR("gpu", "depth buffer %ux%u: %s", w, h, SDL_GetError());
+            return nullptr;
+        }
+        SDL_SetGPUTextureName(device, t, "__depth");
+        depth_buffers.push_back({w, h, t});
+        return t;
+    }
+
+    /// Every pipeline shares one vertex layout and blend state; `depth`
+    /// adds a less-or-equal depth test with writes for depth-tested passes.
+    SDL_GPUGraphicsPipeline* make_pipeline(SDL_GPUShader* vs, SDL_GPUShader* fs, bool depth, std::string& error) {
         SDL_GPUVertexBufferDescription vb{};
         vb.slot = 0;
         vb.pitch = sizeof(Vertex);
         vb.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
 
         SDL_GPUVertexAttribute attrs[3]{};
-        attrs[0] = {0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, 0};
-        attrs[1] = {1, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, sizeof(float) * 2};
-        attrs[2] = {2, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, sizeof(float) * 4};
+        attrs[0] = {0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 0};
+        attrs[1] = {1, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, sizeof(float) * 3};
+        attrs[2] = {2, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, sizeof(float) * 5};
 
         SDL_GPUColorTargetDescription color{};
         color.format = target_format;
@@ -310,10 +365,36 @@ struct Renderer2D::Impl {
         info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
         info.target_info.color_target_descriptions = &color;
         info.target_info.num_color_targets = 1;
+        if (depth) {
+            info.target_info.has_depth_stencil_target = true;
+            info.target_info.depth_stencil_format = depth_format;
+            info.depth_stencil_state.enable_depth_test = true;
+            info.depth_stencil_state.enable_depth_write = true;
+            info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
+        }
 
         SDL_GPUGraphicsPipeline* p = SDL_CreateGPUGraphicsPipeline(device, &info);
         if (!p) error = SDL_GetError();
         return p;
+    }
+
+    /// Both variants of a pipeline for one fragment shader. Returns false
+    /// (with nothing created) on any failure.
+    bool make_pipelines(SDL_GPUShader* fs, SDL_GPUGraphicsPipeline*& plain, SDL_GPUGraphicsPipeline*& with_depth,
+                        std::string& error) {
+        SDL_GPUGraphicsPipeline* p = make_pipeline(sprite_vs, fs, false, error);
+        if (!p) return false;
+        SDL_GPUGraphicsPipeline* d = nullptr;
+        if (depth_format != SDL_GPU_TEXTUREFORMAT_INVALID) {
+            d = make_pipeline(sprite_vs, fs, true, error);
+            if (!d) {
+                SDL_ReleaseGPUGraphicsPipeline(device, p);
+                return false;
+            }
+        }
+        plain = p;
+        with_depth = d;
+        return true;
     }
 
     bool create_sprite_pipeline() {
@@ -328,9 +409,9 @@ struct Renderer2D::Impl {
             RW_LOG_ERROR("gpu", "sprite fragment shader: %s", error.c_str());
             return false;
         }
-        pipeline = make_pipeline(sprite_vs, fs, error);
+        const bool made = make_pipelines(fs, pipeline, pipeline_depth, error);
         SDL_ReleaseGPUShader(device, fs);
-        if (!pipeline) {
+        if (!made) {
             RW_LOG_ERROR("gpu", "sprite pipeline: %s", error.c_str());
             return false;
         }
@@ -386,17 +467,21 @@ struct Renderer2D::Impl {
             m.error = error;
             return false;
         }
-        SDL_GPUGraphicsPipeline* p = make_pipeline(sprite_vs, fs, error);
+        SDL_GPUGraphicsPipeline* p = nullptr;
+        SDL_GPUGraphicsPipeline* pd = nullptr;
+        const bool made = make_pipelines(fs, p, pd, error);
         SDL_ReleaseGPUShader(device, fs);
-        if (!p) {
+        if (!made) {
             m.error = error;
             return false;
         }
-        if (m.pipeline) {
+        if (m.pipeline || m.pipeline_depth) {
             SDL_WaitForGPUIdle(device);
-            SDL_ReleaseGPUGraphicsPipeline(device, m.pipeline);
+            if (m.pipeline) SDL_ReleaseGPUGraphicsPipeline(device, m.pipeline);
+            if (m.pipeline_depth) SDL_ReleaseGPUGraphicsPipeline(device, m.pipeline_depth);
         }
         m.pipeline = p;
+        m.pipeline_depth = pd;
         m.sampler_count = info.samplers;
         m.uniform_buffers = info.uniform_buffers;
         m.ok = true;
@@ -490,12 +575,19 @@ struct Renderer2D::Impl {
 
     // ---- recording --------------------------------------------------------
 
-    void begin_segment(Texture* target) {
+    /// Start a segment with the current target, matrix and depth setting.
+    /// An empty trailing segment is reused instead of stacking up.
+    void begin_segment() {
+        if (!segments.empty() && segments.back().batch_count == 0 && !segments.back().has_clear) {
+            segments.pop_back();
+        }
         Segment s;
-        s.target = target;
+        s.target = current_target;
+        s.custom_vp = current_custom_vp;
+        s.vp = current_vp;
+        s.depth = current_depth && depth_format != SDL_GPU_TEXTUREFORMAT_INVALID;
         s.first_batch = batches.size();
         segments.push_back(s);
-        current_target = target;
     }
 
     void ensure_buffers() {
@@ -575,15 +667,35 @@ struct Renderer2D::Impl {
             }
             if (first_use) cleared.push_back(texture);
 
-            SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &target, 1, nullptr);
+            // Depth-tested segments get a depth buffer, cleared at the start of the pass.
+            SDL_GPUDepthStencilTargetInfo depth{};
+            SDL_GPUTexture* depth_tex = seg.depth ? depth_buffer_for(w, h) : nullptr;
+            if (depth_tex) {
+                depth.texture = depth_tex;
+                depth.clear_depth = 1.0f;
+                depth.load_op = SDL_GPU_LOADOP_CLEAR;
+                depth.store_op = SDL_GPU_STOREOP_DONT_CARE;
+                depth.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
+                depth.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+                depth.cycle = true;
+            }
+
+            SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &target, 1, depth_tex ? &depth : nullptr);
             if (seg.batch_count > 0) {
                 SDL_GPUBufferBinding vbind{vertex_buffer, 0};
                 SDL_BindGPUVertexBuffers(pass, 0, &vbind, 1);
                 SDL_GPUBufferBinding ibind{index_buffer, 0};
                 SDL_BindGPUIndexBuffer(pass, &ibind, SDL_GPU_INDEXELEMENTSIZE_32BIT);
 
-                const Uniforms u{2.0f / static_cast<float>(w), -2.0f / static_cast<float>(h), -1.0f, 1.0f};
+                const Mat4 vp = seg.custom_vp ? seg.vp : Mat4::ortho_pixels(static_cast<float>(w), static_cast<float>(h));
+                Uniforms u{};
+                std::memcpy(u.view_projection, vp.m, sizeof u.view_projection);
                 SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof u);
+
+                // Draw layers: lower first, recording order within a layer.
+                std::stable_sort(batches.begin() + static_cast<std::ptrdiff_t>(seg.first_batch),
+                                 batches.begin() + static_cast<std::ptrdiff_t>(seg.first_batch + seg.batch_count),
+                                 [](const Batch& a, const Batch& b) { return a.layer < b.layer; });
 
                 SDL_GPUGraphicsPipeline* bound = nullptr;
                 for (usize b = seg.first_batch; b < seg.first_batch + seg.batch_count; ++b) {
@@ -617,6 +729,9 @@ struct Renderer2D::Impl {
         swapchain = nullptr;
         frame_active = false;
         current_target = nullptr;
+        current_custom_vp = false;
+        current_depth = false;
+        current_layer = 0;
         current_material = nullptr;
         current_params_size = 0;
         for (Texture*& t : extra) t = nullptr;
@@ -627,7 +742,8 @@ struct Renderer2D::Impl {
     Batch& batch_for(const Texture& t) {
         SDL_GPUSampler* sampler = sampler_for(t);
         Material* m = current_material && current_material->ok ? current_material : nullptr;
-        SDL_GPUGraphicsPipeline* pipe = m ? m->pipeline : pipeline;
+        const bool depth = segments.back().depth;
+        SDL_GPUGraphicsPipeline* pipe = m ? (depth ? m->pipeline_depth : m->pipeline) : (depth ? pipeline_depth : pipeline);
         const u32 extra_count = m ? m->sampler_count - 1 : 0;
         const u32 params_size = m && m->uniform_buffers > 0 ? current_params_size : 0;
 
@@ -643,7 +759,8 @@ struct Renderer2D::Impl {
         if (seg.batch_count > 0) {
             Batch& last = batches.back();
             bool same = last.pipeline == pipe && last.texture == t.handle && last.sampler == sampler &&
-                        last.extra_count == extra_count && last.params_size == params_size;
+                        last.extra_count == extra_count && last.params_size == params_size &&
+                        last.layer == current_layer;
             for (u32 i = 0; same && i < extra_count; ++i)
                 same = last.extra_tex[i] == ex_tex[i] && last.extra_smp[i] == ex_smp[i];
             if (same && params_size > 0)
@@ -665,6 +782,7 @@ struct Renderer2D::Impl {
         if (params_size > 0) params_blob.insert(params_blob.end(), current_params, current_params + params_size);
         b.first_index = static_cast<u32>(indices.size());
         b.index_count = 0;
+        b.layer = current_layer;
         batches.push_back(b);
         ++seg.batch_count;
         return batches.back();
@@ -676,10 +794,10 @@ struct Renderer2D::Impl {
         Batch& batch = batch_for(t);
         const u32 base = static_cast<u32>(vertices.size());
         const float r = c.r / 255.0f, g = c.g / 255.0f, b = c.b / 255.0f, a = c.a / 255.0f;
-        vertices.push_back(Vertex{px[0], py[0], u0, v0, r, g, b, a});
-        vertices.push_back(Vertex{px[1], py[1], u1, v0, r, g, b, a});
-        vertices.push_back(Vertex{px[2], py[2], u1, v1, r, g, b, a});
-        vertices.push_back(Vertex{px[3], py[3], u0, v1, r, g, b, a});
+        vertices.push_back(Vertex{px[0], py[0], 0, u0, v0, r, g, b, a});
+        vertices.push_back(Vertex{px[1], py[1], 0, u1, v0, r, g, b, a});
+        vertices.push_back(Vertex{px[2], py[2], 0, u1, v1, r, g, b, a});
+        vertices.push_back(Vertex{px[3], py[3], 0, u0, v1, r, g, b, a});
         const u32 quad[6] = {base, base + 1, base + 2, base, base + 2, base + 3};
         indices.insert(indices.end(), quad, quad + 6);
         batch.index_count += 6;
@@ -700,6 +818,9 @@ Renderer2D::Renderer2D(SDL_GPUDevice* device, SDL_Window* window) : impl_(std::m
     impl_->device = device;
     impl_->window = window;
     impl_->target_format = SDL_GetGPUSwapchainTextureFormat(device, window);
+    impl_->choose_depth_format();
+    if (impl_->depth_format == SDL_GPU_TEXTUREFORMAT_INVALID)
+        RW_LOG_WARN("gpu", "no depth format supported; set_depth_test() will be ignored");
 
     if (!impl_->create_samplers() || !impl_->create_sprite_pipeline()) return;
 
@@ -719,12 +840,16 @@ Renderer2D::~Renderer2D() {
     SDL_WaitForGPUIdle(im.device);
     for (auto& [name, t] : im.textures)
         if (t->handle) SDL_ReleaseGPUTexture(im.device, t->handle);
-    for (auto& [name, m] : im.materials)
+    for (auto& [name, m] : im.materials) {
         if (m->pipeline) SDL_ReleaseGPUGraphicsPipeline(im.device, m->pipeline);
+        if (m->pipeline_depth) SDL_ReleaseGPUGraphicsPipeline(im.device, m->pipeline_depth);
+    }
+    for (const Impl::DepthBuffer& d : im.depth_buffers) SDL_ReleaseGPUTexture(im.device, d.texture);
     if (im.vertex_buffer) SDL_ReleaseGPUBuffer(im.device, im.vertex_buffer);
     if (im.index_buffer) SDL_ReleaseGPUBuffer(im.device, im.index_buffer);
     if (im.transfer) SDL_ReleaseGPUTransferBuffer(im.device, im.transfer);
     if (im.pipeline) SDL_ReleaseGPUGraphicsPipeline(im.device, im.pipeline);
+    if (im.pipeline_depth) SDL_ReleaseGPUGraphicsPipeline(im.device, im.pipeline_depth);
     if (im.sprite_vs) SDL_ReleaseGPUShader(im.device, im.sprite_vs);
     if (im.sampler_nearest) SDL_ReleaseGPUSampler(im.device, im.sampler_nearest);
     if (im.sampler_linear) SDL_ReleaseGPUSampler(im.device, im.sampler_linear);
@@ -762,7 +887,7 @@ bool Renderer2D::begin_frame() {
         return false;
     }
     im.frame_active = true;
-    im.begin_segment(nullptr);
+    im.begin_segment();
     return true;
 }
 
@@ -774,7 +899,73 @@ void Renderer2D::set_target(Texture* target) {
         target = nullptr;
     }
     if (im.current_target == target && !im.segments.empty()) return;
-    im.begin_segment(target);
+    im.current_target = target;
+    im.begin_segment();
+}
+
+void Renderer2D::set_view_projection(const Mat4* matrix) {
+    Impl& im = *impl_;
+    if (!im.frame_active) return;
+    const bool custom = matrix != nullptr;
+    if (custom == im.current_custom_vp && (!custom || std::memcmp(matrix->m, im.current_vp.m, sizeof matrix->m) == 0))
+        return;
+    im.current_custom_vp = custom;
+    if (custom) im.current_vp = *matrix;
+    im.begin_segment();
+}
+
+void Renderer2D::set_depth_test(bool enabled) {
+    Impl& im = *impl_;
+    if (!im.frame_active) return;
+    if (enabled && im.depth_format == SDL_GPU_TEXTUREFORMAT_INVALID) enabled = false;
+    if (enabled == im.current_depth) return;
+    im.current_depth = enabled;
+    im.begin_segment();
+}
+
+void Renderer2D::set_layer(i32 layer) { impl_->current_layer = layer; }
+i32 Renderer2D::layer() const { return impl_->current_layer; }
+
+void Renderer2D::draw_mesh(const Mesh& mesh, const Texture* texture, const Mat4* transform, bool world) {
+    Impl& im = *impl_;
+    if (!im.frame_active || mesh.indices.empty() || mesh.vertices.empty()) return;
+    const Texture& t = texture ? *texture : *im.white;
+    Batch& batch = im.batch_for(t);
+    const u32 base = static_cast<u32>(im.vertices.size());
+    im.vertices.reserve(im.vertices.size() + mesh.vertices.size());
+    for (const MeshVertex& v : mesh.vertices) {
+        Vec3 p = transform ? transform->transform_point(v.pos) : v.pos;
+        if (world) {
+            p.x = sx(p.x);
+            p.y = sy(p.y);
+        }
+        im.vertices.push_back(Vertex{p.x, p.y, p.z, v.uv.x, v.uv.y, v.r, v.g, v.b, v.a});
+    }
+    const u32 vcount = static_cast<u32>(mesh.vertices.size());
+    im.indices.reserve(im.indices.size() + mesh.indices.size());
+    u32 emitted = 0;
+    for (usize i = 0; i + 2 < mesh.indices.size(); i += 3) {
+        const u32 a = mesh.indices[i], b = mesh.indices[i + 1], c = mesh.indices[i + 2];
+        if (a >= vcount || b >= vcount || c >= vcount) continue; // skip broken triangles instead of reading garbage
+        im.indices.push_back(base + a);
+        im.indices.push_back(base + b);
+        im.indices.push_back(base + c);
+        emitted += 3;
+    }
+    batch.index_count += emitted;
+    im.stat_vertices += static_cast<int>(vcount);
+}
+
+void Renderer2D::draw_polyline(const std::vector<Vec2>& points, const StrokeStyle& style, const Texture* texture) {
+    Mesh mesh;
+    build_polyline(points, style, mesh);
+    draw_mesh(mesh, texture, nullptr, true);
+}
+
+void Renderer2D::fill_polygon(const std::vector<Vec2>& points, Color c, const Texture* texture, float uv_scale) {
+    Mesh mesh;
+    build_polygon(points, c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, c.a / 255.0f, mesh, uv_scale);
+    draw_mesh(mesh, texture, nullptr, true);
 }
 
 void Renderer2D::end_frame(ImDrawData* overlay) {
@@ -845,10 +1036,10 @@ void Renderer2D::fill_circle(float cx, float cy, float radius, Color c, int segm
     Batch& batch = im.batch_for(*im.white);
     const u32 base = static_cast<u32>(im.vertices.size());
     const float cr = c.r / 255.0f, cg = c.g / 255.0f, cb = c.b / 255.0f, ca = c.a / 255.0f;
-    im.vertices.push_back(Vertex{ox, oy, 0.5f, 0.5f, cr, cg, cb, ca});
+    im.vertices.push_back(Vertex{ox, oy, 0, 0.5f, 0.5f, cr, cg, cb, ca});
     for (int i = 0; i < segments; ++i) {
         const float angle = static_cast<float>(i) / static_cast<float>(segments) * 6.28318530718f;
-        im.vertices.push_back(Vertex{ox + std::cos(angle) * r, oy + std::sin(angle) * r, 0.5f, 0.5f, cr, cg, cb, ca});
+        im.vertices.push_back(Vertex{ox + std::cos(angle) * r, oy + std::sin(angle) * r, 0, 0.5f, 0.5f, cr, cg, cb, ca});
     }
     for (int i = 0; i < segments; ++i) {
         im.indices.push_back(base);

@@ -53,6 +53,9 @@ It is not for 3D games, and not for people who want a no-code workflow.
   sprite pipeline; a typical frame is a handful of draw calls.
 - Sprites, sprite sheets, animation, tilemaps with flips, shapes, render
   targets, pixel mode with integer scaling, TrueType text with kerning.
+- Meshes: your own triangle lists with texture and vertex colour, thick
+  polylines with joins, caps, dashes and UVs along the length, polygons,
+  draw layers, 4x4 transforms and depth-tested passes ready for 3D.
 - Materials: your own GLSL fragment shaders with extra textures and
   parameters, one source for both backends.
 - Native Aseprite import: layers, tags, slices, tilesets, tilemap layers.

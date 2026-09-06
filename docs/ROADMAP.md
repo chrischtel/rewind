@@ -51,11 +51,11 @@ edits.
 Rendering, geometry, spatial queries, editor interaction and simulation
 building blocks that any game uses. Engine-level only, never game-specific.
 
-1. Mesh drawing (triangle lists with texture, UVs, vertex color), polyline
+1. ~~Mesh drawing (triangle lists with texture, UVs, vertex color), polyline
    and ribbon builders with joins, caps and dashes, draw layers and sort keys.
    Built 3D-ready from the start: positions with z, 4x4 transforms, optional
-   depth-tested passes, so the later 3D and isometric work extends it
-   instead of replacing it.
+   depth-tested passes.~~ Done: `render/mesh.h`, `Mat4`, `draw_mesh`,
+   `set_layer`, `set_view_projection`, `set_depth_test`, `geometry_test`.
 2. Curves: Bezier and Catmull-Rom, arcs, arc length, tangents, offset,
    split and join, closest point. Polygon triangulation and offset.
 3. Camera with smooth zoom and pan, level-of-detail hint, spatial index

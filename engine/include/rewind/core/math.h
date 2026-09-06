@@ -35,6 +35,41 @@ struct Rect {
     bool contains(float px, float py) const { return px >= x && py >= y && px < x + w && py < y + h; }
 };
 
+struct Vec3 {
+    float x = 0;
+    float y = 0;
+    float z = 0;
+
+    void reflect(Visitor& v) {
+        v.field("x", x);
+        v.field("y", y);
+        v.field("z", z);
+    }
+};
+
+/// 4x4 matrix, column-major in memory (m[col * 4 + row]), which is what
+/// the shaders read. Rendering uses it for the view-projection and for
+/// optional per-mesh transforms; 2D games never have to touch it.
+struct Mat4 {
+    float m[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+
+    static Mat4 identity() { return Mat4{}; }
+    static Mat4 translation(float x, float y, float z = 0);
+    static Mat4 scaling(float x, float y, float z = 1);
+    static Mat4 rotation_z(float radians);
+    /// Pixel space to clip space: (0,0) top-left, (w,h) bottom-right, z in [-1, 1] maps to depth.
+    static Mat4 ortho_pixels(float width, float height);
+    static Mat4 ortho(float left, float right, float bottom, float top, float near, float far);
+    static Mat4 perspective(float fov_y_radians, float aspect, float near, float far);
+    static Mat4 look_at(Vec3 eye, Vec3 target, Vec3 up);
+
+    Mat4 operator*(const Mat4& rhs) const;
+    Vec3 transform_point(Vec3 p) const;
+    Vec3 transform_direction(Vec3 d) const;
+    float& at(int row, int col) { return m[col * 4 + row]; }
+    float at(int row, int col) const { return m[col * 4 + row]; }
+};
+
 inline bool overlaps(const Rect& a, const Rect& b) {
     return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 }

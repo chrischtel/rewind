@@ -30,6 +30,7 @@ struct Material {
     u32 uniform_buffers = 0; ///< 0 or 1: whether Params exists
     u32 generation = 0;      ///< bumps on every successful (re)load
     SDL_GPUGraphicsPipeline* pipeline = nullptr;
+    SDL_GPUGraphicsPipeline* pipeline_depth = nullptr; ///< same shader, depth test on (see Renderer2D::set_depth_test)
 };
 
 } // namespace rw

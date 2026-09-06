@@ -178,6 +178,42 @@ uploaded once per frame, and one render pass per target.
 - Render targets are ordinary textures: `create_render_target()` then
   `set_target()`. Pixel mode is built on this.
 
+### Meshes, lines and polygons
+
+Everything the renderer draws is a triangle list of `MeshVertex` (position
+with z, uv, colour), and you can draw your own:
+
+```cpp
+Mesh road;                                   // build once, or every frame
+StrokeStyle style;
+style.width = 36;
+style.join = LineJoin::Round;                // Miter (with miter_limit), Bevel, Round
+style.cap = LineCap::Round;                  // Butt, Square, Round
+style.dash = 24; style.gap = 18;             // 0 = solid; dash_offset scrolls the pattern
+style.uv_per_unit = 1.0f / 64;               // u along the length, v across: a texture repeats along the line
+build_polyline(points, style, road);         // appends; closed = true makes a loop
+build_polygon(outline, r, g, b, a, road);    // ear clipping, simple polygons
+build_circle(center, 20, 12, 48, r, g, b, a, road); // disc or ring
+renderer.draw_mesh(road, texture);           // world space, current material, vertex colour times texture
+renderer.draw_polyline(points, style);       // the one-liners build and draw in one go
+renderer.fill_polygon(outline, color);
+```
+
+`draw_mesh` takes an optional `Mat4` transform; `Mat4` has translation,
+scaling, rotation, ortho, perspective and look-at, column-major like the
+shaders. The vertex shader multiplies every position by a view-projection
+matrix: pixel space by default, or your own through
+`set_view_projection(&matrix)`, which is the 3D path. `set_depth_test(true)`
+switches to depth-tested drawing (less-or-equal, with writes, freshly
+cleared depth buffer per switch). Both are reset by `begin_frame()`.
+
+Draw layers: `set_layer(n)` tags everything drawn afterwards. Within a
+render target lower layers are drawn first and the recording order is kept
+inside a layer, so a game can draw ground, objects and UI in whatever
+order its code finds convenient. Layers are sorted per frame; batches do
+not merge across layers. The bounce sample draws its road at layer -1
+after the balls and still ends up underneath them.
+
 ### Materials
 
 A material is a GLSL fragment shader of your own, applied to any sprites

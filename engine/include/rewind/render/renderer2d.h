@@ -2,10 +2,12 @@
 
 #include "rewind/core/math.h"
 #include "rewind/core/types.h"
+#include "rewind/render/mesh.h"
 #include "rewind/render/texture.h"
 
 #include <memory>
 #include <string>
+#include <vector>
 
 struct SDL_GPUDevice;
 struct SDL_Window;
@@ -92,6 +94,43 @@ public:
     /// Built-in 5x7 pixel font, 6 px advance, 8 px line height, times `scale`.
     /// Screen space, not affected by the camera.
     void draw_text(float x, float y, const char* text, Color c, int scale = 1);
+
+    // ---- meshes -------------------------------------------------------------
+    /// Draw a triangle list with the current material. Vertex colours
+    /// multiply the texture (a 1x1 white one when `texture` is null).
+    /// `transform` is applied first, then, with `world`, the camera. z is
+    /// kept: it only matters with set_depth_test() or a custom matrix.
+    void draw_mesh(const Mesh& mesh, const Texture* texture = nullptr, const Mat4* transform = nullptr,
+                   bool world = true);
+
+    /// Thick line in world space, see StrokeStyle for joins, caps, dashes and
+    /// UVs along the length. Builds a mesh every call; for static geometry
+    /// keep a Mesh from build_polyline() and draw_mesh() it instead.
+    void draw_polyline(const std::vector<Vec2>& points, const StrokeStyle& style, const Texture* texture = nullptr);
+
+    /// Filled simple polygon in world space (ear clipping, no holes).
+    void fill_polygon(const std::vector<Vec2>& points, Color c, const Texture* texture = nullptr,
+                      float uv_scale = 0);
+
+    // ---- layers, matrices, depth -------------------------------------------
+    /// Draw layer for everything drawn from now on. Within a render target,
+    /// lower layers are drawn first, and drawing order is kept inside a
+    /// layer. Reset to 0 by begin_frame(). Lets a game draw ground, objects
+    /// and UI in any code order.
+    void set_layer(i32 layer);
+    i32 layer() const;
+
+    /// Replace the pixel-space projection for subsequent drawing with your
+    /// own view-projection (column-major, see Mat4::perspective/look_at).
+    /// nullptr restores the default. Shapes and sprites still go through the
+    /// 2D camera; meshes get the matrix directly, which is the 3D path.
+    void set_view_projection(const Mat4* matrix);
+
+    /// Depth-tested drawing (less-or-equal, with writes) for subsequent
+    /// draws. Each switch to true starts a freshly cleared depth buffer.
+    /// Ignored, with a warning at startup, when the GPU offers no depth
+    /// format. Reset by begin_frame().
+    void set_depth_test(bool enabled);
 
     // ---- fonts --------------------------------------------------------------
     /// Load a TrueType or OpenType file at a pixel size. Cached by path and

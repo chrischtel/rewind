@@ -16,6 +16,7 @@
 
 #include <imgui.h>
 
+#include <cmath>
 #include <vector>
 
 using namespace rw;
@@ -74,6 +75,7 @@ public:
     void tick(const TickContext& ctx) override {
         const float dt = ctx.dt;
         const InputFrame& in = ctx.input;
+        tick_ = ctx.tick;
 
         // Player movement from the abstract axes, never from the keyboard.
         player_x_ += static_cast<float>(in.axis_x) / 32767.0f * kPlayerSpeed * dt;
@@ -132,12 +134,44 @@ public:
     void render(Renderer2D& r, float /*alpha*/) override {
         r.clear(kBackground);
 
+        // Draw layers: the balls are recorded first but the track (layer -1)
+        // still ends up underneath them.
         world_.each<Transform, Shape>([&](Entity, Transform& t, Shape& s) {
             r.fill_circle(t.x, t.y, s.radius, kPalette[s.color % kPaletteSize]);
         });
 
+        r.set_layer(-1);
+        StrokeStyle road;
+        road.width = 36;
+        road.join = LineJoin::Round;
+        road.cap = LineCap::Round;
+        road.r = 0.16f, road.g = 0.16f, road.b = 0.22f;
+        const std::vector<Vec2> track = {{120, 140}, {420, 90}, {700, 260}, {1000, 120}, {1160, 400}, {900, 620}, {300, 560}};
+        r.draw_polyline(track, road);
+        StrokeStyle marking;
+        marking.width = 3;
+        marking.dash = 24;
+        marking.gap = 18;
+        marking.dash_offset = -static_cast<float>(tick_ % 42); // scrolls the markings along the road
+        marking.r = 0.9f, marking.g = 0.85f, marking.b = 0.5f;
+        r.draw_polyline(track, marking);
+        r.fill_polygon({{60, 660}, {200, 640}, {230, 700}, {150, 690}, {100, 710}}, rgba(75, 192, 192, 80));
+        r.set_layer(0);
+
         r.fill_rect(player_x_, player_y_, kPlayerSize, kPlayerSize, rgb(240, 240, 240));
         r.draw_rect(player_x_, player_y_, kPlayerSize, kPlayerSize, rgb(120, 200, 255));
+        StrokeStyle halo;
+        halo.width = 2;
+        halo.dash = 6;
+        halo.gap = 6;
+        halo.closed = true;
+        halo.r = 0.47f, halo.g = 0.78f, halo.b = 1.0f;
+        std::vector<Vec2> ring;
+        for (int i = 0; i < 40; ++i) {
+            const float ang = static_cast<float>(i) / 40 * 6.2831853f;
+            ring.push_back({player_x_ + kPlayerSize / 2 + std::cos(ang) * 44, player_y_ + kPlayerSize / 2 + std::sin(ang) * 44});
+        }
+        r.draw_polyline(ring, halo);
 
         r.draw_text(12, kHeight - 60, "arrows / WASD: move   Z: launch a ball   X: pop one", rgb(160, 160, 180));
         r.draw_text(12, kHeight - 44, "hold F4: rewind   F2: pause   F3: step   F5: replay + verify", rgb(160, 160, 180));
@@ -202,6 +236,7 @@ private:
     Rng rng_;
     InputFrame prev_input_;
     u32 bounces_ = 0;
+    u64 tick_ = 0; // for the animated road markings only, not saved on purpose
 
     // Debug knob that is NOT part of the state, to demonstrate the desync detector.
     float gravity_ = 600.0f;

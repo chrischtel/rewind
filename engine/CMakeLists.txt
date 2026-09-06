@@ -60,6 +60,8 @@ add_library(rewind SHARED
     src/game_module.cpp
     src/inspector.cpp
     src/log.cpp
+    src/math.cpp
+    src/mesh.cpp
     src/net_loopback.cpp
     src/net_session.cpp
     src/net_udp.cpp
