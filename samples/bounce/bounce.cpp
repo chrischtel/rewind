@@ -146,15 +146,24 @@ public:
         road.join = LineJoin::Round;
         road.cap = LineCap::Round;
         road.r = 0.16f, road.g = 0.16f, road.b = 0.22f;
-        const std::vector<Vec2> track = {{120, 140}, {420, 90}, {700, 260}, {1000, 120}, {1160, 400}, {900, 620}, {300, 560}};
-        r.draw_polyline(track, road);
+        // A smooth closed road through a few points (core/curve.h), with
+        // edge lines offset from it and animated dashes down the middle.
+        const Path track = Path::from_catmull_rom(
+            {{120, 140}, {420, 90}, {700, 260}, {1000, 120}, {1160, 400}, {900, 620}, {300, 560}}, true);
+        r.draw_path(track, road);
+        StrokeStyle edge;
+        edge.width = 2;
+        edge.closed = true;
+        edge.r = 0.6f, edge.g = 0.6f, edge.b = 0.7f;
+        r.draw_polyline(track.offset(16), edge);
+        r.draw_polyline(track.offset(-16), edge);
         StrokeStyle marking;
         marking.width = 3;
         marking.dash = 24;
         marking.gap = 18;
         marking.dash_offset = -static_cast<float>(tick_ % 42); // scrolls the markings along the road
         marking.r = 0.9f, marking.g = 0.85f, marking.b = 0.5f;
-        r.draw_polyline(track, marking);
+        r.draw_path(track, marking);
         r.fill_polygon({{60, 660}, {200, 640}, {230, 700}, {150, 690}, {100, 710}}, rgba(75, 192, 192, 80));
         r.set_layer(0);
 

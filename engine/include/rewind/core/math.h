@@ -70,6 +70,35 @@ struct Mat4 {
     float at(int row, int col) const { return m[col * 4 + row]; }
 };
 
+// ---- Vec2 arithmetic ------------------------------------------------------------------
+
+inline Vec2 operator+(Vec2 a, Vec2 b) { return {a.x + b.x, a.y + b.y}; }
+inline Vec2 operator-(Vec2 a, Vec2 b) { return {a.x - b.x, a.y - b.y}; }
+inline Vec2 operator-(Vec2 a) { return {-a.x, -a.y}; }
+inline Vec2 operator*(Vec2 a, float s) { return {a.x * s, a.y * s}; }
+inline Vec2 operator*(float s, Vec2 a) { return {a.x * s, a.y * s}; }
+inline Vec2 operator/(Vec2 a, float s) { return {a.x / s, a.y / s}; }
+inline Vec2& operator+=(Vec2& a, Vec2 b) { a = a + b; return a; }
+inline Vec2& operator-=(Vec2& a, Vec2 b) { a = a - b; return a; }
+inline Vec2& operator*=(Vec2& a, float s) { a = a * s; return a; }
+inline bool operator==(Vec2 a, Vec2 b) { return a.x == b.x && a.y == b.y; }
+inline bool operator!=(Vec2 a, Vec2 b) { return !(a == b); }
+
+inline float dot(Vec2 a, Vec2 b) { return a.x * b.x + a.y * b.y; }
+/// 2D cross product (z of the 3D cross): positive when b is counter-clockwise from a in y-up space.
+inline float cross(Vec2 a, Vec2 b) { return a.x * b.y - a.y * b.x; }
+inline float length_sq(Vec2 a) { return a.x * a.x + a.y * a.y; }
+float length(Vec2 a);
+float distance(Vec2 a, Vec2 b);
+/// Unit vector, or (1, 0) for a zero vector.
+Vec2 normalize(Vec2 a);
+/// Rotated 90 degrees: (-y, x). In y-down screen space that is the right-hand side of travel.
+inline Vec2 perp(Vec2 a) { return {-a.y, a.x}; }
+inline Vec2 lerp(Vec2 a, Vec2 b, float t) { return a + (b - a) * t; }
+Vec2 rotate(Vec2 v, float radians);
+Vec2 from_angle(float radians);
+float angle_of(Vec2 v);
+
 inline bool overlaps(const Rect& a, const Rect& b) {
     return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 }

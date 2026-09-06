@@ -56,6 +56,9 @@ It is not for 3D games, and not for people who want a no-code workflow.
 - Meshes: your own triangle lists with texture and vertex colour, thick
   polylines with joins, caps, dashes and UVs along the length, polygons,
   draw layers, 4x4 transforms and depth-tested passes ready for 3D.
+- Curves: Bezier paths, arcs and Catmull-Rom splines with arc-length
+  sampling, closest point, split, join, offset and flattening; polygon
+  offset, simplification, hull and intersection helpers.
 - Materials: your own GLSL fragment shaders with extra textures and
   parameters, one source for both backends.
 - Native Aseprite import: layers, tags, slices, tilesets, tilemap layers.

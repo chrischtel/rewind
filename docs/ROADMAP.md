@@ -56,8 +56,10 @@ building blocks that any game uses. Engine-level only, never game-specific.
    Built 3D-ready from the start: positions with z, 4x4 transforms, optional
    depth-tested passes.~~ Done: `render/mesh.h`, `Mat4`, `draw_mesh`,
    `set_layer`, `set_view_projection`, `set_depth_test`, `geometry_test`.
-2. Curves: Bezier and Catmull-Rom, arcs, arc length, tangents, offset,
-   split and join, closest point. Polygon triangulation and offset.
+2. ~~Curves: Bezier and Catmull-Rom, arcs, arc length, tangents, offset,
+   split and join, closest point. Polygon triangulation and offset.~~
+   Done: `core/curve.h` (CubicBezier, Arc, Path, PathSampler, polyline and
+   polygon helpers), `draw_path`/`fill_path`, `curve_test`.
 3. Camera with smooth zoom and pan, level-of-detail hint, spatial index
    (grid or quadtree) for proximity queries.
 4. Editor gizmos: draggable handles, tangent handles, snapping; property

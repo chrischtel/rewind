@@ -4,6 +4,19 @@
 
 namespace rw {
 
+float length(Vec2 a) { return std::sqrt(a.x * a.x + a.y * a.y); }
+float distance(Vec2 a, Vec2 b) { return length(a - b); }
+Vec2 normalize(Vec2 a) {
+    const float l = length(a);
+    return l > 1e-8f ? a / l : Vec2{1, 0};
+}
+Vec2 rotate(Vec2 v, float radians) {
+    const float c = std::cos(radians), s = std::sin(radians);
+    return {v.x * c - v.y * s, v.x * s + v.y * c};
+}
+Vec2 from_angle(float radians) { return {std::cos(radians), std::sin(radians)}; }
+float angle_of(Vec2 v) { return std::atan2(v.y, v.x); }
+
 Mat4 Mat4::translation(float x, float y, float z) {
     Mat4 r;
     r.at(0, 3) = x;

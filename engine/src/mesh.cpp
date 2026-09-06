@@ -30,18 +30,9 @@ namespace {
 constexpr float kPi = 3.14159265f;
 constexpr float kTau = 6.2831853f;
 
-Vec2 sub(Vec2 a, Vec2 b) { return {a.x - b.x, a.y - b.y}; }
-Vec2 add(Vec2 a, Vec2 b) { return {a.x + b.x, a.y + b.y}; }
-Vec2 mul(Vec2 a, float s) { return {a.x * s, a.y * s}; }
-float dot(Vec2 a, Vec2 b) { return a.x * b.x + a.y * b.y; }
-float cross(Vec2 a, Vec2 b) { return a.x * b.y - a.y * b.x; }
-float length(Vec2 a) { return std::sqrt(dot(a, a)); }
-Vec2 normalize(Vec2 a) {
-    const float l = length(a);
-    return l > 1e-6f ? mul(a, 1.0f / l) : Vec2{1, 0};
-}
-/// Left-hand normal (in y-down screen space it points to the visual right of travel).
-Vec2 perp(Vec2 a) { return {-a.y, a.x}; }
+Vec2 sub(Vec2 a, Vec2 b) { return a - b; }
+Vec2 add(Vec2 a, Vec2 b) { return a + b; }
+Vec2 mul(Vec2 a, float s) { return a * s; }
 
 /// Split a polyline into dash pieces along its length. The pattern starts
 /// `dash_offset` units in, so animating the offset scrolls the dashes.
@@ -238,8 +229,8 @@ void build_polyline(const std::vector<Vec2>& points, const StrokeStyle& style, M
     // Drop consecutive duplicates; they break direction math.
     std::vector<Vec2> pts;
     for (const Vec2& p : points)
-        if (pts.empty() || length(sub(p, pts.back())) > 1e-6f) pts.push_back(p);
-    if (style.closed && pts.size() > 2 && length(sub(pts.front(), pts.back())) <= 1e-6f) pts.pop_back();
+        if (pts.empty() || length(sub(p, pts.back())) > 1e-4f) pts.push_back(p);
+    if (style.closed && pts.size() > 2 && length(sub(pts.front(), pts.back())) <= 1e-4f) pts.pop_back();
     if (pts.size() < 2) return;
 
     const bool closed = style.closed && pts.size() > 2;

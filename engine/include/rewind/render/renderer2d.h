@@ -1,5 +1,6 @@
 #pragma once
 
+#include "rewind/core/curve.h"
 #include "rewind/core/math.h"
 #include "rewind/core/types.h"
 #include "rewind/render/mesh.h"
@@ -111,6 +112,14 @@ public:
     /// Filled simple polygon in world space (ear clipping, no holes).
     void fill_polygon(const std::vector<Vec2>& points, Color c, const Texture* texture = nullptr,
                       float uv_scale = 0);
+
+    /// Stroke a Path (core/curve.h), flattened to within `tolerance` world units.
+    void draw_path(const Path& path, const StrokeStyle& style, float tolerance = 0.25f,
+                   const Texture* texture = nullptr);
+
+    /// Fill a closed Path.
+    void fill_path(const Path& path, Color c, float tolerance = 0.25f, const Texture* texture = nullptr,
+                   float uv_scale = 0);
 
     // ---- layers, matrices, depth -------------------------------------------
     /// Draw layer for everything drawn from now on. Within a render target,

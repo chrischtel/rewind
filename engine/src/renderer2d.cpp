@@ -968,6 +968,20 @@ void Renderer2D::fill_polygon(const std::vector<Vec2>& points, Color c, const Te
     draw_mesh(mesh, texture, nullptr, true);
 }
 
+void Renderer2D::draw_path(const Path& path, const StrokeStyle& style, float tolerance, const Texture* texture) {
+    std::vector<Vec2> points;
+    path.flatten(tolerance / std::max(camera_.zoom, 1e-3f), points);
+    StrokeStyle s = style;
+    s.closed = path.closed;
+    draw_polyline(points, s, texture);
+}
+
+void Renderer2D::fill_path(const Path& path, Color c, float tolerance, const Texture* texture, float uv_scale) {
+    std::vector<Vec2> points;
+    path.flatten(tolerance / std::max(camera_.zoom, 1e-3f), points);
+    fill_polygon(points, c, texture, uv_scale);
+}
+
 void Renderer2D::end_frame(ImDrawData* overlay) {
     Impl& im = *impl_;
     if (!im.frame_active || !im.cmd) {

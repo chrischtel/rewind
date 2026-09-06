@@ -207,6 +207,32 @@ matrix: pixel space by default, or your own through
 switches to depth-tested drawing (less-or-equal, with writes, freshly
 cleared depth buffer per switch). Both are reset by `begin_frame()`.
 
+Curves live in `core/curve.h`, independent of rendering:
+
+```cpp
+Path road = Path::from_catmull_rom(points, /*closed=*/true); // smooth through every point
+Path p; p.move_to(a); p.line_to(b); p.arc_to(center, kPi / 2); p.cubic_to(c1, c2, d); p.close();
+float len = road.length();                    // Gauss-Legendre arc length
+std::vector<Vec2> flat; road.flatten(0.25f, flat); // adaptive, within 0.25 units
+std::vector<Vec2> kerb = road.offset(16);     // parallel curve (right of travel in y-down space)
+renderer.draw_path(road, style);              // flatten + draw_polyline; fill_path() for areas
+
+PathSampler s(road);                          // arc-length table, build once
+PathPoint at = s.at(distance);                // position, unit direction, segment, t; wraps on closed paths
+PathPoint near = s.closest(mouse);            // exact closest point (Newton refined) and its distance along
+road.split(seg, t, first, second); road.subdivide(seg, t); road.join(other); road.reversed();
+```
+
+`CubicBezier` has point, derivative, direction, normal, curvature, length,
+split, sub-curve and bounds; `Arc` converts to Beziers of at most 90
+degrees. Polyline helpers: `offset_polyline` (also grows or shrinks
+polygons), `simplify_polyline` (Douglas-Peucker), `resample_polyline`,
+`closest_point_on_segment`, `line_intersection`, `segments_intersect`,
+`polygon_contains`, `convex_hull`. `Vec2` has the usual operators plus
+`dot`, `cross`, `length`, `normalize`, `perp`, `lerp`, `rotate`,
+`from_angle` and `angle_of`. Paths reflect, so they save, load, diff and
+show up in the inspector.
+
 Draw layers: `set_layer(n)` tags everything drawn afterwards. Within a
 render target lower layers are drawn first and the recording order is kept
 inside a layer, so a game can draw ground, objects and UI in whatever
