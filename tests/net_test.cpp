@@ -1,6 +1,7 @@
 // Headless checks for rollback netcode: the wire format, two sessions
 // talking over a lossy, laggy loopback, stalls, and desync detection.
 
+#include <rewind/net/lobby.h>
 #include <rewind/net/session.h>
 #include <rewind/net/transport.h>
 #include <rewind/sim/game.h>
@@ -8,6 +9,8 @@
 #include <rewind/sim/timeline.h>
 
 #include <cstdio>
+#include <limits>
+#include <memory>
 #include <vector>
 
 using namespace rw;
@@ -230,7 +233,138 @@ void test_timeline_rollback_matches_fresh_run() {
 
 } // namespace
 
+/// Four players pushing numbers around, like Arena but for any count.
+struct Melee final : Game {
+    i64 pos[kMaxPlayers] = {};
+    u64 mix = 1;
+    void tick(const TickContext& c) override {
+        for (u32 p = 0; p < c.inputs.count; ++p) {
+            const InputFrame& in = c.player(p);
+            pos[p] += in.axis_x + (in.down(Button::A) ? 1000 : 0);
+            mix = mix * 6364136223846793005ull + static_cast<u64>(in.buttons) + p;
+        }
+    }
+    void reflect(Visitor& v) override {
+        for (u32 p = 0; p < kMaxPlayers; ++p) v.field("p", pos[p]);
+        v.field("mix", mix);
+    }
+    void render(Renderer2D&, float) override {}
+};
+
+void test_three_players_over_mesh() {
+    net::LoopbackMesh mesh(3);
+    mesh.set_conditions(40, 30, 0.15f, 3);
+    for (u32 i = 0; i < 3; ++i)
+        for (u32 j = 0; j < 3; ++j)
+            if (i != j) mesh.end(i).add_peer(net::LoopbackMesh::address_of(j));
+
+    TimelineConfig tcfg;
+    tcfg.tick_rate = 60;
+    tcfg.history_ticks = 600;
+    tcfg.keyframe_interval = 1;
+    tcfg.verify_hashes = true;
+    Melee games[3];
+    std::vector<std::unique_ptr<Timeline>> timelines;
+    std::vector<std::unique_ptr<net::Session>> sessions;
+    for (u32 i = 0; i < 3; ++i) {
+        net::SessionConfig cfg;
+        cfg.player_count = 3;
+        cfg.local_player = i;
+        cfg.input_delay = 3;
+        timelines.push_back(std::make_unique<Timeline>(tcfg));
+        timelines.back()->reset(games[i]);
+        sessions.push_back(std::make_unique<net::Session>(cfg, mesh.end(i)));
+    }
+    for (int frame = 0; frame < 400; ++frame) {
+        for (u32 i = 0; i < 3; ++i) {
+            const Tick t = timelines[i]->head();
+            sessions[i]->step(*timelines[i], games[i], input_for(i, t + 3), 1, nullptr, mesh.now_ms());
+        }
+        mesh.advance(16);
+    }
+    // Let everyone catch up on confirmed input, then compare confirmed states.
+    for (int frame = 0; frame < 60; ++frame) {
+        for (u32 i = 0; i < 3; ++i) sessions[i]->step(*timelines[i], games[i], InputFrame{}, 0, nullptr, mesh.now_ms());
+        mesh.advance(16);
+    }
+    // Confirmed input can run ahead of a slow peer's head: compare a tick everyone has simulated.
+    Tick confirmed = std::numeric_limits<Tick>::max();
+    for (u32 i = 0; i < 3; ++i) confirmed = std::min({confirmed, sessions[i]->confirmed_tick(), timelines[i]->head()});
+    CHECK(confirmed > 200);
+    const Tick t = confirmed - 1;
+    CHECK(timelines[0]->hash_at(t) == timelines[1]->hash_at(t));
+    CHECK(timelines[1]->hash_at(t) == timelines[2]->hash_at(t));
+    for (u32 i = 0; i < 3; ++i) {
+        CHECK(!sessions[i]->stats().desync);
+        CHECK(sessions[i]->stats().connected_players == 2);
+        CHECK(sessions[i]->stats().rollbacks > 0);
+    }
+}
+
+void test_lobby() {
+    net::LoopbackMesh mesh(3);
+    mesh.set_conditions(20, 10, 0.2f, 5);
+    net::Lobby host(mesh.end(0)), a(mesh.end(1)), b(mesh.end(2));
+    host.host("Host", 3);
+    CHECK(host.state() == net::Lobby::State::Waiting && host.is_host() && host.local_slot() == 0);
+    a.join(net::LoopbackMesh::address_of(0), "Alice");
+    b.join(net::LoopbackMesh::address_of(0), "Bob");
+    auto pump = [&](int frames) {
+        for (int i = 0; i < frames; ++i) {
+            host.update(mesh.now_ms());
+            a.update(mesh.now_ms());
+            b.update(mesh.now_ms());
+            mesh.advance(16);
+        }
+    };
+    pump(120);
+    CHECK(a.state() == net::Lobby::State::Waiting && b.state() == net::Lobby::State::Waiting);
+    CHECK(host.player_count() == 3);
+    CHECK(a.local_slot() != b.local_slot() && a.local_slot() > 0 && b.local_slot() > 0);
+    CHECK(a.players().size() == 3 && a.players()[0].name == "Host" && a.players()[a.local_slot()].name == "Alice");
+    CHECK(a.players()[b.local_slot()].name == "Bob");
+    CHECK(!host.all_ready());
+    CHECK(!host.start(mesh.now_ms())); // not everyone is ready
+
+    host.set_ready(true);
+    a.set_ready(true);
+    b.set_ready(true);
+    pump(60);
+    CHECK(host.all_ready() && a.all_ready());
+    CHECK(host.start(mesh.now_ms(), 500, 77));
+    CHECK(host.state() == net::Lobby::State::Starting);
+    pump(20);
+    CHECK(a.state() == net::Lobby::State::Starting && a.countdown_ms(mesh.now_ms()) > 0);
+    pump(60);
+    CHECK(host.state() == net::Lobby::State::Started && a.state() == net::Lobby::State::Started &&
+          b.state() == net::Lobby::State::Started);
+    CHECK(a.seed() == 77 && b.seed() == 77 && host.seed() == 77);
+
+    // Everyone ends up with the same roster and their own peers.
+    const net::SessionConfig ca = a.session_config(2);
+    CHECK(ca.player_count == 3 && ca.local_player == a.local_slot());
+    a.connect_peers(mesh.end(1));
+    CHECK(mesh.end(1).peers().size() == 2);
+    b.connect_peers(mesh.end(2));
+    host.connect_peers(mesh.end(0));
+    CHECK(mesh.end(0).peers().size() == 2);
+    // The host's slot carries the address the clients joined through.
+    CHECK(a.players()[0].address == net::LoopbackMesh::address_of(0));
+
+    // A join to nobody fails after the timeout instead of hanging.
+    net::LoopbackMesh alone(1);
+    net::Lobby lonely(alone.end(0));
+    lonely.join(net::Address{"mesh", 99}, "Nobody");
+    for (int i = 0; i < 1000 && lonely.state() != net::Lobby::State::Failed; ++i) {
+        lonely.update(alone.now_ms());
+        alone.advance(16);
+    }
+    CHECK(lonely.state() == net::Lobby::State::Failed && !lonely.error().empty());
+}
+
 int main() {
+    test_lobby();
+    test_three_players_over_mesh();
     test_packet_round_trip();
     test_timeline_rollback_matches_fresh_run();
     test_rollback_converges();

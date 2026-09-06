@@ -85,6 +85,8 @@ Session::Session(const SessionConfig& config, Transport& transport)
     if (config_.player_count > kMaxPlayers) config_.player_count = kMaxPlayers;
     if (config_.local_player >= config_.player_count) config_.local_player = 0;
     players_.resize(config_.player_count);
+    acks_.assign(config_.player_count, 0);
+    heard_.assign(config_.player_count, false);
 
     // Nobody can react before the input delay has passed: those ticks are idle
     // for everyone, on every peer, so all of them agree without talking.
@@ -125,13 +127,22 @@ void Session::receive(Timeline& timeline, u64 now_ms) {
         if (packet.player == config_.local_player || packet.player >= config_.player_count) continue;
         ++stats_.packets_received;
         stats_.connected = true;
+        if (!heard_[packet.player]) {
+            heard_[packet.player] = true;
+            ++stats_.connected_players;
+        }
         last_remote_time_ms_ = packet.time_ms;
         if (packet.echo_ms != 0) {
             const u32 now32 = static_cast<u32>(now_ms);
             const float sample = static_cast<float>(now32 - packet.echo_ms);
             stats_.rtt_ms = stats_.rtt_ms == 0 ? sample : stats_.rtt_ms * 0.9f + sample * 0.1f;
         }
-        remote_ack_ = std::max<Tick>(remote_ack_, packet.ack);
+        acks_[packet.player] = std::max<Tick>(acks_[packet.player], packet.ack);
+        // Resend from what the slowest peer still lacks.
+        Tick lowest = std::numeric_limits<Tick>::max();
+        for (u32 i = 0; i < config_.player_count; ++i)
+            if (i != config_.local_player) lowest = std::min(lowest, acks_[i]);
+        remote_ack_ = lowest == std::numeric_limits<Tick>::max() ? 0 : lowest;
 
         PlayerInputs& pi = players_[packet.player];
         for (usize i = 0; i < packet.frames.size(); ++i) {

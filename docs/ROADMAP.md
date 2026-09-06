@@ -145,8 +145,14 @@ project settings, save games, localisation.
    `App::screenshot` (F12, PNG in the user's folder), `core/localization.h`
    (`tr`, `trf`, fallback language, flattened JSON tables), the player
    settings `game` block, `savegame_test`.
-5. Network II: sessions with up to four players, lobby with slots, ready
-   state and start countdown, the duel sample grows into an arena.
+5. ~~Network II: sessions with up to four players, lobby with slots, ready
+   state and start countdown, the duel sample grows into an arena.~~ Done:
+   `AddressedTransport` (UDP to many peers, `LoopbackMesh` for tests),
+   per-player acks in `Session`, `net/lobby.h` (host, join, ready, start
+   countdown, shared seed, peer list), `App::restart`, the arena sample
+   with a lobby screen, three-player and lobby tests.
+
+This list is complete.
 
 ## Later
 

@@ -82,8 +82,8 @@ It is not for 3D games, and not for people who want a no-code workflow.
 
 **Multiplayer**
 - Rollback netcode over UDP with input delay, prediction, redundant
-  packets, stall handling and cross-peer state verification. Two players
-  today.
+  packets, stall handling and cross-peer state verification, for up to
+  four players, with a lobby (host, join, ready, countdown, shared seed).
 
 **Tooling**
 - Editor with dockable Scene, Entities, Timeline, Inspector, Assets,
@@ -99,9 +99,9 @@ It is not for 3D games, and not for people who want a no-code workflow.
   links, enums by name, curve previews, asset pickers.
 - Always-on profiler, engine log with an in-game console, gamepad, mouse
   (with wheel) and keyboard input as part of the deterministic input record.
-- Twenty-one headless test suites and a CI workflow for Windows and Ubuntu.
+- Twenty-six headless test suites and a CI workflow for Windows and Ubuntu.
 
-Four samples show all of it: `bounce`, `pixels`, `duel` (netcode) and
+Four samples show all of it: `bounce`, `pixels`, `duel` (a four-player netcode arena with a lobby) and
 `towerdefense`, a complete small game.
 
 ## Planned
@@ -115,7 +115,7 @@ In rough order.
   transform hierarchies, glTF import, picking (the renderer is 3D-ready).
 - **Post-processing and 2D lighting** on top of materials.
 - **More importers** and packing cooked assets into archives for shipping.
-- **More than two players** and a lobby handshake for the netcode.
+- **NAT traversal** or a relay so sessions work over the internet.
 - **Fixed-point math option** for bit-exact determinism between different
   CPUs over the internet.
 - **Linux on a real machine**, then macOS.

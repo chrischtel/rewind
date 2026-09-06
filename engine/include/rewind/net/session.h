@@ -25,7 +25,8 @@ struct SessionConfig {
 };
 
 struct SessionStats {
-    bool connected = false;      ///< Something was received from the peer.
+    bool connected = false;      ///< Something was received from a peer.
+    u32 connected_players = 0;   ///< Remote players heard from so far.
     u32 rollbacks = 0;           ///< Times a wrong prediction forced a re-simulation.
     u32 rolled_back_ticks = 0;   ///< Ticks re-simulated in total.
     u32 stalled_frames = 0;      ///< Frames that could not advance because the peer fell behind.
@@ -54,7 +55,7 @@ struct Packet {
 void encode_packet(const Packet& packet, std::vector<u8>& out);
 bool decode_packet(const std::vector<u8>& bytes, Packet& out);
 
-/// Two-player rollback netcode over the Timeline.
+/// Rollback netcode over the Timeline for up to kMaxPlayers players.
 ///
 /// Every tick needs every player's input. The local one is known ahead of
 /// time thanks to `input_delay`; the remote one is predicted (last known)
@@ -103,7 +104,9 @@ private:
     SessionStats stats_;
     std::vector<PlayerInputs> players_;
     Tick rollback_from_;
-    Tick remote_ack_ = 0;
+    std::vector<Tick> acks_;       ///< per player: they know our input for every tick below this
+    std::vector<bool> heard_;
+    Tick remote_ack_ = 0;          ///< min over the acks of every remote player
     u32 last_remote_time_ms_ = 0;
     u32 ticks_since_sync_ = 0;
     std::deque<std::pair<Tick, u64>> pending_syncs_;

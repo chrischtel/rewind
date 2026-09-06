@@ -2,6 +2,7 @@
 
 #include "rewind/core/log.h"
 
+#include <algorithm>
 #include <cstring>
 
 #if defined(_WIN32)
@@ -40,6 +41,7 @@ bool set_nonblocking(long long s) {
     return ioctlsocket(static_cast<SOCKET>(s), FIONBIO, &mode) == 0;
 }
 bool would_block() { return WSAGetLastError() == WSAEWOULDBLOCK; }
+using native_socket = SOCKET;
 #else
 bool winsock_ready() { return true; }
 std::string socket_error() { return std::string("socket error ") + std::strerror(errno); }
@@ -49,12 +51,37 @@ bool set_nonblocking(long long s) {
     return flags >= 0 && fcntl(static_cast<int>(s), F_SETFL, flags | O_NONBLOCK) == 0;
 }
 bool would_block() { return errno == EWOULDBLOCK || errno == EAGAIN; }
+using native_socket = int;
 #endif
+
+Address address_from(const sockaddr_in& in) {
+    char text[64] = "?";
+    inet_ntop(AF_INET, &in.sin_addr, text, sizeof text);
+    return Address{text, ntohs(in.sin_port)};
+}
 
 } // namespace
 
 UdpTransport::UdpTransport() = default;
 UdpTransport::~UdpTransport() { close(); }
+
+bool UdpTransport::resolve(const Address& address, u8* out, int& len) {
+    addrinfo hints{};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    addrinfo* result = nullptr;
+    if (getaddrinfo(address.host.c_str(), nullptr, &hints, &result) != 0 || !result) {
+        error_ = "could not resolve " + address.host;
+        return false;
+    }
+    sockaddr_in peer{};
+    std::memcpy(&peer, result->ai_addr, sizeof peer);
+    peer.sin_port = htons(address.port);
+    freeaddrinfo(result);
+    std::memcpy(out, &peer, sizeof peer);
+    len = sizeof peer;
+    return true;
+}
 
 bool UdpTransport::open(u16 local_port, const std::string& peer_host, u16 peer_port) {
     close();
@@ -73,7 +100,7 @@ bool UdpTransport::open(u16 local_port, const std::string& peer_host, u16 peer_p
     local.sin_family = AF_INET;
     local.sin_addr.s_addr = htonl(INADDR_ANY);
     local.sin_port = htons(local_port);
-    if (::bind(static_cast<decltype(::socket(0, 0, 0))>(s), reinterpret_cast<sockaddr*>(&local), sizeof local) != 0) {
+    if (::bind(static_cast<native_socket>(s), reinterpret_cast<sockaddr*>(&local), sizeof local) != 0) {
         error_ = "bind(" + std::to_string(local_port) + "): " + socket_error();
         close_socket(s);
         return false;
@@ -84,27 +111,24 @@ bool UdpTransport::open(u16 local_port, const std::string& peer_host, u16 peer_p
         return false;
     }
     socket_ = s;
+    sockaddr_in bound{};
+    socklen_type bound_len = sizeof bound;
+    if (getsockname(static_cast<native_socket>(s), reinterpret_cast<sockaddr*>(&bound), &bound_len) == 0)
+        local_port_ = ntohs(bound.sin_port);
+    else
+        local_port_ = local_port;
 
     if (!peer_host.empty()) {
-        addrinfo hints{};
-        hints.ai_family = AF_INET;
-        hints.ai_socktype = SOCK_DGRAM;
-        addrinfo* result = nullptr;
-        if (getaddrinfo(peer_host.c_str(), nullptr, &hints, &result) != 0 || !result) {
-            error_ = "could not resolve " + peer_host;
+        u8 raw[32];
+        int len = 0;
+        if (!resolve(Address{peer_host, peer_port}, raw, len)) {
             close();
             return false;
         }
-        sockaddr_in peer{};
-        std::memcpy(&peer, result->ai_addr, sizeof peer);
-        peer.sin_port = htons(peer_port);
-        freeaddrinfo(result);
-        std::memcpy(peer_addr_, &peer, sizeof peer);
-        peer_len_ = sizeof peer;
-        has_peer_ = true;
-        RW_LOG_INFO("net", "udp: port %u -> %s:%u", local_port, peer_host.c_str(), peer_port);
+        peers_.push_back(Address{peer_host, peer_port});
+        RW_LOG_INFO("net", "udp: port %u -> %s:%u", local_port_, peer_host.c_str(), peer_port);
     } else {
-        RW_LOG_INFO("net", "udp: listening on port %u, waiting for a peer", local_port);
+        RW_LOG_INFO("net", "udp: listening on port %u", local_port_);
     }
     error_.clear();
     return true;
@@ -113,38 +137,46 @@ bool UdpTransport::open(u16 local_port, const std::string& peer_host, u16 peer_p
 void UdpTransport::close() {
     if (socket_ != kInvalid) close_socket(socket_);
     socket_ = kInvalid;
-    has_peer_ = false;
-    peer_len_ = 0;
+    peers_.clear();
+    local_port_ = 0;
 }
 
-void UdpTransport::send(const std::vector<u8>& packet) {
-    if (socket_ == kInvalid || !has_peer_ || packet.empty()) return;
-    const auto sent = ::sendto(static_cast<decltype(::socket(0, 0, 0))>(socket_),
-                               reinterpret_cast<const char*>(packet.data()), static_cast<int>(packet.size()), 0,
-                               reinterpret_cast<const sockaddr*>(peer_addr_), static_cast<socklen_type>(peer_len_));
+void UdpTransport::add_peer(const Address& peer) {
+    if (std::find(peers_.begin(), peers_.end(), peer) == peers_.end()) peers_.push_back(peer);
+}
+
+void UdpTransport::send_to(const std::vector<u8>& packet, const Address& to) {
+    if (socket_ == kInvalid || packet.empty()) return;
+    u8 raw[32];
+    int len = 0;
+    if (!resolve(to, raw, len)) return;
+    const auto sent = ::sendto(static_cast<native_socket>(socket_), reinterpret_cast<const char*>(packet.data()),
+                               static_cast<int>(packet.size()), 0, reinterpret_cast<const sockaddr*>(raw),
+                               static_cast<socklen_type>(len));
     if (sent >= 0) ++sent_;
 }
 
-bool UdpTransport::receive(std::vector<u8>& out) {
+void UdpTransport::send(const std::vector<u8>& packet) {
+    for (const Address& p : peers_) send_to(packet, p);
+}
+
+bool UdpTransport::receive_from(std::vector<u8>& out, Address& from) {
     if (socket_ == kInvalid) return false;
     u8 buffer[2048];
-    sockaddr_in from{};
-    socklen_type from_len = sizeof from;
-    const auto got = ::recvfrom(static_cast<decltype(::socket(0, 0, 0))>(socket_), reinterpret_cast<char*>(buffer),
-                                sizeof buffer, 0, reinterpret_cast<sockaddr*>(&from), &from_len);
+    sockaddr_in sender{};
+    socklen_type sender_len = sizeof sender;
+    const auto got = ::recvfrom(static_cast<native_socket>(socket_), reinterpret_cast<char*>(buffer), sizeof buffer, 0,
+                                reinterpret_cast<sockaddr*>(&sender), &sender_len);
     if (got <= 0) {
         if (got < 0 && !would_block()) {
             // ICMP "port unreachable" shows up here on Windows; harmless for us.
         }
         return false;
     }
-    if (!has_peer_) {
-        std::memcpy(peer_addr_, &from, sizeof from);
-        peer_len_ = sizeof from;
-        has_peer_ = true;
-        char text[64] = "?";
-        inet_ntop(AF_INET, &from.sin_addr, text, sizeof text);
-        RW_LOG_INFO("net", "udp: peer connected from %s:%u", text, ntohs(from.sin_port));
+    from = address_from(sender);
+    if (peers_.empty() && adopt_) {
+        peers_.push_back(from);
+        RW_LOG_INFO("net", "udp: peer connected from %s:%u", from.host.c_str(), from.port);
     }
     out.assign(buffer, buffer + got);
     ++received_;

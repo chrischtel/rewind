@@ -686,16 +686,39 @@ that as an edit.
 
 ## Rollback netcode
 
-Multiplayer that feels local, built on the timeline. Run the `duel` sample
-twice:
+Multiplayer that feels local, built on the timeline, for up to four
+players. Run the `duel` sample (an arena) several times:
 
 ```bash
-build/bin/Release/duel.exe --host 7777
+build/bin/Release/duel.exe --host 7777 --name Ann --players 4
 ```
 
 ```bash
-build/bin/Release/duel.exe --connect 127.0.0.1:7777
+build/bin/Release/duel.exe --join 127.0.0.1:7777 --name Bob
 ```
+
+The first copy hosts a lobby; the others join it by address, press Z to
+be ready, and the host presses Enter to start a three-second countdown.
+Every peer then restarts at tick 0 with the same roster and seed and the
+session takes over.
+
+**Lobby** (`net/lobby.h`): `host(name, max_players)` or `join(address,
+name)`, `update(now_ms)` every frame, `set_ready()`, `start()` on the
+host; `state()` walks Joining, Waiting, Starting, Started or Failed. When
+started, `connect_peers(transport)` adds every other player as a UDP
+peer and `session_config()` gives the Session its player count and slot;
+`App::restart(&session)` reinitialises the game and the timeline so all
+peers begin together. Slots are player ids, the host is player 0, and
+players see each other's addresses as the host sees them (LAN or direct
+connections; NAT traversal is not built in). The lobby speaks small
+repeated messages over the same UDP socket, so lost packets need no
+handling.
+
+**Transports**: `UdpTransport` is one socket to any number of peers
+(`AddressedTransport`: `send_to`, `receive_from`, `add_peer`);
+`LoopbackMesh` is the in-process equivalent for tests, with the same fake
+latency, jitter and loss as `LoopbackPair`. The session sends every
+player's inputs to every peer and tracks acknowledgements per player.
 
 How it works: every tick needs every player's input. The local player's
 input is known a few ticks ahead thanks to a small input delay. The remote
@@ -924,7 +947,7 @@ tools/editor/         rewind_editor, the dockable editor shell
 tools/cli/            rewind: new, info, cook, run, edit
 samples/bounce/       shapes, entities, rewind, desync detector
 samples/pixels/       sprites, animation, tilemap, sound, pixel mode, gamepad
-samples/duel/         two players over rollback netcode
+samples/duel/         up to four players over rollback netcode, with a lobby
 samples/towerdefense/ Rewind Defense: waves, towers, economy, mouse input
 tests/                headless tests: core, timeline, assets, world, reflect, ecs, net, shader, text, project, scene, hot reload
 ```
@@ -943,7 +966,7 @@ In rough order:
 - **Positional audio** (pan and distance) on top of the event channel.
 - **Fixed-point math option** for bit-exact determinism across machines,
   which internet play between different CPUs will eventually need.
-- **More than two players** and a lobby handshake for the session.
+- **NAT traversal** or a relay for sessions over the internet.
 - **Prefabs and scene composition** on top of the world and the text format.
 - Linux verified on a real machine, then macOS.
 - **Editor growth**: entity list and scene editing, asset browser, undo on

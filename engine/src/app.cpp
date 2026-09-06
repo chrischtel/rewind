@@ -500,6 +500,17 @@ void App::render_frame(float alpha) {
 
 // ---- save games ------------------------------------------------------------------------
 
+void App::restart(net::Session* session) {
+    if (!game_) return;
+    game_->init();
+    if (start_) start_(*this);
+    timeline_.reset(*game_);
+    session_ = session;
+    accumulator_ = 0;
+    time_.mode = TimeMode::Playing;
+    RW_LOG_INFO("app", "restarted%s", session ? " with a network session" : "");
+}
+
 std::string App::save_dir() const { return savegame_dir(cfg_.organization, cfg_.title); }
 
 bool App::save_game(const std::string& slot, const std::string& label, std::string* error) {

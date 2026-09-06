@@ -31,6 +31,7 @@
 #include "rewind/debug/inspector.h"
 #include "rewind/debug/overlay.h"
 #include "rewind/game_entry.h"
+#include "rewind/net/lobby.h"
 #include "rewind/net/session.h"
 #include "rewind/net/transport.h"
 #include "rewind/net/udp.h"

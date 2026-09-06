@@ -132,6 +132,10 @@ public:
     /// The session must outlive the App loop; pass nullptr to detach.
     void set_session(net::Session* session) { session_ = session; }
     net::Session* session() const { return session_; }
+    /// Start over: Game::init(), the start callback, a fresh timeline at tick
+    /// 0, and from now on `session` (may be null) drives the simulation. A
+    /// lobby calls this on every peer when the countdown ends.
+    void restart(net::Session* session = nullptr);
 
     // ---- embedded mode (editor) ---------------------------------------------
     /// Called every frame between ImGui::NewFrame() and ImGui::Render().

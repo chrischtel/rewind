@@ -70,6 +70,7 @@ add_library(rewind SHARED
     src/log.cpp
     src/math.cpp
     src/mesh.cpp
+    src/net_lobby.cpp
     src/net_loopback.cpp
     src/net_session.cpp
     src/net_udp.cpp
