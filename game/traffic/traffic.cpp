@@ -139,8 +139,11 @@ constexpr float kRoundaboutRadius = 15.0f; ///< centreline; a 32 m inscribed cir
 /// road builder works; freehand is the pencil.
 constexpr u32 kShapeStraight = 0;
 constexpr u32 kShapeCurve = 1;
-constexpr u32 kShapeFree = 2;
-const char* const kShapeNames[] = {"straight", "curve", "freehand"};
+constexpr u32 kShapeSmooth = 2; ///< arcs that leave along the road they start from
+constexpr u32 kShapeFree = 3;
+const char* const kShapeNames[] = {"straight", "curve", "smooth", "freehand"};
+constexpr float kMinRadius = 8.0f;       ///< tighter than this is not a road
+constexpr float kLateralAccel = 6.0f;    ///< what a comfortable bend allows, m/s^2
 constexpr float kGridStep = 10.0f;   ///< metres, when snapping to the grid
 constexpr float kAngleStep = 15.0f;  ///< degrees, when snapping the direction
 const Color kIslandGrass = rgb(104, 128, 74);
@@ -159,8 +162,8 @@ const Rect kGoalPanel{kWidth - 274, 10, 262, 96};
 const Rect kBuildPanel{kWidth * 0.5f - 420, kHeight - 132, 840, 120};
 const Rect kMiniMap{12, kHeight - 184, 172, 172};
 const Rect kToolStrip{kBuildPanel.x + 10, kBuildPanel.y + 22, 112, 92};
-const Rect kShapeStrip{kBuildPanel.x + 130, kBuildPanel.y + 22, 180, 46};
-constexpr float kCardWidth = 100;
+const Rect kShapeStrip{kBuildPanel.x + 130, kBuildPanel.y + 22, 232, 46};
+constexpr float kCardWidth = 96;
 constexpr float kCardHeight = 76;
 
 inline bool over_hud(float x, float y) {
@@ -587,7 +590,8 @@ public:
         v.field("road_type", road_type_, {.table = "road_types"});
         v.field("stroke", stroke_);
         v.field("points", points_);
-        v.field("shape", shape_, {.names = kShapeNames, .name_count = 3});
+        v.field("shape", shape_, {.names = kShapeNames, .name_count = 4});
+        v.field("entry_dir", entry_dir_);
         v.field("snap_angle", snap_angle_);
         v.field("snap_grid", snap_grid_);
         v.field("stroke_from", stroke_from_);
@@ -660,6 +664,7 @@ private:
         case kCmdFlow: show_flow_ = !show_flow_; break;
         case kCmdShape:
             if (static_cast<u32>(in.command_value) <= kShapeFree) {
+                entry_dir_ = Vec2{};
                 shape_ = static_cast<u32>(in.command_value);
                 points_.clear();
             }
@@ -717,14 +722,24 @@ private:
             // next piece, so a route is drawn as a chain.
             if (cancel) {
                 points_.clear();
+                entry_dir_ = Vec2{};
             } else if (press && !on_hud) {
-                points_.push_back(snap_point(world));
+                const Vec2 at = snap_point(world);
+                if (points_.empty() && shape_ == kShapeSmooth)
+                    entry_dir_ = hover_node_ != kNone ? tangent_at(hover_node_, world) : Vec2{};
+                points_.push_back(at);
                 const usize needed = shape_ == kShapeCurve ? 3u : 2u;
                 if (points_.size() >= needed) {
-                    const Path path = shape_path(points_);
+                    const Path path = drawn_path(points_);
                     const Vec2 last = points_.back();
-                    if (commit_path(ctx, path)) points_ = {last};
-                    else points_.clear();
+                    if (commit_path(ctx, path)) {
+                        points_ = {last};
+                        // A smooth chain carries on the way the last piece ended.
+                        if (shape_ == kShapeSmooth && !path.empty())
+                            entry_dir_ = path.segments.back().direction(1);
+                    } else {
+                        points_.clear();
+                    }
                 }
             }
         } else if (tool_ == kToolBuild) {
@@ -814,13 +829,51 @@ private:
         return path;
     }
 
+    /// Which way a road leaves this junction, chosen as the arm pointing most
+    /// nearly at where the player is heading.
+    Vec2 tangent_at(u32 node, Vec2 towards) const {
+        if (!net_.valid_node(node)) return Vec2{};
+        Vec2 best{};
+        float best_dot = -2;
+        const Vec2 wanted = normalize(towards - net_.node(node).pos);
+        for (u32 e : net_.edges_at(node)) {
+            const NetEdge& edge = net_.edge(e);
+            if (edge.path.empty()) continue;
+            // The direction the road runs, pointing away from this node, then
+            // reversed: a road carries on the way it came in.
+            Vec2 out = edge.a == node ? edge.path.segments.front().direction(0)
+                                      : edge.path.segments.back().direction(1) * -1.0f;
+            const Vec2 carry = out * -1.0f;
+            for (const Vec2& option : {out, carry}) {
+                const float d = dot(option, wanted);
+                if (d > best_dot) {
+                    best_dot = d;
+                    best = option;
+                }
+            }
+        }
+        return best;
+    }
+
+    /// The radius a road of this type should not go below.
+    float comfortable_radius(const RoadType* type) const {
+        const float speed = (type ? type->speed_kmh : 50.0f) / 3.6f;
+        return std::max(kMinRadius, speed * speed / kLateralAccel);
+    }
+
+    /// Whatever the current shape makes of these points.
+    Path drawn_path(const std::vector<Vec2>& points, float* radius = nullptr) const {
+        if (shape_ == kShapeSmooth && points.size() >= 2 && length_sq(entry_dir_) > 0.1f)
+            return traffic::arc_between(points[0], entry_dir_, points[1], radius);
+        return shape_path(points);
+    }
+
     /// The road that is being drawn right now, including where the mouse is.
-    Path preview_path() const {
+    Path preview_path(float* radius = nullptr) const {
         std::vector<Vec2> points = points_;
         if (points.empty()) return Path{};
         points.push_back(snap_point(mouse_world_));
-        if (shape_ == kShapeCurve && points.size() == 2) return shape_path(points); // straight until the bend is set
-        return shape_path(points);
+        return drawn_path(points, radius);
     }
 
     /// Lay a road along `path`. Everything it crosses is split, so a line
@@ -2419,14 +2472,19 @@ private:
 
         const Camera saved = r.camera();
         r.set_camera(Camera{});
-        const float drawn = pending_length();
+        float radius = 0;
+        const float drawn = pending_length(&radius);
         if (drawn > 0.5f) {
             const RoadType* type = road_type_.get(roads_);
             const float price = drawn * (type ? type->cost_per_m : 0);
             const Vec2 tip = shape_ == kShapeFree && !stroke_.empty() ? stroke_.back() : snap_point(mouse_world_);
             const Vec2 at = view(cam_center_, zoom_).to_screen(tip);
-            std::snprintf(line, sizeof line, "%.0f m   %.0f EUR", drawn, price);
-            r.draw_text(at.x + 14, at.y + 14, line, price > money_ ? kBad : rgb(255, 240, 200), 2);
+            const bool tight = radius > 0 && radius < comfortable_radius(type);
+            if (radius > 0) std::snprintf(line, sizeof line, "%.0f m   R %.0f m   %.0f EUR", drawn, radius, price);
+            else std::snprintf(line, sizeof line, "%.0f m   %.0f EUR", drawn, price);
+            const Color ink = price > money_ ? kBad : tight ? rgb(255, 190, 90) : rgb(255, 240, 200);
+            r.draw_text(at.x + 14, at.y + 14, line, ink, 2);
+            if (tight) r.draw_text(at.x + 14, at.y + 32, "tight bend", rgb(255, 190, 90), 1);
         }
         if (refusal_[0]) r.draw_text(kBuildPanel.x, kBuildPanel.y - 22, refusal_, kBad, 2);
         r.draw_text(12, kHeight - 210, tool_hint(), rgba(240, 240, 240, 190), 1);
@@ -2434,7 +2492,7 @@ private:
     }
 
     /// How long the road being drawn is, whichever tool is drawing it.
-    float pending_length() const {
+    float pending_length(float* radius = nullptr) const {
         if (tool_ != kToolBuild) return 0;
         if (shape_ == kShapeFree) {
             if (!drawing_ || stroke_.size() < 2) return 0;
@@ -2442,7 +2500,7 @@ private:
             for (usize i = 1; i < stroke_.size(); ++i) drawn += distance(stroke_[i], stroke_[i - 1]);
             return drawn;
         }
-        const Path ghost = preview_path();
+        const Path ghost = preview_path(radius);
         return ghost.empty() ? 0 : ghost.length();
     }
 
@@ -2451,6 +2509,8 @@ private:
             return "click where the road starts, then where it ends; right click to stop";
         if (tool_ == kToolBuild && shape_ == kShapeCurve)
             return "click the start, the bend and the end; right click to stop";
+        if (tool_ == kToolBuild && shape_ == kShapeSmooth)
+            return "start on a road and every click bends away from it without a kink";
         if (tool_ == kToolBuild) return "drag to draw freehand   right click: cancel, drag to pan   wheel: zoom";
         if (tool_ == kToolSignals) return "click a junction to put traffic lights on it, or to take them away";
         if (tool_ == kToolRoundabout) return "click where a roundabout should go; the roads it crosses become its entries";
@@ -2467,10 +2527,10 @@ private:
         }
 
         // How the road is drawn, and what the clicks snap to.
-        const char* shapes[3] = {"Line", "Curve", "Free"};
-        const float shape_w = (kShapeStrip.w - 12) / 3;
-        for (int i = 0; i < 3; ++i) {
-            const Rect box{kShapeStrip.x + static_cast<float>(i) * (shape_w + 6), kShapeStrip.y, shape_w, 21};
+        const char* shapes[4] = {"Line", "Curve", "Smooth", "Free"};
+        const float shape_w = (kShapeStrip.w - 12) / 4;
+        for (int i = 0; i < 4; ++i) {
+            const Rect box{kShapeStrip.x + static_cast<float>(i) * (shape_w + 4), kShapeStrip.y, shape_w, 21};
             if (ui_.button_at(box, shapes[i])) app_->push_command(kCmdShape, i);
             outline_if(r, box, tool_ == kToolBuild && shape_ == static_cast<u32>(i));
         }
@@ -2613,6 +2673,7 @@ private:
     std::vector<Vec2> points_;   ///< the clicks of a straight or a curve so far
     u32 stroke_from_ = kNone;
     u32 shape_ = kShapeStraight;
+    Vec2 entry_dir_{}; ///< the direction a smooth chain leaves along; zero = free
     bool snap_angle_ = true;
     bool snap_grid_ = false;
     bool drawing_ = false;

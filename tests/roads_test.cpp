@@ -168,9 +168,50 @@ void test_roundabout() {
     CHECK(!net.connectors().empty());
 }
 
+/// The smooth mode's arc: it must leave along the direction given, arrive
+/// exactly at the point clicked, and bend by a believable radius.
+void test_arc_between() {
+    float radius = 0;
+    // A quarter circle: heading east from the origin, ending 100 m east and
+    // 100 m south, is an arc of radius 100 about (0, 100).
+    Path arc = traffic::arc_between({0, 0}, {1, 0}, {100, 100}, &radius);
+    CHECK(!arc.empty());
+    CHECK(std::fabs(radius - 100) < 0.5f);
+    CHECK(distance(arc.start(), Vec2{0, 0}) < 0.01f);
+    CHECK(distance(arc.end(), Vec2{100, 100}) < 0.5f);
+    CHECK(dot(arc.segments.front().direction(0), Vec2{1, 0}) > 0.999f);
+    CHECK(dot(arc.segments.back().direction(1), Vec2{0, 1}) > 0.99f); // ends heading south
+    CHECK(std::fabs(arc.length() - 3.14159265f * 100 * 0.5f) < 1.0f);
+
+    // The mirror image bends the other way and is just as long.
+    float other = 0;
+    Path up = traffic::arc_between({0, 0}, {1, 0}, {100, -100}, &other);
+    CHECK(std::fabs(other - 100) < 0.5f);
+    CHECK(dot(up.segments.back().direction(1), Vec2{0, -1}) > 0.99f);
+
+    // Straight ahead is a straight line, not an arc of enormous radius.
+    Path line = traffic::arc_between({0, 0}, {1, 0}, {50, 0}, &radius);
+    CHECK(line.segments.size() == 1 && radius == 0);
+    CHECK(std::fabs(line.length() - 50) < 0.01f);
+
+    // A tight bend reports a small radius, so the builder can warn about it.
+    traffic::arc_between({0, 0}, {1, 0}, {10, 10}, &radius);
+    CHECK(radius > 9 && radius < 11);
+
+    // Turning back on itself is still a proper arc through the point.
+    Path back = traffic::arc_between({0, 0}, {1, 0}, {0, 60}, &radius);
+    CHECK(!back.empty() && distance(back.end(), Vec2{0, 60}) < 0.5f);
+    CHECK(std::fabs(radius - 30) < 0.5f);
+
+    // Degenerate input gives nothing rather than a broken path.
+    CHECK(traffic::arc_between({0, 0}, {1, 0}, {0, 0}).empty());
+    CHECK(traffic::arc_between({0, 0}, {0, 0}, {50, 0}).empty());
+}
+
 } // namespace
 
 int main() {
+    test_arc_between();
     test_roundabout();
     test_first_road();
     test_crossing_makes_a_junction();

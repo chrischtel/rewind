@@ -90,6 +90,41 @@ struct BuildResult {
 
 // ---- small helpers ------------------------------------------------------------------------
 
+/// The arc that leaves `from` along `dir` and ends at `to`: the one bend a
+/// road can make without a kink at either end. A straight when the two are
+/// already in line. `radius_out` receives the radius it used, 0 for a straight.
+///
+/// The centre must lie on the line through `from` perpendicular to `dir`, and
+/// be the same distance from both ends. Writing that down gives the radius
+/// directly: r = |chord|^2 / (2 * (perp(dir) . chord)).
+inline Path arc_between(Vec2 from, Vec2 dir, Vec2 to, float* radius_out = nullptr) {
+    Path path;
+    if (radius_out) *radius_out = 0;
+    const Vec2 chord = to - from;
+    const float span = rw::length(chord);
+    if (span < 0.01f || rw::length_sq(dir) < 1e-6f) return path;
+    dir = rw::normalize(dir);
+    path.move_to(from);
+    const Vec2 side = rw::perp(dir);
+    const float denom = 2.0f * rw::dot(side, chord);
+    if (std::fabs(denom) < 1e-3f * span) {
+        path.line_to(to);
+        return path;
+    }
+    const float radius = rw::length_sq(chord) / denom; // signed: which side the centre is on
+    const Vec2 centre = from + side * radius;
+    float sweep = rw::angle_of(to - centre) - rw::angle_of(from - centre);
+    while (sweep > 3.14159265f) sweep -= 6.2831853f;
+    while (sweep < -3.14159265f) sweep += 6.2831853f;
+    // The arc has to set off along `dir`, not against it.
+    const Vec2 start_tangent = rw::perp(from - centre) * (sweep > 0 ? 1.0f : -1.0f);
+    if (rw::dot(start_tangent, dir) < 0) sweep += sweep > 0 ? -6.2831853f : 6.2831853f;
+    path.arc_to(centre, sweep);
+    if (radius_out) *radius_out = std::fabs(radius);
+    return path;
+}
+
+
 inline float path_length(const Path& p) { return p.length(); }
 
 /// Nearest point on an edge's centreline, as a distance along it.
