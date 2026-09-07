@@ -35,6 +35,7 @@ struct RoadSpec {
     u32 lanes_forward = 1;
     u32 lanes_backward = 1;
     float lane_width = 3.5f;
+    u32 tag = 0; ///< stamped onto every edge, so the game can find its road type again
 
     float width() const { return static_cast<float>(lanes_forward + lanes_backward) * lane_width; }
     /// A junction has to be at least as big as the widest road meeting it,
@@ -239,6 +240,7 @@ inline BuildResult build_road(CurveNetwork& net, const Path& path, const RoadSpe
         const u32 edge = net.add_edge(a, b, &piece);
         if (edge == kNoIndex) continue;
         net.set_tracks(edge, spec.lanes_forward, spec.lanes_backward, spec.lane_width);
+        net.edge(edge).tag = spec.tag;
         result.edges.push_back(edge);
         if (result.junctions.empty()) result.junctions.push_back(a);
         result.junctions.push_back(b);

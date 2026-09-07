@@ -72,6 +72,12 @@ constexpr float kZebraSetback = 1.50f;
 constexpr float kHatchBar = 0.30f;        ///< Sperrflaeche diagonals
 constexpr float kHatchStep = 1.30f;
 constexpr float kHatchLength = 18.0f;
+constexpr float kArrowLength = 5.0f;   ///< a 50 km/h arrow
+constexpr float kArrowShaft = 0.50f;
+constexpr float kArrowHead = 1.75f;
+constexpr float kArrowHeadWidth = 1.50f;
+constexpr float kArrowSetback = 8.0f; ///< tip this far before the stop line
+constexpr float kArrowTurn = 1.30f;
 constexpr float kKerbBand = 0.30f;
 constexpr float kKerbShadowBand = 0.15f;
 const Color kKerbTop = rgb(172, 170, 163);
@@ -370,6 +376,7 @@ public:
             refresh_connections();
         }
         step_signals(ctx.dt);
+        apply_speed_limits();
         measure_flow(ctx.dt);
         send_trips(ctx);
         cars_.tick(net_, ctx.dt);
@@ -561,7 +568,8 @@ private:
             refusal_ = "not enough money";
             return;
         }
-        const traffic::RoadSpec spec{type->lanes_forward, type->lanes_backward, type->lane_width};
+        traffic::RoadSpec spec{type->lanes_forward, type->lanes_backward, type->lane_width};
+        spec.tag = static_cast<u32>(roads_.index_of(road_type_.id) < 0 ? 0 : roads_.index_of(road_type_.id));
         auto standing = capture_cars(); // build_road rebuilds, which invalidates every route
         const traffic::BuildResult built = traffic::build_road(net_, path, spec, snap_range());
         if (!built.ok) {
@@ -626,6 +634,7 @@ private:
     /// Find each town's way onto the network again, then re-check which town
     /// pairs can reach each other. Runs only when the network changed.
     void refresh_connections() {
+        apply_route_penalties(); // this moves the version, so stamp it afterwards
         access_version_ = net_.version();
         access_.assign(towns_.size(), TownAccess{});
         for (usize i = 0; i < towns_.size(); ++i) {
@@ -890,6 +899,55 @@ private:
         }
     }
 
+    // ---- speed limits ---------------------------------------------------------
+
+    const RoadType* road_of(u32 edge) const {
+        if (!net_.valid_edge(edge)) return nullptr;
+        const u32 tag = net_.edge(edge).tag;
+        return tag < roads_.size() ? &roads_.at(tag) : nullptr;
+    }
+
+    float limit_of(u32 edge) const {
+        const RoadType* type = road_of(edge);
+        return (type ? type->speed_kmh : 50.0f) / 3.6f;
+    }
+
+    /// Every car drives at the lower of what it can do and what the road it is
+    /// on allows, so a motorway really is faster than a lane.
+    void apply_speed_limits() {
+        for (u32 i = 0; i < static_cast<u32>(cars_.agents().size()); ++i) {
+            if (!cars_.valid(i)) continue;
+            NetAgent& a = cars_.agent(i);
+            const RouteStep* step = cars_.current_step(i);
+            if (!step) continue;
+            u32 edge = kNone;
+            if (step->kind == RouteStep::Kind::Connector && step->index < net_.connectors().size())
+                edge = net_.connectors()[step->index].from.edge;
+            else if (step->index < net_.track_count())
+                edge = net_.track_ref(step->index).edge;
+            if (edge == kNone) continue;
+            const float top = a.tag < vehicles_.size() ? vehicles_.at(a.tag).top_speed_kmh / 3.6f : 25.0f;
+            a.params.max_speed = std::min(top, limit_of(edge));
+        }
+    }
+
+    /// Routing costs are lengths, so a slow road is made to look longer than
+    /// it is: the cars then pick the quicker way rather than the shorter one.
+    void apply_route_penalties() {
+        net_.clear_track_penalties();
+        constexpr float kReference = 50.0f / 3.6f;
+        for (u32 e = 0; e < static_cast<u32>(net_.edges().size()); ++e) {
+            if (!net_.valid_edge(e)) continue;
+            const float speed = std::max(limit_of(e), 4.0f);
+            const float factor = kReference / speed - 1.0f;
+            if (std::fabs(factor) < 0.02f) continue;
+            for (u32 t = 0; t < static_cast<u32>(net_.edge(e).tracks.size()); ++t) {
+                const TrackRef track{e, t};
+                net_.set_track_penalty(track, net_.track_length(track) * factor);
+            }
+        }
+    }
+
     void arrive(u32 car, u64 tick) {
         ++arrived_;
         if (car >= car_info_.size()) return;
@@ -973,7 +1031,9 @@ private:
             if (length_sq(inward) < 0.5f) inward = {1, 0};
             const u32 a = net_.add_node(at + inward * 26.0f, 0, 0, radius);
             const u32 b = net_.add_node(at + inward * 90.0f, 0, 0, radius);
-            net_.set_tracks(net_.add_edge(a, b), lanes_f, lanes_b, lane_w);
+            const u32 edge = net_.add_edge(a, b);
+            net_.set_tracks(edge, lanes_f, lanes_b, lane_w);
+            net_.edge(edge).tag = static_cast<u32>(std::max(0, roads_.index_of(road_type_.id)));
         }
         net_.rebuild();
         if (demo_) build_demo_roads();
@@ -986,8 +1046,15 @@ private:
         const RoadType* street = roads_.find("street");
         const RoadType* avenue = roads_.find("avenue");
         const RoadType* motorway = roads_.find("highway");
-        const auto spec_of = [](const RoadType* t) {
-            return t ? traffic::RoadSpec{t->lanes_forward, t->lanes_backward, t->lane_width} : traffic::RoadSpec{};
+        const auto spec_of = [this](const RoadType* t) {
+            traffic::RoadSpec spec;
+            if (!t) return spec;
+            spec.lanes_forward = t->lanes_forward;
+            spec.lanes_backward = t->lanes_backward;
+            spec.lane_width = t->lane_width;
+            const i32 index = roads_.index_of(t->id);
+            spec.tag = index < 0 ? 0 : static_cast<u32>(index);
+            return spec;
         };
         const auto lay = [&](std::vector<Vec2> points, const RoadType* type) {
             traffic::build_road(net_, Path::from_catmull_rom(points), spec_of(type), 10.0f);
@@ -1351,6 +1418,17 @@ private:
         const float zebra_at = stop_at - sign * (kStopLineWidth + kZebraSetback + kZebraDepth * 0.5f);
         if (zebra_at > kZebraDepth && zebra_at < length - kZebraDepth) add_zebra(along, zebra_at, e.width);
 
+        // One arrow per lane, showing where that lane may go. The turns come
+        // from the junction's own connectors, so an arrow cannot lie.
+        const float arrow_at = stop_at - sign * (kArrowSetback + kArrowLength);
+        if (zoom_ >= 5.0f && arrow_at > kArrowLength && arrow_at < length - kArrowLength) {
+            for (u32 t = 0; t < static_cast<u32>(e.tracks.size()); ++t) {
+                const Track& track = e.tracks[t];
+                if (track.forward != at_end) continue; // only the lanes running into this junction
+                add_arrow(along, arrow_at, track.offset, turns_from(TrackRef{edge_index(e), t}), sign);
+            }
+        }
+
         // Sperrflaeche: on a wide road the middle is kept clear where the
         // opposing turn lanes would otherwise run into each other.
         if (forward.size() > 1 && backward.size() > 1) {
@@ -1359,6 +1437,53 @@ private:
             add_hatched(along, d0, d0 + kHatchLength, centre - kNarrowLine * 3.0f, centre + kNarrowLine * 3.0f);
         }
     }
+
+    /// Which ways a lane may go from here: bit 1 left, 2 straight, 4 right.
+    u32 turns_from(TrackRef track) const {
+        u32 turns = 0;
+        for (u32 c : net_.connectors_from(track)) {
+            const Connector& conn = net_.connectors()[c];
+            if (conn.path.empty()) continue;
+            const float turn = cross(conn.path.segments.front().direction(0), conn.path.segments.back().direction(1));
+            if (turn > 0.25f) turns |= 4;
+            else if (turn < -0.25f) turns |= 1;
+            else turns |= 2;
+        }
+        return turns ? turns : 2;
+    }
+
+    /// A painted arrow: a shaft with a head, plus a barb to the side for each
+    /// turn the lane allows.
+    void add_arrow(const PathSampler& along, float at, float offset, u32 turns, float sign) {
+        if (at < 0 || at > along.length()) return;
+        const PathPoint p = along.at(at);
+        const Vec2 forward = p.direction * sign;
+        const Vec2 side = perp(p.direction) * sign;
+        const Vec2 base = p.position + side * offset - forward * (kArrowLength * 0.5f);
+        const Vec2 tip = base + forward * kArrowLength;
+        const bool straight = (turns & 2) != 0;
+
+        const Vec2 shaft_half = side * (kArrowShaft * 0.5f);
+        const Vec2 shaft_end = straight ? tip - forward * kArrowHead : base + forward * (kArrowLength * 0.55f);
+        add_quad(base - shaft_half, shaft_end - shaft_half, shaft_end + shaft_half, base + shaft_half, kMarkingWhite);
+        if (straight) add_triangle(tip, shaft_end - side * (kArrowHeadWidth * 0.5f), shaft_end + side * (kArrowHeadWidth * 0.5f),
+                                   kMarkingWhite);
+
+        for (int direction = -1; direction <= 1; direction += 2) {
+            const u32 bit = direction < 0 ? 1u : 4u;
+            if ((turns & bit) == 0) continue;
+            const Vec2 out = side * (static_cast<float>(direction) * kArrowTurn);
+            const Vec2 corner = shaft_end + forward * (kArrowLength * 0.12f);
+            const Vec2 end = corner + out;
+            const Vec2 thick = forward * (kArrowShaft * 0.5f);
+            add_quad(corner - thick, end - thick, end + thick, corner + thick, kMarkingWhite);
+            const Vec2 head = end + out * 0.55f;
+            add_triangle(head, end - forward * (kArrowHeadWidth * 0.5f), end + forward * (kArrowHeadWidth * 0.5f),
+                         kMarkingWhite);
+        }
+    }
+
+    u32 edge_index(const NetEdge& e) const { return static_cast<u32>(&e - net_.edges().data()); }
 
     /// A bar straight across the lanes: a stop line, or the base of anything else.
     void add_bar(const PathSampler& along, float at, float from, float to, float thickness, Color color) {
