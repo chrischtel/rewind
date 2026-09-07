@@ -60,6 +60,9 @@ const Color kAsphalt = rgb(58, 57, 57);
 const Color kMarkingWhite = rgba(232, 232, 226, 235);
 constexpr float kNarrowLine = 0.12f;      ///< Schmalstrich
 constexpr float kWideLine = 0.25f;        ///< Breitstrich
+constexpr float kPocketLength = 45.0f;    ///< how far back a turn lane starts
+constexpr float kPocketWidth = 3.0f;
+constexpr float kTaperLength = 20.0f;     ///< how far the extra lane takes to open
 constexpr float kGuideDash = 0.5f;        ///< the dotted line through a junction
 constexpr float kGuideGap = 0.5f;
 const Color kGuideWhite = rgba(226, 226, 220, 180);
@@ -533,6 +536,7 @@ public:
         flow_.clear();
         signals_.clear();
         islands_.clear();
+        pockets_.clear();
         show_flow_ = start_flow_;
         demand_ = start_demand_;
         build_starting_map();
@@ -578,6 +582,8 @@ public:
         v.field("rng", rng_);
         v.field("tool", tool_, {.names = kToolNames, .name_count = 4});
         v.field("islands", islands_);
+        v.field("pockets", pockets_);
+        v.field("auto_pockets", auto_pockets_);
         v.field("road_type", road_type_, {.table = "road_types"});
         v.field("stroke", stroke_);
         v.field("points", points_);
@@ -839,6 +845,7 @@ private:
         refusal_ = "";
         money_ -= built.length * type->cost_per_m;
         spent_ += built.length * type->cost_per_m;
+        if (auto_pockets_) ensure_pockets(built.junctions);
         restore_cars(standing);
         refresh_connections();
         const Vec2 mid = path.sub_path(0, path.length() * 0.5f).end();
@@ -1273,6 +1280,88 @@ private:
         ctx.emit(kEvBuilt, at.x, at.y);
     }
 
+    // ---- turn pockets ----------------------------------------------------------
+    //
+    // A junction on a wide road gets dedicated turn lanes: the approach is cut
+    // a pocket length before the junction and the short piece gains a lane
+    // that only turners may use. The connect filter then keeps the through
+    // traffic out of it and the arrows follow, because they read the same
+    // connectors.
+
+    /// Does this edge already carry a pocket for that direction?
+    static bool has_pocket(const NetEdge& e, bool forward) {
+        for (const Track& t : e.tracks) {
+            if (t.forward != forward) continue;
+            const LaneKind kind = kind_of(t);
+            if (kind == LaneKind::LeftTurn || kind == LaneKind::RightTurn) return true;
+        }
+        return false;
+    }
+
+    static u32 driving_lanes(const NetEdge& e, bool forward) {
+        u32 n = 0;
+        for (const Track& t : e.tracks)
+            if (t.forward == forward && kind_of(t) == LaneKind::Driving) ++n;
+        return n;
+    }
+
+    /// Insert a turn lane into an edge, on the side the given direction turns
+    /// towards. Lanes run left to right, so the slot next to the centre line
+    /// is where both directions put their left turn.
+    static void insert_pocket(NetEdge& e, bool forward, bool left, float width) {
+        usize backward_count = 0;
+        for (const Track& t : e.tracks)
+            if (!t.forward) ++backward_count;
+        usize at = 0;
+        if (forward) at = left ? backward_count : e.tracks.size();
+        else at = left ? backward_count : 0;
+        Track lane{0, forward, width, static_cast<u32>(left ? LaneKind::LeftTurn : LaneKind::RightTurn)};
+        e.tracks.insert(e.tracks.begin() + static_cast<std::ptrdiff_t>(at), lane);
+        e.width += width;
+        float offset = -e.width * 0.5f;
+        for (Track& t : e.tracks) {
+            t.offset = offset + t.width * 0.5f;
+            offset += t.width;
+        }
+    }
+
+    /// Give one approach of a junction its pocket. Returns whether anything
+    /// changed; the caller rebuilds once for all of them.
+    bool add_pocket(u32 node, u32 edge, bool left) {
+        if (!net_.valid_edge(edge) || !net_.valid_node(node)) return false;
+        const NetEdge& e = net_.edge(edge);
+        const bool incoming_forward = e.b == node; // forward lanes run from a to b
+        if (e.a != node && e.b != node) return false;
+        if (has_pocket(e, incoming_forward)) return false;
+        if (driving_lanes(e, incoming_forward) < 2) return false;
+        const float total = e.path.length();
+        if (total < kPocketLength * 2.2f) return false;
+
+        const float cut = incoming_forward ? total - kPocketLength : kPocketLength;
+        const u32 mid = traffic::split_at(net_, edge, cut, 0.4f);
+        if (mid == kNone) return false;
+        // split_edge keeps the first half at the old index and appends the tail.
+        const u32 pocket = incoming_forward ? static_cast<u32>(net_.edges().size()) - 1 : edge;
+        if (!net_.valid_edge(pocket)) return false;
+        insert_pocket(net_.edge(pocket), incoming_forward, left, kPocketWidth);
+        pockets_.push_back(pocket);
+        return true;
+    }
+
+    /// Wide approaches to a proper crossroads get a left turn pocket, which is
+    /// the one that pays for itself: it takes the turners out of the through
+    /// lane instead of letting them block it.
+    void ensure_pockets(const std::vector<u32>& nodes) {
+        bool changed = false;
+        for (u32 node : nodes) {
+            if (!net_.valid_node(node)) continue;
+            const std::vector<u32> arms = net_.edges_at(node);
+            if (arms.size() < 4) continue;
+            for (u32 edge : arms) changed |= add_pocket(node, edge, true);
+        }
+        if (changed) net_.rebuild();
+    }
+
     bool is_ring(u32 edge) const {
         const RoadType* type = road_of(edge);
         return type && type->id == "roundabout";
@@ -1376,6 +1465,13 @@ private:
             const Vec2 at{325, 5};
             if (traffic::build_roundabout(net_, at, kRoundaboutRadius, spec, 10.0f).ok)
                 islands_.push_back(Island{at, kRoundaboutRadius});
+        }
+        // Turn pockets wherever a wide road meets a crossroads.
+        if (auto_pockets_) {
+            std::vector<u32> nodes;
+            for (u32 n = 0; n < static_cast<u32>(net_.nodes().size()); ++n)
+                if (net_.valid_node(n)) nodes.push_back(n);
+            ensure_pockets(nodes);
         }
         // Signals wherever four arms meet, so the demo shows them working.
         for (u32 n = 0; n < static_cast<u32>(net_.nodes().size()); ++n)
@@ -1591,6 +1687,8 @@ private:
             Vec2 side; ///< perpendicular, half a carriageway wide
         };
         const NetNode& n = net_.node(node);
+        const usize arm_count = net_.edges_at(node).size();
+        if (arm_count < 3) return; // a joint between two pieces of one road needs no paving
         std::vector<Arm> arms;
         float radius = n.radius;
         for (u32 index : net_.edges_at(node)) {
@@ -1716,6 +1814,7 @@ private:
         }
 
         if (zoom_ < 3.0f) return; // the rest is detail nobody can see from up there
+        build_taper(e, along);
         build_approach(e, along, e.a, false, forward, backward);
         build_approach(e, along, e.b, true, forward, backward);
     }
@@ -1914,15 +2013,42 @@ private:
         marking_mesh_.add_triangle(ia, ib, ic);
     }
 
-    /// How much of an edge the junction at `node` eats.
+    /// How much of an edge the junction at `node` eats. A joint between two
+    /// pieces of the same road eats almost nothing, so the markings run on.
     float end_clearance(u32 node, const NetEdge& e) const {
         if (!net_.valid_node(node)) return 0;
+        if (net_.edges_at(node).size() < 3) return std::min(net_.node(node).radius, 1.0f);
         return std::max(net_.node(node).radius, e.width * 0.55f);
     }
 
     /// Dash rhythms: shorter in town, longer the faster the road.
     static float dash_mark(usize lanes_per_side) { return lanes_per_side >= 3 ? 6.0f : lanes_per_side >= 2 ? 4.0f : 3.0f; }
     static float dash_gap(usize lanes_per_side) { return lanes_per_side >= 3 ? 12.0f : lanes_per_side >= 2 ? 8.0f : 3.0f; }
+
+    /// Where a road gains a lane, the extra lane opens over a taper rather
+    /// than appearing out of nothing.
+    void build_taper(const NetEdge& e, const PathSampler& along) {
+        for (const Track& t : e.tracks) {
+            const LaneKind kind = kind_of(t);
+            if (kind != LaneKind::LeftTurn && kind != LaneKind::RightTurn) continue;
+            const float length = along.length();
+            if (length < kTaperLength + 4) continue;
+            // The pocket runs to the junction end of the piece, so it opens at
+            // the other end: forward lanes start at the beginning of the edge.
+            const float from = t.forward ? 0.0f : length;
+            const float to = t.forward ? kTaperLength : length - kTaperLength;
+            const float edge_offset = t.offset + (t.forward ? -t.width * 0.5f : t.width * 0.5f);
+            const float inner = t.offset + (t.forward ? t.width * 0.5f : -t.width * 0.5f);
+            const PathPoint a = along.at(clampf(from, 0, length));
+            const PathPoint b = along.at(clampf(to, 0, length));
+            const Vec2 start = a.position + perp(a.direction) * inner;
+            const Vec2 end = b.position + perp(b.direction) * edge_offset;
+            const Vec2 dir = normalize(end - start);
+            if (length_sq(dir) < 0.5f) continue;
+            const Vec2 thick = perp(dir) * (marking_width(kNarrowLine) * 0.5f);
+            add_quad(start - thick, end - thick, end + thick, start + thick, kMarkingWhite);
+        }
+    }
 
     /// The dotted guide lines that carry a lane across a junction, so a
     /// turning driver can see where they are meant to come out.
@@ -2495,6 +2621,8 @@ private:
     float zoom_ = 2.2f;
     float zoom_target_ = 2.2f;
     std::vector<Island> islands_;
+    std::vector<u32> pockets_; ///< edges that carry a turn pocket, for the taper marking
+    bool auto_pockets_ = true;
     std::vector<Signal> signals_; ///< kept sorted by node
     std::vector<TownAccess> access_;
     u64 signal_version_ = 0;      ///< bumped whenever a signal is added, removed or re-phased
