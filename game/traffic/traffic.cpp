@@ -12,6 +12,7 @@
 //
 // Units are metres and seconds: 3.5 m lanes, 4.4 m cars, 25 m/s = 90 km/h.
 
+#include "lanes.h"
 #include "roads.h"
 
 #include <rewind/rewind.h>
@@ -63,6 +64,7 @@ constexpr float kWideLine = 0.25f;        ///< Breitstrich
 constexpr float kPocketLength = 45.0f;    ///< how far back a turn lane starts
 constexpr float kPocketWidth = 3.0f;
 constexpr float kTaperLength = 20.0f;     ///< how far the extra lane takes to open
+constexpr float kMergeDots = 12.0f;       ///< dotted line leading into a merge
 constexpr float kGuideDash = 0.5f;        ///< the dotted line through a junction
 constexpr float kGuideGap = 0.5f;
 const Color kGuideWhite = rgba(226, 226, 220, 180);
@@ -142,8 +144,8 @@ constexpr u32 kShapeCurve = 1;
 constexpr u32 kShapeSmooth = 2; ///< arcs that leave along the road they start from
 constexpr u32 kShapeFree = 3;
 const char* const kShapeNames[] = {"straight", "curve", "smooth", "freehand"};
-constexpr float kMinRadius = 8.0f;       ///< tighter than this is not a road
-constexpr float kLateralAccel = 6.0f;    ///< what a comfortable bend allows, m/s^2
+constexpr float kMinRadius = 8.0f;    ///< an absolute floor for any road
+constexpr float kLateralAccel = 2.5f; ///< what a comfortable bend allows, m/s^2
 constexpr float kGridStep = 10.0f;   ///< metres, when snapping to the grid
 constexpr float kAngleStep = 15.0f;  ///< degrees, when snapping the direction
 const Color kIslandGrass = rgb(104, 128, 74);
@@ -159,11 +161,11 @@ const Color kSignalPost = rgb(48, 50, 54);
 // whether a click belonged to the HUD or to the world.
 const Rect kMoneyPanel{kWidth * 0.5f - 150, 10, 300, 56};
 const Rect kGoalPanel{kWidth - 274, 10, 262, 96};
-const Rect kBuildPanel{kWidth * 0.5f - 420, kHeight - 132, 840, 120};
+const Rect kBuildPanel{kWidth * 0.5f - 448, kHeight - 132, 896, 120};
 const Rect kMiniMap{12, kHeight - 184, 172, 172};
 const Rect kToolStrip{kBuildPanel.x + 10, kBuildPanel.y + 22, 112, 92};
-const Rect kShapeStrip{kBuildPanel.x + 130, kBuildPanel.y + 22, 232, 46};
-constexpr float kCardWidth = 96;
+const Rect kShapeStrip{kBuildPanel.x + 130, kBuildPanel.y + 22, 216, 46};
+constexpr float kCardWidth = 102;
 constexpr float kCardHeight = 76;
 
 inline bool over_hud(float x, float y) {
@@ -196,36 +198,11 @@ struct VehicleType {
     }
 };
 
-/// What a lane is for. Kept in the engine's free per-track tag, so the
-/// network carries it without knowing what it means.
-enum class LaneKind : u32 {
-    Driving = 0,
-    LeftTurn,  ///< a pocket only left turners may use
-    RightTurn,
-    Bus,
-    Cycle,
-    Parking,
-    Shoulder,
-    Count
-};
-
-constexpr const char* kLaneKindNames[] = {"driving", "left", "right", "bus", "cycle", "parking", "shoulder"};
-
-inline LaneKind lane_kind_from(const std::string& name) {
-    for (u32 i = 0; i < static_cast<u32>(LaneKind::Count); ++i)
-        if (name == kLaneKindNames[i]) return static_cast<LaneKind>(i);
-    return LaneKind::Driving;
-}
-
-inline LaneKind kind_of(const Track& t) {
-    return t.tag < static_cast<u32>(LaneKind::Count) ? static_cast<LaneKind>(t.tag) : LaneKind::Driving;
-}
-
-/// Can a vehicle drive here at all?
-inline bool is_carriageway(LaneKind kind) {
-    return kind == LaneKind::Driving || kind == LaneKind::LeftTurn || kind == LaneKind::RightTurn ||
-           kind == LaneKind::Bus;
-}
+using traffic::is_carriageway;
+using traffic::kind_of;
+using traffic::lane_kind_from;
+using traffic::LaneKind;
+using traffic::turn_sense;
 
 /// One lane of a road type, in assets/road_types.json. Lanes are listed from
 /// the left kerb to the right kerb, the way you would see them from above.
@@ -436,68 +413,10 @@ public:
         }
     }
 
-    /// Which way a movement turns: -1 left, 0 straight on, 1 right.
-    static int turn_sense(const CurveNetwork& net, TrackRef from, TrackRef to) {
-        const Path& in = net.track_path(from);
-        const Path& out = net.track_path(to);
-        if (in.empty() || out.empty()) return 0;
-        const float turn = cross(in.segments.back().direction(1), out.segments.front().direction(0));
-        return std::fabs(turn) < 0.34f ? 0 : (turn > 0 ? 1 : -1);
-    }
-
-    /// Lane discipline at a junction: turn pockets take their own turn, the
-    /// lane by the centre line turns left, the lane by the kerb turns right,
-    /// and everyone may go straight on. A road with a pocket keeps its
-    /// through lanes clear of that turn.
-    static bool may_connect(const CurveNetwork& net, u32 /*node*/, TrackRef from, TrackRef to) {
-        const NetEdge& in = net.edge(from.edge);
-        const NetEdge& out = net.edge(to.edge);
-        if (from.track >= in.tracks.size() || to.track >= out.tracks.size()) return false;
-        const Track& lane = in.tracks[from.track];
-        const Track& next = out.tracks[to.track];
-        const LaneKind kind = kind_of(lane);
-        const LaneKind target = kind_of(next);
-        if (!is_carriageway(kind) || !is_carriageway(target)) return false;
-        if (kind == LaneKind::Bus && target != LaneKind::Bus && target != LaneKind::Driving) return false;
-        if (from.edge == to.edge) return false; // no turning back down the same road
-
-        const int sense = turn_sense(net, from, to);
-        if (kind == LaneKind::LeftTurn) return sense < 0;
-        if (kind == LaneKind::RightTurn) return sense > 0;
-        if (sense == 0) return true;
-
-        // A plain lane may turn only from the side it is on, and only if the
-        // road has no pocket for that turn.
-        bool has_pocket = false;
-        for (const Track& t : in.tracks) {
-            if (t.forward != lane.forward) continue;
-            const LaneKind other = kind_of(t);
-            if ((sense < 0 && other == LaneKind::LeftTurn) || (sense > 0 && other == LaneKind::RightTurn)) has_pocket = true;
-        }
-        if (has_pocket) return false;
-
-        float centre_most = lane.offset, kerb_most = lane.offset;
-        for (const Track& t : in.tracks) {
-            if (t.forward != lane.forward || !is_carriageway(kind_of(t))) continue;
-            // Forward lanes run to the right of the centre line, so the lane
-            // nearest the centre has the smallest offset; backward is mirrored.
-            if (lane.forward) {
-                centre_most = std::min(centre_most, t.offset);
-                kerb_most = std::max(kerb_most, t.offset);
-            } else {
-                centre_most = std::max(centre_most, t.offset);
-                kerb_most = std::min(kerb_most, t.offset);
-            }
-        }
-        // With one lane it is both the centre lane and the kerb lane.
-        if (sense < 0) return std::fabs(lane.offset - centre_most) < 0.01f;
-        return std::fabs(lane.offset - kerb_most) < 0.01f;
-    }
-
     void start(App& app) override {
         app_ = &app;
         net_.set_connect_filter(
-            [](const CurveNetwork& net, u32 node, TrackRef from, TrackRef to) { return may_connect(net, node, from, to); });
+            [](const CurveNetwork& net, u32, TrackRef from, TrackRef to) { return traffic::may_connect(net, from, to); });
         cars_.set_entry_rule([this](const NetworkAgents& agents, u32 agent, u32 connector) {
             return may_enter(agents, agent, connector);
         });
@@ -841,25 +760,32 @@ private:
             if (edge.path.empty()) continue;
             // The direction the road runs, pointing away from this node, then
             // reversed: a road carries on the way it came in.
-            Vec2 out = edge.a == node ? edge.path.segments.front().direction(0)
-                                      : edge.path.segments.back().direction(1) * -1.0f;
+            // The direction this road runs *away* from the node, reversed: a
+            // road carries on the way it came in, it does not double back.
+            const Vec2 out = edge.a == node ? edge.path.segments.front().direction(0)
+                                            : edge.path.segments.back().direction(1) * -1.0f;
             const Vec2 carry = out * -1.0f;
-            for (const Vec2& option : {out, carry}) {
-                const float d = dot(option, wanted);
-                if (d > best_dot) {
-                    best_dot = d;
-                    best = option;
-                }
+            const float d = dot(carry, wanted);
+            if (d > best_dot) {
+                best_dot = d;
+                best = carry;
             }
         }
         return best;
     }
 
-    /// The radius a road of this type should not go below.
+    /// The radius below which this road is uncomfortable at its own speed.
+    /// Above the hard floor this only warns: real streets are full of bends
+    /// tighter than the design speed, and a builder that forbids them is a
+    /// builder the player fights.
     float comfortable_radius(const RoadType* type) const {
         const float speed = (type ? type->speed_kmh : 50.0f) / 3.6f;
         return std::max(kMinRadius, speed * speed / kLateralAccel);
     }
+
+    /// The radius below which the lanes themselves would fold over: half the
+    /// road plus a margin, because every lane is an offset of the centreline.
+    static float hard_radius(float road_width) { return std::max(kMinRadius, road_width * 0.5f + 2.0f); }
 
     /// Whatever the current shape makes of these points.
     Path drawn_path(const std::vector<Vec2>& points, float* radius = nullptr) const {
@@ -882,6 +808,17 @@ private:
         const RoadType* type = road_type_.get(roads_);
         if (!type || path.empty()) return false;
 
+        float tightest = 0;
+        for (const CubicBezier& seg : path.segments) {
+            for (int i = 0; i <= 8; ++i) {
+                const float k = std::fabs(seg.curvature(static_cast<float>(i) / 8));
+                if (k > 1e-6f) tightest = std::max(tightest, k);
+            }
+        }
+        if (tightest > 0 && 1.0f / tightest < hard_radius(type->width())) {
+            refusal_ = "bend too tight for this road";
+            return false;
+        }
         const float price = path.length() * type->cost_per_m;
         if (price > money_) {
             refusal_ = "not enough money";
@@ -1361,21 +1298,36 @@ private:
     /// Insert a turn lane into an edge, on the side the given direction turns
     /// towards. Lanes run left to right, so the slot next to the centre line
     /// is where both directions put their left turn.
+    ///
+    /// The lanes of the direction that gains the pocket keep the offsets they
+    /// had: the road grows on the other side of the new lane. Re-centring the
+    /// whole cross-section instead would slide every through lane sideways by
+    /// half a lane, and the connectors at the taper would become dog-legs.
     static void insert_pocket(NetEdge& e, bool forward, bool left, float width) {
         usize backward_count = 0;
         for (const Track& t : e.tracks)
             if (!t.forward) ++backward_count;
-        usize at = 0;
-        if (forward) at = left ? backward_count : e.tracks.size();
-        else at = left ? backward_count : 0;
-        Track lane{0, forward, width, static_cast<u32>(left ? LaneKind::LeftTurn : LaneKind::RightTurn)};
+        const usize at = forward ? (left ? backward_count : e.tracks.size()) : (left ? backward_count : 0);
+        if (e.tracks.empty()) return;
+
+        float offset = 0;
+        if (at == 0) {
+            offset = e.tracks.front().offset - e.tracks.front().width * 0.5f - width * 0.5f;
+        } else if (at >= e.tracks.size()) {
+            offset = e.tracks.back().offset + e.tracks.back().width * 0.5f + width * 0.5f;
+        } else if (forward) {
+            // Grows towards the centre: the lanes to the left of it move over.
+            const Track& next = e.tracks[at];
+            offset = next.offset - next.width * 0.5f - width * 0.5f;
+            for (usize i = 0; i < at; ++i) e.tracks[i].offset -= width;
+        } else {
+            const Track& previous = e.tracks[at - 1];
+            offset = previous.offset + previous.width * 0.5f + width * 0.5f;
+            for (usize i = at; i < e.tracks.size(); ++i) e.tracks[i].offset += width;
+        }
+        Track lane{offset, forward, width, static_cast<u32>(left ? LaneKind::LeftTurn : LaneKind::RightTurn)};
         e.tracks.insert(e.tracks.begin() + static_cast<std::ptrdiff_t>(at), lane);
         e.width += width;
-        float offset = -e.width * 0.5f;
-        for (Track& t : e.tracks) {
-            t.offset = offset + t.width * 0.5f;
-            offset += t.width;
-        }
     }
 
     /// Give one approach of a junction its pocket. Returns whether anything
@@ -1391,7 +1343,7 @@ private:
         if (total < kPocketLength * 2.2f) return false;
 
         const float cut = incoming_forward ? total - kPocketLength : kPocketLength;
-        const u32 mid = traffic::split_at(net_, edge, cut, 0.4f);
+        const u32 mid = traffic::split_at(net_, edge, cut, kTaperLength * 0.5f);
         if (mid == kNone) return false;
         // split_edge keeps the first half at the old index and appends the tail.
         const u32 pocket = incoming_forward ? static_cast<u32>(net_.edges().size()) - 1 : edge;
@@ -1867,7 +1819,7 @@ private:
         }
 
         if (zoom_ < 3.0f) return; // the rest is detail nobody can see from up there
-        build_taper(e, along);
+        build_tapers(e, edge_index(e), along);
         build_approach(e, along, e.a, false, forward, backward);
         build_approach(e, along, e.b, true, forward, backward);
     }
@@ -2078,29 +2030,60 @@ private:
     static float dash_mark(usize lanes_per_side) { return lanes_per_side >= 3 ? 6.0f : lanes_per_side >= 2 ? 4.0f : 3.0f; }
     static float dash_gap(usize lanes_per_side) { return lanes_per_side >= 3 ? 12.0f : lanes_per_side >= 2 ? 8.0f : 3.0f; }
 
-    /// Where a road gains a lane, the extra lane opens over a taper rather
-    /// than appearing out of nothing.
-    void build_taper(const NetEdge& e, const PathSampler& along) {
-        for (const Track& t : e.tracks) {
-            const LaneKind kind = kind_of(t);
-            if (kind != LaneKind::LeftTurn && kind != LaneKind::RightTurn) continue;
-            const float length = along.length();
-            if (length < kTaperLength + 4) continue;
-            // The pocket runs to the junction end of the piece, so it opens at
-            // the other end: forward lanes start at the beginning of the edge.
-            const float from = t.forward ? 0.0f : length;
-            const float to = t.forward ? kTaperLength : length - kTaperLength;
-            const float edge_offset = t.offset + (t.forward ? -t.width * 0.5f : t.width * 0.5f);
-            const float inner = t.offset + (t.forward ? t.width * 0.5f : -t.width * 0.5f);
-            const PathPoint a = along.at(clampf(from, 0, length));
-            const PathPoint b = along.at(clampf(to, 0, length));
-            const Vec2 start = a.position + perp(a.direction) * inner;
-            const Vec2 end = b.position + perp(b.direction) * edge_offset;
-            const Vec2 dir = normalize(end - start);
-            if (length_sq(dir) < 0.5f) continue;
-            const Vec2 thick = perp(dir) * (marking_width(kNarrowLine) * 0.5f);
-            add_quad(start - thick, end - thick, end + thick, start + thick, kMarkingWhite);
+    /// A lane that nothing feeds opens over a taper, and one that carries on
+    /// nowhere closes over one. That covers a turn pocket, a road that gains a
+    /// lane and a road that loses one, without any of them being a special case.
+    void build_tapers(const NetEdge& e, u32 index, const PathSampler& along) {
+        const float length = along.length();
+        if (length < kTaperLength + 6) return;
+        for (u32 t = 0; t < static_cast<u32>(e.tracks.size()); ++t) {
+            const Track& lane = e.tracks[t];
+            if (!is_carriageway(kind_of(lane))) continue;
+            const TrackRef ref{index, t};
+            // A forward lane runs from the start of the edge to its end.
+            if (!traffic::lane_is_fed(net_, ref)) add_taper(e, along, lane, lane.forward ? 0.0f : length, true);
+            if (!traffic::lane_continues(net_, ref)) add_taper(e, along, lane, lane.forward ? length : 0.0f, false);
         }
+    }
+
+    /// One taper: the lane's edge angles across its own width, opening away
+    /// from `at` or closing towards it.
+    void add_taper(const NetEdge& e, const PathSampler& along, const Track& lane, float at, bool opening) {
+        const float length = along.length();
+        // The lane closes towards whichever side its neighbours are on.
+        float inward = 0;
+        for (const Track& other : e.tracks) {
+            if (&other == &lane || other.forward != lane.forward || !is_carriageway(kind_of(other))) continue;
+            inward += other.offset > lane.offset ? 1.0f : -1.0f;
+        }
+        if (inward == 0) inward = lane.forward ? -1.0f : 1.0f; // alone: close towards the centre
+        inward = inward > 0 ? 1.0f : -1.0f;
+
+        const float travel = lane.forward ? 1.0f : -1.0f;
+        const float far = opening ? at + travel * kTaperLength : at - travel * kTaperLength;
+        const float from = clampf(std::min(at, far), 0, length);
+        const float to = clampf(std::max(at, far), 0, length);
+        if (to - from < 2) return;
+        const bool start_is_narrow = opening ? (at < far) == (travel > 0) : (at < far) == (travel < 0);
+        const PathPoint a = along.at(from);
+        const PathPoint b = along.at(to);
+        const float narrow = lane.offset + inward * lane.width * 0.5f;
+        const float wide = lane.offset - inward * lane.width * 0.5f;
+        const Vec2 pa = a.position + perp(a.direction) * (start_is_narrow ? narrow : wide);
+        const Vec2 pb = b.position + perp(b.direction) * (start_is_narrow ? wide : narrow);
+        const Vec2 dir = normalize(pb - pa);
+        if (length_sq(dir) < 0.5f) return;
+        const Vec2 thick = perp(dir) * (marking_width(kNarrowLine) * 0.5f);
+        add_quad(pa - thick, pb - thick, pb + thick, pa + thick, kMarkingWhite);
+
+        // Merging traffic gets a dotted line rather than a solid one.
+        StrokeStyle dotted;
+        dotted.width = marking_width(kNarrowLine);
+        dotted.dash = 1.0f;
+        dotted.gap = 1.0f;
+        set_color(dotted, kGuideWhite);
+        const Path body = e.path.sub_path(std::max(0.0f, from - kMergeDots), from);
+        if (!body.empty()) add_line(body.offset(lane.offset + inward * lane.width * 0.5f), dotted);
     }
 
     /// The dotted guide lines that carry a lane across a junction, so a
@@ -2527,7 +2510,7 @@ private:
         }
 
         // How the road is drawn, and what the clicks snap to.
-        const char* shapes[4] = {"Line", "Curve", "Smooth", "Free"};
+        const char* shapes[4] = {"Line", "Curve", "Arc", "Free"};
         const float shape_w = (kShapeStrip.w - 12) / 4;
         for (int i = 0; i < 4; ++i) {
             const Rect box{kShapeStrip.x + static_cast<float>(i) * (shape_w + 4), kShapeStrip.y, shape_w, 21};

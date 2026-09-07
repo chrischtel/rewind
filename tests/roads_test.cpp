@@ -1,6 +1,7 @@
 // Headless checks for laying roads into a network: snapping, crossings that
 // become junctions, T junctions, refusals, and the lanes that come with them.
 
+#include "../game/traffic/lanes.h"
 #include "../game/traffic/roads.h"
 
 #include <cstdio>
@@ -22,6 +23,12 @@ int failures = 0;
     } while (0)
 
 Path straight(Vec2 a, Vec2 b) { return Path::from_polyline({a, b}); }
+
+/// The game's lane discipline, which a bare network does not have.
+void use_lane_rules(CurveNetwork& net) {
+    net.set_connect_filter(
+        [](const CurveNetwork& n, u32, TrackRef from, TrackRef to) { return traffic::may_connect(n, from, to); });
+}
 
 usize live_edges(const CurveNetwork& net) {
     usize n = 0;
@@ -208,9 +215,114 @@ void test_arc_between() {
     CHECK(traffic::arc_between({0, 0}, {0, 0}, {50, 0}).empty());
 }
 
+/// Lane discipline: which lane may go where, and what happens where a road
+/// loses a lane.
+void test_lane_rules() {
+    using traffic::LaneKind;
+    CurveNetwork net;
+    use_lane_rules(net);
+    RoadSpec wide;
+    wide.lanes = {{0, false, 3.25f, 0}, {0, false, 3.25f, 0}, {0, true, 3.25f, 0}, {0, true, 3.25f, 0}};
+    RoadSpec narrow;
+    narrow.lanes = {{0, false, 3.25f, 0}, {0, true, 3.25f, 0}};
+
+    // A four-lane road running into a two-lane one: the road loses a lane
+    // each way, and only the kerb lanes carry on.
+    const BuildResult a = traffic::build_road(net, straight({0, 0}, {200, 0}), wide, 8.0f);
+    const BuildResult b = traffic::build_road(net, straight({200, 0}, {400, 0}), narrow, 8.0f);
+    CHECK(a.ok && b.ok);
+    const u32 first = a.edges[0], second = b.edges[0];
+
+    // Ranks count from each direction's own kerb.
+    const NetEdge& e = net.edge(first);
+    CHECK(traffic::rank_from_kerb(e, 3) == 0); // the outermost forward lane is the kerb lane
+    CHECK(traffic::rank_from_kerb(e, 2) == 1);
+    CHECK(traffic::rank_from_kerb(e, 0) == 0); // and the same the other way
+    CHECK(traffic::rank_from_kerb(e, 1) == 1);
+
+    // The kerb lane continues; the inner one has nowhere to go, so its cars
+    // must move over first. That is the merge.
+    CHECK(traffic::may_connect(net, TrackRef{first, 3}, TrackRef{second, 1}));
+    CHECK(!traffic::may_connect(net, TrackRef{first, 2}, TrackRef{second, 1}));
+
+    // Nothing connects to a cycle lane or out of one.
+    RoadSpec with_cycle;
+    with_cycle.lanes = {{0, false, 3.0f, static_cast<u32>(LaneKind::Driving)},
+                        {0, true, 3.0f, static_cast<u32>(LaneKind::Driving)},
+                        {0, true, 1.6f, static_cast<u32>(LaneKind::Cycle)}};
+    CurveNetwork cycles;
+    use_lane_rules(cycles);
+    const BuildResult c1 = traffic::build_road(cycles, straight({0, 0}, {200, 0}), with_cycle, 8.0f);
+    const BuildResult c2 = traffic::build_road(cycles, straight({200, 0}, {400, 0}), with_cycle, 8.0f);
+    CHECK(c1.ok && c2.ok);
+    CHECK(!traffic::may_connect(cycles, TrackRef{c1.edges[0], 2}, TrackRef{c2.edges[0], 1}));
+    CHECK(!traffic::may_connect(cycles, TrackRef{c1.edges[0], 1}, TrackRef{c2.edges[0], 2}));
+    CHECK(traffic::may_connect(cycles, TrackRef{c1.edges[0], 1}, TrackRef{c2.edges[0], 1}));
+}
+
+/// At a crossroads the turns come out of the right lanes, and a pocket takes
+/// its turn away from the through lanes.
+void test_turn_lanes() {
+    using traffic::LaneKind;
+    CurveNetwork net;
+    use_lane_rules(net);
+    RoadSpec two;
+    two.lanes = {{0, false, 3.25f, 0}, {0, false, 3.25f, 0}, {0, true, 3.25f, 0}, {0, true, 3.25f, 0}};
+    traffic::build_road(net, straight({-200, 0}, {200, 0}), two, 8.0f);
+    traffic::build_road(net, straight({0, -200}, {0, 200}), two, 8.0f);
+
+    // Find the two arms of the crossroads that run west to east and north.
+    u32 west = ~0u, north = ~0u;
+    for (u32 i = 0; i < static_cast<u32>(net.edges().size()); ++i) {
+        if (!net.valid_edge(i)) continue;
+        const NetEdge& e = net.edge(i);
+        const Vec2 mid = (net.node(e.a).pos + net.node(e.b).pos) * 0.5f;
+        if (mid.x < -50 && std::fabs(mid.y) < 10) west = i;
+        if (mid.y < -50 && std::fabs(mid.x) < 10) north = i;
+    }
+    CHECK(west != ~0u && north != ~0u);
+
+    // Heading east on the western arm, lane 3 is the kerb lane and lane 2 the
+    // one by the centre line. Only the kerb lane may turn right, only the
+    // centre lane may turn left, and both may go straight on.
+    usize left_from_centre = 0, left_from_kerb = 0;
+    for (const rw::Connector& c : net.connectors()) {
+        if (c.from.edge != west) continue;
+        if (traffic::turn_sense(net, c.from, c.to) >= 0) continue;
+        if (c.from.track == 2) ++left_from_centre;
+        if (c.from.track == 3) ++left_from_kerb;
+    }
+    CHECK(left_from_centre > 0);
+    CHECK(left_from_kerb == 0);
+
+    // Give that arm a left turn pocket: the through lanes lose the left turn.
+    NetEdge& arm = net.edge(west);
+    arm.tracks.insert(arm.tracks.begin() + 2, rw::Track{0, true, 3.0f, static_cast<u32>(LaneKind::LeftTurn)});
+    arm.width += 3.0f;
+    float at = -arm.width * 0.5f;
+    for (rw::Track& t : arm.tracks) {
+        t.offset = at + t.width * 0.5f;
+        at += t.width;
+    }
+    net.rebuild();
+    usize from_pocket = 0, left_from_through = 0;
+    for (const rw::Connector& c : net.connectors()) {
+        if (c.from.edge != west || traffic::turn_sense(net, c.from, c.to) >= 0) continue;
+        if (c.from.track == 2) ++from_pocket;
+        else ++left_from_through;
+    }
+    CHECK(from_pocket > 0);
+    CHECK(left_from_through == 0);
+    // And the pocket does nothing but turn left.
+    for (const rw::Connector& c : net.connectors())
+        if (c.from.edge == west && c.from.track == 2) CHECK(traffic::turn_sense(net, c.from, c.to) < 0);
+}
+
 } // namespace
 
 int main() {
+    test_lane_rules();
+    test_turn_lanes();
     test_arc_between();
     test_roundabout();
     test_first_road();
