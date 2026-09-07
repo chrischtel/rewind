@@ -14,6 +14,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 option(REWIND_BUILD_SAMPLES "Build the sample games" ON)
+option(REWIND_BUILD_GAME "Build the game in game/" ON)
 option(REWIND_BUILD_TESTS "Build the engine tests" ON)
 
 include(cmake/Dependencies.cmake)
@@ -30,6 +31,10 @@ if(REWIND_BUILD_SAMPLES)
     add_subdirectory(samples/pixels)
     add_subdirectory(samples/duel)
     add_subdirectory(samples/towerdefense)
+endif()
+
+if(REWIND_BUILD_GAME)
+    add_subdirectory(game/traffic)
 endif()
 
 if(REWIND_BUILD_TESTS)

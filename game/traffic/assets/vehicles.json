@@ -1,0 +1,10 @@
+{
+  "rows": [
+    {"id": "car",   "length": 4.4,  "width": 1.8, "top_speed_kmh": 95,  "accel": 3.2, "decel": 6.5, "share": 60, "color": 1},
+    {"id": "hatch", "length": 3.9,  "width": 1.7, "top_speed_kmh": 88,  "accel": 3.0, "decel": 6.5, "share": 25, "color": 3},
+    {"id": "van",   "length": 5.8,  "width": 2.0, "top_speed_kmh": 80,  "accel": 2.4, "decel": 5.5, "share": 18, "color": 4},
+    {"id": "bus",   "length": 12.0, "width": 2.5, "top_speed_kmh": 65,  "accel": 1.4, "decel": 4.5, "share": 6,  "color": 0},
+    {"id": "truck", "length": 16.5, "width": 2.5, "top_speed_kmh": 70,  "accel": 1.1, "decel": 4.0, "share": 8,  "color": 5},
+    {"id": "taxi",  "length": 4.6,  "width": 1.8, "top_speed_kmh": 100, "accel": 3.4, "decel": 7.0, "share": 12, "color": 2}
+  ]
+}

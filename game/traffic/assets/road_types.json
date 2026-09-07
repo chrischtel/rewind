@@ -1,0 +1,9 @@
+{
+  "rows": [
+    {"id": "street",  "lanes_forward": 1, "lanes_backward": 1, "lane_width": 3.5, "speed_kmh": 50},
+    {"id": "avenue",  "lanes_forward": 2, "lanes_backward": 2, "lane_width": 3.5, "speed_kmh": 70},
+    {"id": "oneway",  "lanes_forward": 2, "lanes_backward": 0, "lane_width": 3.5, "speed_kmh": 50},
+    {"id": "highway", "lanes_forward": 3, "lanes_backward": 3, "lane_width": 3.75, "speed_kmh": 120},
+    {"id": "lane",    "lanes_forward": 1, "lanes_backward": 0, "lane_width": 3.0, "speed_kmh": 30}
+  ]
+}

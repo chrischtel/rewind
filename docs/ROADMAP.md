@@ -206,6 +206,17 @@ knows what a car is. Decided 2026-09-06.
 
 All seven items of this list are done.
 
+## Active: the traffic game
+
+The engine has what a traffic sim needs, so the open list is now the game's,
+in [game/traffic/README.md](../game/traffic/README.md): junctions that form
+themselves where roads cross, traffic lights and priority, sources and sinks
+instead of random trips, speed limits and congestion in the routing, the
+look (textures, crossings, bridges), and the game around it.
+
+Engine work from here follows what the game turns out to need, and lands as
+generic features: nothing in `engine/` knows about cars.
+
 ## Later
 
 **3D and isometric 3D tools** (a stated goal): 3D camera and projection,

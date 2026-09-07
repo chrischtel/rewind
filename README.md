@@ -187,6 +187,8 @@ the state, `reflect` lists the whole state, and side effects go through
 - [docs/GUIDE.md](docs/GUIDE.md): the full reference. Every system, the
   hotkeys, the layout of the source tree, and how to use each feature.
 - `samples/`: read `bounce` first, then `towerdefense`.
+- `game/traffic/`: a traffic management sim built on the engine, the
+  largest thing using it. The engine itself knows nothing about it.
 - `tests/`: the clearest documentation of what each system guarantees.
 
 ## License
