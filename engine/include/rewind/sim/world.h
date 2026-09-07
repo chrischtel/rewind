@@ -303,7 +303,7 @@ private:
         void reflect(Visitor& v) override {
             v.field("components", data);
             v.field("owners", owners);
-            rebuild_sparse();
+            if (v.writes()) rebuild_sparse();
         }
 
         void add_default(u32 index) override {

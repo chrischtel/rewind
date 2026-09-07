@@ -128,7 +128,7 @@ public:
     void reflect(Visitor& v) {
         v.field("nodes", nodes_);
         v.field("edges", edges_);
-        rebuild_adjacency();
+        if (v.writes()) rebuild_adjacency();
     }
 
 private:

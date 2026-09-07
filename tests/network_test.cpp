@@ -244,7 +244,32 @@ void test_penalties_and_staleness() {
     CHECK(bi.found && near(bi.cost, direct.cost, 1e-3f) && bi.steps.size() == 3);
 }
 
+/// Saving is a read: it must not rebuild the network, because the timeline
+/// saves every tick to fingerprint it.
+void test_save_does_not_rebuild() {
+    CurveNetwork net = make_cross();
+    const u64 version = net.version();
+    Writer w;
+    {
+        SaveVisitor save(w);
+        net.reflect(save);
+    }
+    CHECK(net.version() == version);
+    CHECK(!SaveVisitor(w).writes());
+
+    // Loading is a write: it must rebuild, or the derived data is stale.
+    CurveNetwork loaded;
+    {
+        Reader r(w.bytes());
+        LoadVisitor load(r);
+        loaded.reflect(load);
+    }
+    CHECK(loaded.track_count() == net.track_count());
+    CHECK(!loaded.connectors().empty());
+}
+
 int main() {
+    test_save_does_not_rebuild();
     test_penalties_and_staleness();
     test_tracks_and_connectors();
     test_routing();

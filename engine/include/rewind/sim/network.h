@@ -230,7 +230,7 @@ public:
         v.field("nodes", nodes_);
         v.field("edges", edges_);
         v.field("change_penalty", change_penalty, {.min = 0});
-        rebuild();
+        if (v.writes()) rebuild(); // a save only reads: it must not rebuild the whole network
     }
 
 private:

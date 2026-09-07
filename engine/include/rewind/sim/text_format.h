@@ -42,6 +42,7 @@ template <class T> void apply_json(const JsonValue& value, T& object);
 /// readable and diffable and survive fields being added, removed or reordered.
 class JsonWriteVisitor final : public Visitor {
 public:
+    bool writes() const override { return false; }
     explicit JsonWriteVisitor(bool include_transient = false);
 
     /// Closes the root object and returns the document.

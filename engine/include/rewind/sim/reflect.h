@@ -74,6 +74,17 @@ public:
     // ---- aggregates ---------------------------------------------------------
     /// Return false to skip the contents. Only inspection-style visitors may
     /// do that; anything that reads or writes data must always descend.
+    /// Does this visitor change the object it walks? Loading, editing and
+    /// dragging a handle do; saving, hashing and printing do not. A type
+    /// whose reflect() rebuilds derived data guards it with this, so a save
+    /// stays as cheap as it looks:
+    ///
+    ///     void reflect(Visitor& v) { v.field("nodes", nodes_); if (v.writes()) rebuild(); }
+    ///
+    /// The timeline saves every tick to fingerprint it, so an unguarded
+    /// rebuild there costs the whole derived structure sixty times a second.
+    virtual bool writes() const { return true; }
+
     virtual bool begin_struct(std::string_view name, const FieldMeta& m) = 0;
     virtual void end_struct() = 0;
 
@@ -152,6 +163,7 @@ class Reader;
 /// Writes every non-transient field into a Writer, in declaration order.
 class SaveVisitor final : public Visitor {
 public:
+    bool writes() const override { return false; }
     explicit SaveVisitor(Writer& out) : out_(out) {}
 
     void visit(std::string_view, bool& v, const FieldMeta& m) override;
@@ -211,6 +223,7 @@ private:
 /// and the "copy state" button in the overlay.
 class DumpVisitor final : public Visitor {
 public:
+    bool writes() const override { return false; }
     /// Arrays longer than this show only their first elements.
     explicit DumpVisitor(usize max_elements = 16) : max_elements_(max_elements) {}
 
