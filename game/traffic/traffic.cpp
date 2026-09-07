@@ -42,14 +42,17 @@ const Color kSoil = rgb(150, 136, 100);
 const Color kTreeDark = rgb(46, 70, 42);
 const Color kTreeLight = rgb(92, 122, 62);
 const Color kTreeShadow = rgba(30, 42, 26, 80);
-const Color kTownGround = rgb(126, 124, 96);
-const Color kRoofDark = rgb(122, 74, 58);
-const Color kRoofLight = rgb(178, 116, 88);
+const Color kTownGround = rgb(132, 138, 104);
+const Color kRoofDark = rgb(96, 74, 66);
+const Color kRoofLight = rgb(146, 104, 84);
 const Color kBuildingShadow = rgba(40, 40, 34, 70);
 /// European place-name plates: yellow for a village, blue for a main road
 /// destination, green for a trunk road, white for anything local.
 const Color kPlate[4] = {rgb(226, 190, 60), rgb(40, 82, 158), rgb(30, 110, 76), rgb(96, 100, 110)};
 constexpr float kTownReach = 140.0f; ///< how far a town looks for a road to join
+constexpr float kStartingMoney = 20000;
+constexpr float kMoneyTarget = 60000;
+constexpr float kFarePerTrip = 12;
 const Color kAsphalt = rgb(58, 57, 57);
 /// Markings are white in Europe, never yellow, and their sizes are real
 /// metres so they stay right at every zoom.
@@ -76,12 +79,27 @@ const Color kKerbShadow = rgba(20, 22, 20, 90);
 const Color kGhost = rgba(255, 214, 90, 200);
 const Color kBad = rgba(255, 110, 110, 220);
 
-const Color kCarColors[8] = {rgb(216, 96, 96),  rgb(96, 152, 216),  rgb(228, 200, 116), rgb(118, 200, 150),
-                             rgb(206, 206, 214), rgb(146, 120, 206), rgb(232, 152, 88),  rgb(96, 100, 112)};
+/// Sixteen slots, filled the way European registrations actually run: a
+/// quarter grey, a fifth white, a fifth black, then the rest.
+const Color kCarColors[16] = {
+    rgb(232, 233, 230), rgb(232, 233, 230), rgb(146, 150, 156), rgb(92, 96, 102),
+    rgb(168, 171, 175), rgb(34, 35, 38),    rgb(34, 35, 38),    rgb(186, 190, 196),
+    rgb(42, 58, 102),   rgb(58, 96, 158),   rgb(158, 38, 42),   rgb(40, 72, 56),
+    rgb(176, 164, 142), rgb(226, 182, 42),  rgb(208, 104, 38),  rgb(146, 150, 156)};
+const Color kGlassTint = rgb(26, 30, 38);
+const Color kWindscreen = rgb(120, 146, 168);
+const Color kTailLampOn = rgb(255, 64, 52);
+const Color kTailLampOff = rgb(126, 28, 30);
+const Color kIndicatorOn = rgb(255, 176, 40);
+const Color kVehicleShadow = rgba(22, 26, 32, 95);
+/// Green through amber to red, for how well a road is flowing.
+const Color kFlowFree = rgb(96, 200, 104);
+const Color kFlowSlow = rgb(240, 176, 64);
+const Color kFlowJam = rgb(212, 62, 54);
 
 /// Commands from the HUD. They ride in the input frame, so a click on a
 /// button is recorded, rewinds and replays like a key press.
-enum Command : u32 { kCmdTool = 1, kCmdRoad = 2, kCmdClearCars = 3 };
+enum Command : u32 { kCmdTool = 1, kCmdRoad = 2, kCmdClearCars = 3, kCmdFlow = 4 };
 enum Event : u32 { kEvBuilt = 1, kEvRemoved = 2 };
 
 constexpr u32 kToolBuild = 0;
@@ -131,6 +149,7 @@ struct RoadType {
     u32 lanes_backward = 1;
     float lane_width = 3.5f;
     float speed_kmh = 50;
+    float cost_per_m = 2;  ///< what a metre of it costs to build
 
     float width() const { return static_cast<float>(lanes_forward + lanes_backward) * lane_width; }
 
@@ -140,6 +159,7 @@ struct RoadType {
         v.field("lanes_backward", lanes_backward, {.min = 0, .max = 5});
         v.field("lane_width", lane_width, {.min = 1.5f, .max = 8});
         v.field("speed_kmh", speed_kmh, {.min = 10, .max = 160});
+        v.field("cost_per_m", cost_per_m, {.min = 0, .max = 1000});
     }
 };
 
@@ -275,6 +295,7 @@ public:
         for (usize i = 0; i + 1 < cfg.args.size(); ++i) {
             if (cfg.args[i] == "--zoom") start_zoom_ = clampf(std::stof(cfg.args[i + 1]), 0.3f, 24.0f);
             if (cfg.args[i] == "--demo") demo_ = std::stoi(cfg.args[i + 1]) != 0;
+            if (cfg.args[i] == "--overlay-flow") start_flow_ = std::stoi(cfg.args[i + 1]) != 0;
             if (cfg.args[i] == "--at" && i + 2 < cfg.args.size()) {
                 start_at_ = Vec2{std::stof(cfg.args[i + 1]), std::stof(cfg.args[i + 2])};
                 has_start_at_ = true;
@@ -322,6 +343,11 @@ public:
         cam_target_ = cam_center_ = has_start_at_ ? start_at_ : Vec2{0, 0};
         zoom_target_ = zoom_ = start_zoom_;
         clock_ = 0;
+        money_ = kStartingMoney;
+        show_flow_ = start_flow_;
+        spent_ = 0;
+        flow_.clear();
+        signals_.clear();
         demand_ = start_demand_;
     }
 
@@ -344,6 +370,7 @@ public:
             refresh_connections();
         }
         step_signals(ctx.dt);
+        measure_flow(ctx.dt);
         send_trips(ctx);
         cars_.tick(net_, ctx.dt);
     }
@@ -372,6 +399,10 @@ public:
         v.field("routes", routes_);
         v.field("access_version", access_version_);
         v.field("clock", clock_);
+        v.field("flow", flow_);
+        v.field("money", money_);
+        v.field("spent", spent_, {.read_only = true});
+        v.field("show_flow", show_flow_);
         v.field("demand", demand_, {.min = 0.1f, .max = 20, .speed = 0.1f});
         v.field("max_cars", max_cars_, {.min = 0, .max = 4000});
         v.field("spawned", spawned_, {.read_only = true});
@@ -387,6 +418,7 @@ public:
 
         draw_ground(r);
         draw_roads(r);
+        draw_flow_overlay(r);
         draw_cars(r);
         draw_signals(r);
         draw_towns(r);
@@ -422,6 +454,7 @@ private:
                 road_type_ = DefRef<RoadType>{roads_.id_at(static_cast<usize>(in.command_value))};
             break;
         case kCmdClearCars: clear_traffic(); break;
+        case kCmdFlow: show_flow_ = !show_flow_; break;
         default: break;
         }
     }
@@ -523,6 +556,11 @@ private:
         const Path path = fit_path(simplify_polyline(stroke_, 0.4f), 1.2f);
         if (path.empty()) return;
 
+        const float price = path.length() * type->cost_per_m;
+        if (price > money_) {
+            refusal_ = "not enough money";
+            return;
+        }
         const traffic::RoadSpec spec{type->lanes_forward, type->lanes_backward, type->lane_width};
         auto standing = capture_cars(); // build_road rebuilds, which invalidates every route
         const traffic::BuildResult built = traffic::build_road(net_, path, spec, snap_range());
@@ -532,6 +570,8 @@ private:
             return;
         }
         refusal_ = "";
+        money_ -= built.length * type->cost_per_m;
+        spent_ += built.length * type->cost_per_m;
         restore_cars(standing);
         refresh_connections();
         const Vec2 mid = path.sub_path(0, path.length() * 0.5f).end();
@@ -800,6 +840,56 @@ private:
         return true;
     }
 
+    /// How freely each lane is running, as a share of what the cars on it
+    /// could do. Simulation state, so the overlay rewinds with everything else.
+    void measure_flow(float dt) {
+        const usize tracks = net_.track_count();
+        if (flow_.size() != tracks) flow_.assign(tracks, 1.0f);
+        if (tracks == 0) return;
+        std::vector<float> sum(tracks, 0.0f);
+        std::vector<u32> seen(tracks, 0);
+        for (u32 i = 0; i < static_cast<u32>(cars_.agents().size()); ++i) {
+            if (!cars_.valid(i)) continue;
+            const NetAgent& a = cars_.agent(i);
+            const RouteStep* step = cars_.current_step(i);
+            if (!step || step->kind != RouteStep::Kind::Track || step->index >= tracks) continue;
+            sum[step->index] += clampf(a.speed / std::max(a.params.max_speed, 1.0f), 0, 1);
+            ++seen[step->index];
+        }
+        const float k = clampf(dt * 0.6f, 0, 1);
+        for (usize i = 0; i < tracks; ++i) {
+            const float target = seen[i] ? sum[i] / static_cast<float>(seen[i]) : 1.0f;
+            flow_[i] += (target - flow_[i]) * k;
+        }
+    }
+
+    /// The worst lane on an edge decides its colour.
+    float edge_flow(u32 edge) const {
+        float worst = 1.0f;
+        const NetEdge& e = net_.edge(edge);
+        for (u32 t = 0; t < static_cast<u32>(e.tracks.size()); ++t) {
+            const u32 index = net_.track_index(TrackRef{edge, t});
+            if (index < flow_.size()) worst = std::min(worst, flow_[index]);
+        }
+        return worst;
+    }
+
+    void draw_flow_overlay(Renderer2D& r) {
+        if (!show_flow_) return;
+        r.set_layer(0);
+        for (u32 e = 0; e < static_cast<u32>(net_.edges().size()); ++e) {
+            if (!net_.valid_edge(e)) continue;
+            const float flow = edge_flow(e);
+            const Color color = flow > 0.6f ? lerp_color(kFlowSlow, kFlowFree, clampf((flow - 0.6f) / 0.4f, 0, 1))
+                                            : lerp_color(kFlowJam, kFlowSlow, clampf(flow / 0.6f, 0, 1));
+            StrokeStyle band;
+            band.width = net_.edge(e).width * 0.8f;
+            band.join = LineJoin::Round;
+            set_color(band, rgba(color.r, color.g, color.b, 150));
+            r.draw_path(net_.edge(e).path, band);
+        }
+    }
+
     void arrive(u32 car, u64 tick) {
         ++arrived_;
         if (car >= car_info_.size()) return;
@@ -807,6 +897,7 @@ private:
         if (info.route >= routes_.size()) return;
         RouteDemand& r = routes_[info.route];
         ++r.arrived;
+        money_ += kFarePerTrip; // a served trip pays for itself
         const float minutes = static_cast<float>(tick - info.started) / 60.0f / 60.0f;
         r.last_minutes = minutes;
         r.best_minutes = r.best_minutes <= 0 ? minutes : std::min(r.best_minutes, minutes);
@@ -1372,32 +1463,104 @@ private:
         if (points.size() >= 2) build_polyline(points, style, marking_mesh_);
     }
 
+    /// A car from directly above: a body with cut corners, a darker glasshouse,
+    /// a lighter roof, and lamps that answer to what the car is doing.
     void draw_cars(Renderer2D& r) {
+        const bool detail = zoom_ >= 4.0f;
+        const bool blink = std::fmod(clock_, 0.9f) < 0.45f;
         r.set_layer(1);
         for (u32 i = 0; i < static_cast<u32>(cars_.agents().size()); ++i) {
             if (!cars_.valid(i)) continue;
             const NetAgent& a = cars_.agent(i);
             const PathPoint p = cars_.pose(net_, i);
             const VehicleType* type = a.tag < vehicles_.size() ? &vehicles_.at(a.tag) : nullptr;
-            const float length = type ? type->length : a.params.length;
-            const float width = type ? type->width : 1.8f;
+            const float len = type ? type->length : a.params.length;
+            const float wide = type ? type->width : 1.8f;
             const Vec2 dir = p.direction;
-            const Vec2 side = perp(dir) * (width * 0.5f);
+            const Vec2 side = perp(dir);
+            const Color body = kCarColors[car_paint(i, type) % 16];
+
             const Vec2 front = p.position;
-            const Vec2 back = front - dir * length;
-            const Color body = kCarColors[(type ? type->color : 0) % 8];
-            r.fill_polygon({front + side, front - side, back - side, back + side}, body);
-            // A lighter nose so the direction reads at a glance, and brake
-            // lights while the car is stopped or giving way.
-            const Vec2 nose = front - dir * std::min(1.2f, length * 0.3f);
-            r.fill_polygon({front + side, front - side, nose - side, nose + side}, rgba(255, 255, 255, 60));
-            if (a.speed < 1.0f) {
-                const Color light = a.waiting ? rgb(255, 170, 70) : rgb(230, 70, 70);
-                r.fill_circle(back.x + side.x * 0.6f, back.y + side.y * 0.6f, std::max(0.35f, px(1)), light, 6);
-                r.fill_circle(back.x - side.x * 0.6f, back.y - side.y * 0.6f, std::max(0.35f, px(1)), light, 6);
+            const Vec2 back = front - dir * len;
+            r.set_sort_key(front.y);
+            // Shadow, on the same sun vector as the trees.
+            const Vec2 drop = Vec2{0.35f, 0.45f};
+            fill_car_body(r, front + drop, back + drop, side, wide, kVehicleShadow, 0.0f);
+            fill_car_body(r, front, back, side, wide, body, 0.16f);
+            if (!detail) continue;
+
+            const Color glass = lerp_color(body, kGlassTint, 0.72f);
+            const Color roof = lerp_color(body, rgb(255, 255, 255), 0.14f);
+            // Bonnet, glasshouse, roof, boot, from the front backwards.
+            const float cabin_start = len * 0.28f, cabin_end = len * 0.78f;
+            fill_slab(r, front - dir * cabin_start, front - dir * (cabin_start + len * 0.1f), side, wide * 0.86f, kWindscreen);
+            fill_slab(r, front - dir * (cabin_start + len * 0.1f), front - dir * cabin_end, side, wide * 0.9f, glass);
+            fill_slab(r, front - dir * (len * 0.4f), front - dir * (len * 0.62f), side, wide * 0.62f, roof);
+
+            // Lamps: red at the back under braking, amber on the side it is turning to.
+            const bool braking = a.waiting || a.speed < 2.0f;
+            const Color tail = braking ? kTailLampOn : kTailLampOff;
+            const float lamp = std::max(0.16f, px(1.2f));
+            const Vec2 corner = side * (wide * 0.36f);
+            r.fill_circle(back.x + corner.x + dir.x * 0.2f, back.y + corner.y + dir.y * 0.2f, lamp, tail, 6);
+            r.fill_circle(back.x - corner.x + dir.x * 0.2f, back.y - corner.y + dir.y * 0.2f, lamp, tail, 6);
+            const int turn = turn_ahead(i);
+            if (turn != 0 && blink) {
+                const Vec2 at = front - dir * (len * 0.12f) + side * (wide * 0.36f * static_cast<float>(turn));
+                r.fill_circle(at.x, at.y, lamp * 1.1f, kIndicatorOn, 6);
+                const Vec2 rear = back + side * (wide * 0.36f * static_cast<float>(turn));
+                r.fill_circle(rear.x, rear.y, lamp * 1.1f, kIndicatorOn, 6);
             }
         }
+        r.set_sort_key(0);
         r.set_layer(0);
+    }
+
+    /// The body: a rectangle with its front corners cut, which from above is
+    /// the difference between a car and a brick.
+    void fill_car_body(Renderer2D& r, Vec2 front, Vec2 back, Vec2 side, float wide, Color color, float cut) {
+        const Vec2 dir = normalize(front - back);
+        const Vec2 half = side * (wide * 0.5f);
+        const Vec2 nose = dir * (wide * cut);
+        if (cut <= 0.001f) {
+            r.fill_polygon({front + half, front - half, back - half, back + half}, color);
+            return;
+        }
+        r.fill_polygon({front + half - nose, front + half * 0.55f, front - half * 0.55f, front - half - nose,
+                        back - half, back - half * 0.75f + nose * 0.5f, back + half * 0.75f + nose * 0.5f, back + half},
+                       color);
+    }
+
+    void fill_slab(Renderer2D& r, Vec2 a, Vec2 b, Vec2 side, float wide, Color color) {
+        const Vec2 half = side * (wide * 0.5f);
+        r.fill_polygon({a + half, a - half, b - half, b + half}, color);
+    }
+
+    /// Which way the car is about to turn: -1 left, 1 right, 0 straight on.
+    /// Read out of the route, so the indicator can never lie.
+    int turn_ahead(u32 car) const {
+        const NetAgent& a = cars_.agent(car);
+        if (a.step + 1 >= a.route.steps.size()) return 0;
+        const RouteStep& now = a.route.steps[a.step];
+        if (now.kind != RouteStep::Kind::Track) return 0;
+        const float left = net_.track_length(net_.track_ref(now.index)) - a.distance;
+        if (left > 30.0f) return 0;
+        const RouteStep& next = a.route.steps[a.step + 1];
+        if (next.kind != RouteStep::Kind::Connector || next.index >= net_.connectors().size()) return 0;
+        const Connector& c = net_.connectors()[next.index];
+        if (c.path.empty()) return 0;
+        const Vec2 in = c.path.segments.front().direction(0);
+        const Vec2 out = c.path.segments.back().direction(1);
+        const float turn = cross(in, out);
+        if (std::fabs(turn) < 0.25f) return 0;
+        return turn > 0 ? 1 : -1; // y grows downwards, so a positive cross is a right turn
+    }
+
+    /// A car keeps its colour: it comes from the vehicle type and the slot,
+    /// never from anything that changes while it drives.
+    u32 car_paint(u32 car, const VehicleType* type) const {
+        const u32 base = type ? type->color : 0;
+        return base != 0 ? base : (cell_hash(static_cast<int>(car), 4242) >> 3) % 16;
     }
 
     void draw_tool(Renderer2D& r) {
@@ -1456,6 +1619,7 @@ private:
             // The ground a village stands on, then its houses: rectangles with
             // a roof ridge, laid out by hashing so a town always looks the same.
             r.fill_circle(at.x, at.y, radius, kTownGround, 24);
+            if (zoom_ < 1.6f) continue; // from up here a village is a patch, not houses
             const u32 count = 6 + t.size * 4;
             for (u32 b = 0; b < count; ++b) {
                 const u32 h = cell_hash(static_cast<int>(i) * 977 + static_cast<int>(b), 31337);
@@ -1541,7 +1705,8 @@ private:
         for (usize i = 0; i < roads_.size(); ++i) {
             const RoadType& type = roads_.at(i);
             char label[64];
-            std::snprintf(label, sizeof label, "%s  %ux%u", type.id.c_str(), type.lanes_forward, type.lanes_backward);
+            std::snprintf(label, sizeof label, "%s %ux%u  %.0f/m", type.id.c_str(), type.lanes_forward,
+                          type.lanes_backward, type.cost_per_m);
             bool selected = type.id == road_type_.id;
             if (ui_.toggle(label, selected)) app_->push_command(kCmdRoad, static_cast<i32>(i));
         }
@@ -1549,6 +1714,9 @@ private:
 
         ui_.begin_panel(kInfoPanel, "Network");
         char line[80];
+        std::snprintf(line, sizeof line, "%.0f of %.0f EUR", money_, kMoneyTarget);
+        ui_.label(line);
+        ui_.progress(clampf(money_ / kMoneyTarget, 0, 1), 186, {}, "");
         std::snprintf(line, sizeof line, "%zu of %zu routes connected", routes_connected(), routes_.size());
         ui_.label(line);
         std::snprintf(line, sizeof line, "%zu cars, %u arrived", cars_.count(), arrived_);
@@ -1564,11 +1732,25 @@ private:
             bool on = std::fabs(time.time_scale - scales[i]) < 1e-3f;
             if (ui_.toggle(names[i], on)) time.time_scale = scales[i];
         }
+        bool overlay = show_flow_;
+        if (ui_.toggle("Traffic overlay", overlay)) app_->push_command(kCmdFlow);
         if (ui_.button("Clear traffic", 186)) app_->push_command(kCmdClearCars);
         ui_.end_panel();
 
         ui_.end();
 
+        // What the road being drawn will cost, next to the cursor.
+        if (drawing_ && stroke_.size() > 1) {
+            const RoadType* type = road_type_.get(roads_);
+            float drawn = 0;
+            for (usize i = 1; i < stroke_.size(); ++i) drawn += distance(stroke_[i], stroke_[i - 1]);
+            const float price = drawn * (type ? type->cost_per_m : 0);
+            const Vec2 at = view(cam_center_, zoom_).to_screen(stroke_.back());
+            char cost[64];
+            std::snprintf(cost, sizeof cost, "%.0f m   %.0f EUR", drawn, price);
+            r.draw_text(at.x + 14, at.y + 14, cost, price > money_ ? kBad : rgb(255, 240, 200), 2);
+        }
+        if (refusal_[0]) r.draw_text(12, kHeight - 60, refusal_, kBad, 2);
         r.draw_text(12, kHeight - 44,
                     tool_ == kToolBuild   ? "drag: draw a road   right click: cancel, drag to pan   wheel: zoom"
                     : tool_ == kToolSignals ? "click a junction to put traffic lights on it, or to take them away"
@@ -1606,6 +1788,10 @@ private:
     u64 signal_version_ = 0;      ///< bumped whenever a signal is added, removed or re-phased
     std::vector<RouteDemand> routes_;
     u64 access_version_ = ~0ull;
+    std::vector<float> flow_; ///< per lane, 1 = free running, 0 = stopped
+    float money_ = 20000;
+    float spent_ = 0;
+    bool show_flow_ = false;
     float clock_ = 0;    ///< seconds since the map started
     float demand_ = 3.0f; ///< trips per minute for a pair of size-1 towns
     u32 max_cars_ = 400;
@@ -1619,6 +1805,7 @@ private:
     const char* refusal_ = "";
     float start_zoom_ = 2.2f;
     bool demo_ = false;
+    bool start_flow_ = false;
     Vec2 start_at_{};
     bool has_start_at_ = false;
     float start_demand_ = 3.0f;
