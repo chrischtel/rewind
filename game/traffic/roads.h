@@ -258,4 +258,60 @@ inline BuildResult build_road(CurveNetwork& net, const Path& path, const RoadSpe
     return result;
 }
 
+/// Lay a roundabout: a ring of one-way arcs around `centre`. Traffic keeps
+/// right, so the ring runs clockwise on screen (where y grows downwards),
+/// which is anticlockwise on a map with north up.
+///
+/// The ring is laid with tight snapping so nothing already there pulls it out
+/// of shape, then everything left inside it is cleared away: the roads that
+/// crossed the ring are cut at the boundary and become its entries.
+inline BuildResult build_roundabout(CurveNetwork& net, Vec2 centre, float radius, const RoadSpec& spec, float snap) {
+    BuildResult result;
+    if (radius < 6) {
+        result.refusal = "too small";
+        return result;
+    }
+    constexpr int kArcs = 8;
+    constexpr float kStep = -6.2831853f / kArcs; // negative: clockwise on screen
+    const float weld = std::min(snap, radius * 0.3f);
+
+    std::vector<u32> ring;
+    for (int i = 0; i < kArcs; ++i) {
+        const float angle = static_cast<float>(i) * kStep;
+        const Vec2 from{centre.x + std::cos(angle) * radius, centre.y + std::sin(angle) * radius};
+        Path arc;
+        arc.move_to(from);
+        arc.arc_to(centre, kStep);
+        const BuildResult piece = build_road(net, arc, spec, weld, 3.0f);
+        for (u32 e : piece.edges) ring.push_back(e);
+        for (u32 n : piece.junctions) result.junctions.push_back(n);
+    }
+    if (ring.empty()) {
+        result.refusal = "no room for a roundabout here";
+        return result;
+    }
+
+    // Clear the island: anything reaching inside the ring is a leftover of
+    // whatever used to be here, and the entries stop at the boundary.
+    const float inside = radius - 2.0f;
+    const auto is_ring = [&](u32 edge) { return std::find(ring.begin(), ring.end(), edge) != ring.end(); };
+    for (u32 e = 0; e < static_cast<u32>(net.edges().size()); ++e) {
+        if (!net.valid_edge(e) || is_ring(e)) continue;
+        const NetEdge& edge = net.edge(e);
+        const bool a_in = rw::distance(net.node(edge.a).pos, centre) < inside;
+        const bool b_in = rw::distance(net.node(edge.b).pos, centre) < inside;
+        if (a_in || b_in) net.remove_edge(e);
+    }
+    for (u32 n = 0; n < static_cast<u32>(net.nodes().size()); ++n) {
+        if (!net.valid_node(n)) continue;
+        if (rw::distance(net.node(n).pos, centre) < inside && net.edges_at(n).empty()) net.remove_node(n);
+    }
+
+    result.edges = ring;
+    result.ok = true;
+    result.length = 6.2831853f * radius;
+    net.rebuild();
+    return result;
+}
+
 } // namespace traffic

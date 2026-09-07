@@ -112,7 +112,11 @@ enum Event : u32 { kEvBuilt = 1, kEvRemoved = 2 };
 constexpr u32 kToolBuild = 0;
 constexpr u32 kToolBulldoze = 1;
 constexpr u32 kToolSignals = 2;
-const char* const kToolNames[] = {"build", "bulldoze", "signals"};
+constexpr u32 kToolRoundabout = 3;
+const char* const kToolNames[] = {"build", "bulldoze", "signals", "roundabout"};
+constexpr float kRoundaboutRadius = 15.0f; ///< centreline; a 32 m inscribed circle
+const Color kIslandGrass = rgb(104, 128, 74);
+const Color kIslandApron = rgb(150, 146, 138);
 const Color kLightRed = rgb(226, 62, 52);
 const Color kLightAmber = rgb(248, 178, 44);
 const Color kLightGreen = rgb(86, 206, 96);
@@ -126,7 +130,7 @@ const Rect kMoneyPanel{kWidth * 0.5f - 150, 10, 300, 56};
 const Rect kGoalPanel{kWidth - 274, 10, 262, 96};
 const Rect kBuildPanel{kWidth * 0.5f - 372, kHeight - 132, 744, 120};
 const Rect kMiniMap{12, kHeight - 184, 172, 172};
-const Rect kToolStrip{kBuildPanel.x + 10, kBuildPanel.y + 34, 150, 76};
+const Rect kToolStrip{kBuildPanel.x + 10, kBuildPanel.y + 22, 150, 92};
 constexpr float kCardWidth = 108;
 constexpr float kCardHeight = 76;
 
@@ -279,6 +283,18 @@ struct Signal {
     }
 };
 
+/// The middle of a roundabout: not a road, so the game remembers where its
+/// islands are in order to draw them and to refuse building another on top.
+struct Island {
+    Vec2 centre;
+    float radius = 15;
+
+    void reflect(Visitor& v) {
+        v.field("centre", centre);
+        v.field("radius", radius, {.min = 4, .max = 80});
+    }
+};
+
 /// What the game knows about a car beyond what the agent itself carries.
 /// Indexed like the agents, so it survives in the saved state.
 struct CarInfo {
@@ -357,16 +373,18 @@ public:
         stroke_from_ = kNone;
         tool_ = kToolBuild;
         road_type_ = DefRef<RoadType>{roads_.size() ? roads_.id_at(0) : std::string("street")};
+        // Everything the starting map may fill in has to be empty first.
+        money_ = kStartingMoney;
+        spent_ = 0;
+        flow_.clear();
+        signals_.clear();
+        islands_.clear();
+        show_flow_ = start_flow_;
+        demand_ = start_demand_;
         build_starting_map();
         cam_target_ = cam_center_ = has_start_at_ ? start_at_ : Vec2{0, 0};
         zoom_target_ = zoom_ = start_zoom_;
         clock_ = 0;
-        money_ = kStartingMoney;
-        show_flow_ = start_flow_;
-        spent_ = 0;
-        flow_.clear();
-        signals_.clear();
-        demand_ = start_demand_;
     }
 
     // ---- simulation ---------------------------------------------------------
@@ -404,7 +422,8 @@ public:
         v.field("cars", cars_);
         v.field("car_info", car_info_);
         v.field("rng", rng_);
-        v.field("tool", tool_, {.names = kToolNames, .name_count = 3});
+        v.field("tool", tool_, {.names = kToolNames, .name_count = 4});
+        v.field("islands", islands_);
         v.field("road_type", road_type_, {.table = "road_types"});
         v.field("stroke", stroke_);
         v.field("stroke_from", stroke_from_);
@@ -437,6 +456,7 @@ public:
 
         draw_ground(r);
         draw_roads(r);
+        draw_islands(r);
         draw_flow_overlay(r);
         draw_cars(r);
         draw_signals(r);
@@ -467,7 +487,7 @@ private:
 
     void handle_command(const InputFrame& in) {
         switch (in.command) {
-        case kCmdTool: tool_ = static_cast<u32>(in.command_value) <= kToolSignals ? static_cast<u32>(in.command_value) : tool_; break;
+        case kCmdTool: tool_ = static_cast<u32>(in.command_value) <= kToolRoundabout ? static_cast<u32>(in.command_value) : tool_; break;
         case kCmdRoad:
             if (in.command_value >= 0 && static_cast<usize>(in.command_value) < roads_.size())
                 road_type_ = DefRef<RoadType>{roads_.id_at(static_cast<usize>(in.command_value))};
@@ -510,6 +530,7 @@ private:
         const bool release = !in.down(Button::MouseLeft) && prev_input_.down(Button::MouseLeft);
         const bool cancel = in.down(Button::MouseRight) && !prev_input_.down(Button::MouseRight);
 
+        mouse_world_ = world;
         hover_node_ = net_.nearest_node(world, snap_range());
         hover_edge_ = kNone;
         if (hover_node_ == kNone) {
@@ -536,6 +557,8 @@ private:
                 stroke_.clear();
                 stroke_from_ = kNone;
             }
+        } else if (tool_ == kToolRoundabout) {
+            if (release && !on_hud) place_roundabout(ctx, world);
         } else if (tool_ == kToolSignals) {
             if (release && !on_hud && hover_node_ != kNone) toggle_signal(hover_node_);
         } else if (tool_ == kToolBulldoze) {
@@ -977,6 +1000,48 @@ private:
         return n;
     }
 
+    /// A roundabout: a ring of one-way road, and an island in the middle that
+    /// keeps its own record because it is not part of the network.
+    void place_roundabout(const TickContext& ctx, Vec2 at) {
+        const RoadType* ring = roads_.find("roundabout");
+        if (!ring) {
+            refusal_ = "no roundabout road type";
+            return;
+        }
+        for (const Island& island : islands_) {
+            if (distance(island.centre, at) < island.radius + kRoundaboutRadius) {
+                refusal_ = "too close to another roundabout";
+                return;
+            }
+        }
+        const float price = 6.2831853f * kRoundaboutRadius * ring->cost_per_m;
+        if (price > money_) {
+            refusal_ = "not enough money";
+            return;
+        }
+        traffic::RoadSpec spec{ring->lanes_forward, ring->lanes_backward, ring->lane_width};
+        spec.tag = static_cast<u32>(std::max(0, roads_.index_of(ring->id)));
+        auto standing = capture_cars();
+        const traffic::BuildResult built = traffic::build_roundabout(net_, at, kRoundaboutRadius, spec, snap_range());
+        if (!built.ok) {
+            refusal_ = built.refusal;
+            restore_cars(standing);
+            return;
+        }
+        refusal_ = "";
+        money_ -= price;
+        spent_ += price;
+        islands_.push_back(Island{at, kRoundaboutRadius});
+        restore_cars(standing);
+        refresh_connections();
+        ctx.emit(kEvBuilt, at.x, at.y);
+    }
+
+    bool is_ring(u32 edge) const {
+        const RoadType* type = road_of(edge);
+        return type && type->id == "roundabout";
+    }
+
     /// The network is about to change shape, so every route and every track
     /// index in it becomes stale. Remember where the cars physically are.
     struct Standing {
@@ -1078,6 +1143,13 @@ private:
         lay({{120, -640}, {140, -300}, {180, -60}}, street);
         lay({{700, -60}, {560, 180}, {330, 300}}, motorway);
         lay({{-260, 480}, {60, 520}, {390, 520}}, street);
+        // A roundabout where the eastern street meets the main road.
+        if (const RoadType* ring = roads_.find("roundabout")) {
+            traffic::RoadSpec spec = spec_of(ring);
+            const Vec2 at{325, 5};
+            if (traffic::build_roundabout(net_, at, kRoundaboutRadius, spec, 10.0f).ok)
+                islands_.push_back(Island{at, kRoundaboutRadius});
+        }
         // Signals wherever four arms meet, so the demo shows them working.
         for (u32 n = 0; n < static_cast<u32>(net_.nodes().size()); ++n)
             if (net_.valid_node(n) && net_.edges_at(n).size() >= 4) toggle_signal(n);
@@ -1417,8 +1489,14 @@ private:
         const float lane_half = e.width / std::max<float>(1, static_cast<float>(e.tracks.size())) * 0.5f;
 
         float widest = 0;
-        for (u32 other : arms) widest = std::max(widest, net_.edge(other).width);
-        const bool minor = e.width < widest - 0.5f;
+        bool ring_here = false;
+        for (u32 other : arms) {
+            widest = std::max(widest, net_.edge(other).width);
+            ring_here = ring_here || is_ring(other);
+        }
+        // Everything gives way to a roundabout; otherwise the narrower road does.
+        const bool minor = ring_here ? !is_ring(edge_index(e)) : e.width < widest - 0.5f;
+        if (ring_here && is_ring(edge_index(e))) return; // the ring itself is not marked at its entries
 
         // A signalled approach stops at a line; otherwise the minor road gives
         // way and the road with priority is not marked at all.
@@ -1718,6 +1796,18 @@ private:
                 const NetNode& n = net_.node(hover_node_);
                 r.fill_circle(n.pos.x, n.pos.y, std::max(n.radius, px(6)), rgba(255, 214, 90, 90), 16);
             }
+        } else if (tool_ == kToolRoundabout) {
+            StrokeStyle ring;
+            ring.width = 6.5f;
+            ring.closed = true;
+            set_color(ring, rgba(255, 214, 90, 120));
+            std::vector<Vec2> circle;
+            for (int i = 0; i < 32; ++i) {
+                const float a = static_cast<float>(i) / 32 * 6.2831853f;
+                circle.push_back({mouse_world_.x + std::cos(a) * kRoundaboutRadius,
+                                  mouse_world_.y + std::sin(a) * kRoundaboutRadius});
+            }
+            r.draw_polyline(circle, ring);
         } else if (tool_ == kToolSignals) {
             for (const Signal& sig : signals_)
                 if (net_.valid_node(sig.node))
@@ -1739,6 +1829,19 @@ private:
                 set_color(s, kBad);
                 r.draw_path(e.path, s);
             }
+        }
+        r.set_layer(0);
+    }
+
+    /// The middle of a roundabout: an overrun apron the lorries can clip, and
+    /// grass inside it.
+    void draw_islands(Renderer2D& r) {
+        r.set_layer(-1);
+        for (const Island& island : islands_) {
+            const float inner = island.radius - 4.0f;
+            if (inner < 2) continue;
+            r.fill_circle(island.centre.x, island.centre.y, inner, kIslandApron, 28);
+            r.fill_circle(island.centre.x, island.centre.y, inner - 2.0f, kIslandGrass, 28);
         }
         r.set_layer(0);
     }
@@ -1900,14 +2003,15 @@ private:
     const char* tool_hint() const {
         if (tool_ == kToolBuild) return "drag: draw a road   right click: cancel, drag to pan   wheel: zoom";
         if (tool_ == kToolSignals) return "click a junction to put traffic lights on it, or to take them away";
+        if (tool_ == kToolRoundabout) return "click where a roundabout should go; the roads it crosses become its entries";
         return "click a road or junction to remove it   right drag: pan   wheel: zoom";
     }
 
     void draw_build_tools(Renderer2D& r) {
-        const char* names[3] = {"Road", "Signals", "Remove"};
-        const u32 tools[3] = {kToolBuild, kToolSignals, kToolBulldoze};
-        for (int i = 0; i < 3; ++i) {
-            const Rect box{kToolStrip.x, kToolStrip.y + static_cast<float>(i) * 26, kToolStrip.w, 24};
+        const char* names[4] = {"Road", "Roundabout", "Signals", "Remove"};
+        const u32 tools[4] = {kToolBuild, kToolRoundabout, kToolSignals, kToolBulldoze};
+        for (int i = 0; i < 4; ++i) {
+            const Rect box{kToolStrip.x, kToolStrip.y + static_cast<float>(i) * 23, kToolStrip.w, 21};
             if (ui_.button_at(box, names[i])) app_->push_command(kCmdTool, static_cast<i32>(tools[i]));
             if (tool_ == tools[i]) {
                 r.draw_rect({box.x - 2, box.y - 2, box.w + 4, box.h + 4}, kAutobahnBlue);
@@ -2044,6 +2148,7 @@ private:
     Vec2 cam_target_{0, 0};
     float zoom_ = 2.2f;
     float zoom_target_ = 2.2f;
+    std::vector<Island> islands_;
     std::vector<Signal> signals_; ///< kept sorted by node
     std::vector<TownAccess> access_;
     u64 signal_version_ = 0;      ///< bumped whenever a signal is added, removed or re-phased
@@ -2063,6 +2168,7 @@ private:
     // Derived per tick, not saved.
     u32 hover_node_ = kNone;
     u32 hover_edge_ = kNone;
+    Vec2 mouse_world_{};
     const char* refusal_ = "";
     float start_zoom_ = 2.2f;
     bool demo_ = false;

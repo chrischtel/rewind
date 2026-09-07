@@ -39,6 +39,14 @@
       "lane_width": 2.75,
       "speed_kmh": 30,
       "cost_per_m": 1
+    },
+    {
+      "id": "roundabout",
+      "lanes_forward": 1,
+      "lanes_backward": 0,
+      "lane_width": 6.0,
+      "speed_kmh": 30,
+      "cost_per_m": 8
     }
   ]
 }

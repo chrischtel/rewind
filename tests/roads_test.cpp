@@ -132,9 +132,46 @@ void test_wider_roads_make_bigger_junctions() {
     CHECK(net.edge(big.edges[0]).width > 20);
 }
 
+/// A roundabout replaces whatever was in the middle and keeps the roads that
+/// reached it as its entries.
+void test_roundabout() {
+    CurveNetwork net;
+    RoadSpec street;
+    RoadSpec ring{1, 0, 6.0f};
+    traffic::build_road(net, straight({-200, 0}, {200, 0}), street, 8.0f);
+    traffic::build_road(net, straight({0, -200}, {0, 200}), street, 8.0f);
+    CHECK(live_edges(net) == 4);
+
+    const BuildResult r = traffic::build_roundabout(net, {0, 0}, 15.0f, ring, 8.0f);
+    CHECK(r.ok && r.edges.size() >= 8);
+    // Nothing is left inside the island.
+    for (const NetEdge& e : net.edges()) {
+        if (!e.alive) continue;
+        CHECK(distance(net.node(e.a).pos, Vec2{0, 0}) > 12.0f);
+        CHECK(distance(net.node(e.b).pos, Vec2{0, 0}) > 12.0f);
+    }
+    // Four arms still reach it, and every ring piece is one way.
+    usize entries = 0;
+    for (const NetEdge& e : net.edges()) {
+        if (!e.alive) continue;
+        if (e.tracks.size() == 2) ++entries; // a street: one lane each way
+    }
+    CHECK(entries == 4);
+    for (u32 edge : r.edges) CHECK(net.edge(edge).tracks.size() == 1 && net.edge(edge).tracks[0].forward);
+
+    // A car can drive all the way round: every ring node has a way on and off.
+    for (u32 edge : r.edges) {
+        const NetEdge& e = net.edge(edge);
+        CHECK(net.edges_at(e.a).size() >= 2 && net.edges_at(e.b).size() >= 2);
+        CHECK(std::fabs(distance(net.node(e.a).pos, Vec2{0, 0}) - 15.0f) < 1.5f);
+    }
+    CHECK(!net.connectors().empty());
+}
+
 } // namespace
 
 int main() {
+    test_roundabout();
     test_first_road();
     test_crossing_makes_a_junction();
     test_t_junction_and_snapping();
