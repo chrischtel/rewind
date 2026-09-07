@@ -43,12 +43,13 @@ const Color kTreeDark = rgb(46, 70, 42);
 const Color kTreeLight = rgb(92, 122, 62);
 const Color kTreeShadow = rgba(30, 42, 26, 80);
 const Color kTownGround = rgb(132, 138, 104);
-const Color kRoofDark = rgb(96, 74, 66);
-const Color kRoofLight = rgb(146, 104, 84);
+const Color kRoofDark = rgb(104, 96, 88);
+const Color kRoofLight = rgb(150, 128, 110);
 const Color kBuildingShadow = rgba(40, 40, 34, 70);
 /// European place-name plates: yellow for a village, blue for a main road
 /// destination, green for a trunk road, white for anything local.
 const Color kPlate[4] = {rgb(226, 190, 60), rgb(40, 82, 158), rgb(30, 110, 76), rgb(96, 100, 110)};
+const Color kAutobahnBlue = rgb(26, 82, 158);
 constexpr float kTownReach = 140.0f; ///< how far a town looks for a road to join
 constexpr float kStartingMoney = 20000;
 constexpr float kMoneyTarget = 60000;
@@ -117,11 +118,22 @@ const Color kLightAmber = rgb(248, 178, 44);
 const Color kLightGreen = rgb(86, 206, 96);
 const Color kSignalPost = rgb(48, 50, 54);
 
-// HUD panels sit in the top-left corner, so their rectangles do not depend
-// on the view size and the simulation can ignore clicks that land on them.
-const Rect kToolPanel{12, 12, 210, 258};
-const Rect kInfoPanel{12, 282, 210, 188};
-const Rect kHudRect{0, 0, 236, 482};
+// The shell: money at the top, the goals beside it, the build panel along
+// the bottom, the minimap in the corner. The window is a fixed size, so
+// these rectangles are constants and the simulation can decide by itself
+// whether a click belonged to the HUD or to the world.
+const Rect kMoneyPanel{kWidth * 0.5f - 150, 10, 300, 56};
+const Rect kGoalPanel{kWidth - 274, 10, 262, 96};
+const Rect kBuildPanel{kWidth * 0.5f - 372, kHeight - 132, 744, 120};
+const Rect kMiniMap{12, kHeight - 184, 172, 172};
+const Rect kToolStrip{kBuildPanel.x + 10, kBuildPanel.y + 34, 150, 76};
+constexpr float kCardWidth = 108;
+constexpr float kCardHeight = 76;
+
+inline bool over_hud(float x, float y) {
+    return kMoneyPanel.contains(x, y) || kGoalPanel.contains(x, y) || kBuildPanel.contains(x, y) ||
+           kMiniMap.contains(x, y);
+}
 
 } // namespace
 
@@ -493,7 +505,7 @@ private:
     void update_tool(const TickContext& ctx) {
         const InputFrame& in = ctx.input;
         const Vec2 world = to_world(in);
-        const bool on_hud = in.mouse_x < 0 || kHudRect.contains(static_cast<float>(in.mouse_x), static_cast<float>(in.mouse_y));
+        const bool on_hud = in.mouse_x < 0 || over_hud(static_cast<float>(in.mouse_x), static_cast<float>(in.mouse_y));
         const bool press = in.down(Button::MouseLeft) && !prev_input_.down(Button::MouseLeft);
         const bool release = !in.down(Button::MouseLeft) && prev_input_.down(Button::MouseLeft);
         const bool cancel = in.down(Button::MouseRight) && !prev_input_.down(Button::MouseRight);
@@ -888,9 +900,7 @@ private:
         r.set_layer(0);
         for (u32 e = 0; e < static_cast<u32>(net_.edges().size()); ++e) {
             if (!net_.valid_edge(e)) continue;
-            const float flow = edge_flow(e);
-            const Color color = flow > 0.6f ? lerp_color(kFlowSlow, kFlowFree, clampf((flow - 0.6f) / 0.4f, 0, 1))
-                                            : lerp_color(kFlowJam, kFlowSlow, clampf(flow / 0.6f, 0, 1));
+            const Color color = flow_color(edge_flow(e));
             StrokeStyle band;
             band.width = net_.edge(e).width * 0.8f;
             band.join = LineJoin::Round;
@@ -1743,7 +1753,7 @@ private:
             const float radius = 18.0f + static_cast<float>(t.size) * 7.0f;
             // The ground a village stands on, then its houses: rectangles with
             // a roof ridge, laid out by hashing so a town always looks the same.
-            r.fill_circle(at.x, at.y, radius, kTownGround, 24);
+            r.fill_circle(at.x, at.y, radius, rgba(kTownGround.r, kTownGround.g, kTownGround.b, 120), 24);
             if (zoom_ < 1.6f) continue; // from up here a village is a patch, not houses
             const u32 count = 6 + t.size * 4;
             for (u32 b = 0; b < count; ++b) {
@@ -1751,8 +1761,8 @@ private:
                 const float angle = unit(h) * 6.2831853f;
                 const float dist = std::sqrt(unit(h >> 7)) * radius * 0.86f;
                 const Vec2 centre{at.x + std::cos(angle) * dist, at.y + std::sin(angle) * dist};
-                const float w = 5.0f + unit(h >> 13) * 5.0f;
-                const float d = 4.0f + unit(h >> 19) * 4.0f;
+                const float w = 4.0f + unit(h >> 13) * 3.5f;
+                const float d = 3.5f + unit(h >> 19) * 2.5f;
                 const float facing = std::atan2(centre.y - at.y, centre.x - at.x);
                 const Vec2 along{std::cos(facing), std::sin(facing)};
                 const Vec2 side = perp(along);
@@ -1816,72 +1826,198 @@ private:
         r.set_layer(0);
     }
 
+    /// The light "paper" shell: what the player spends, what they are trying
+    /// to achieve, and what they can build.
+    UiStyle paper_skin() const {
+        UiStyle skin;
+        skin.panel = rgba(246, 246, 243, 242);
+        skin.panel_border = rgba(198, 198, 192, 255);
+        skin.title = rgb(38, 40, 46);
+        skin.text = rgb(46, 48, 54);
+        skin.text_dim = rgb(122, 124, 130);
+        skin.button = rgb(233, 233, 229);
+        skin.button_hover = rgb(220, 226, 236);
+        skin.button_active = kAutobahnBlue;
+        skin.button_border = rgba(196, 198, 200, 255);
+        skin.accent = kAutobahnBlue;
+        skin.track = rgb(214, 214, 208);
+        skin.tooltip = rgba(28, 30, 36, 244);
+        skin.rounding = 5;
+        skin.item_height = 24;
+        return skin;
+    }
+
     void draw_hud(Renderer2D& r) {
         if (!app_) return;
-        ui_.begin(&r, app_->ui_input());
+        const UiStyle skin = paper_skin();
+        ui_.begin(&r, app_->ui_input(), nullptr, skin);
+        char line[96];
 
-        ui_.begin_panel(kToolPanel, "Build");
-        bool build = tool_ == kToolBuild, bulldoze = tool_ == kToolBulldoze, signals = tool_ == kToolSignals;
-        if (ui_.toggle("Road", build)) app_->push_command(kCmdTool, kToolBuild);
-        ui_.same_line();
-        if (ui_.toggle("Bulldoze", bulldoze)) app_->push_command(kCmdTool, kToolBulldoze);
-        if (ui_.toggle("Traffic lights", signals)) app_->push_command(kCmdTool, kToolSignals);
-        ui_.spacing(2);
-        for (usize i = 0; i < roads_.size(); ++i) {
-            const RoadType& type = roads_.at(i);
-            char label[64];
-            std::snprintf(label, sizeof label, "%s %ux%u  %.0f/m", type.id.c_str(), type.lanes_forward,
-                          type.lanes_backward, type.cost_per_m);
-            bool selected = type.id == road_type_.id;
-            if (ui_.toggle(label, selected)) app_->push_command(kCmdRoad, static_cast<i32>(i));
-        }
+        // What it costs, against what the city is trying to reach.
+        ui_.begin_panel(kMoneyPanel);
+        std::snprintf(line, sizeof line, "%.0f EUR  /  %.0f", money_, kMoneyTarget);
+        ui_.label(line);
+        ui_.progress(clampf(money_ / kMoneyTarget, 0, 1), kMoneyPanel.w - 16, kAutobahnBlue);
         ui_.end_panel();
 
-        ui_.begin_panel(kInfoPanel, "Network");
-        char line[80];
-        std::snprintf(line, sizeof line, "%.0f of %.0f EUR", money_, kMoneyTarget);
-        ui_.label(line);
-        ui_.progress(clampf(money_ / kMoneyTarget, 0, 1), 186, {}, "");
-        std::snprintf(line, sizeof line, "%zu of %zu routes connected", routes_connected(), routes_.size());
-        ui_.label(line);
+        // The goals: which town pairs still have no road between them.
+        ui_.begin_panel(kGoalPanel, "Routes");
+        const usize open_routes = routes_.size() - routes_connected();
+        if (open_routes == 0) std::snprintf(line, sizeof line, "all %zu connected", routes_.size());
+        else std::snprintf(line, sizeof line, "%zu of %zu unconnected", open_routes, routes_.size());
+        ui_.label(line, open_routes != 0);
         std::snprintf(line, sizeof line, "%zu cars, %u arrived", cars_.count(), arrived_);
         ui_.label(line, true);
-        std::snprintf(line, sizeof line, "%zu roads, %.1f km", live_edges(), network_length() / 1000);
-        ui_.label(line, true);
-        ui_.progress(static_cast<float>(cars_.count()) / static_cast<float>(max_cars_ ? max_cars_ : 1), 186, {}, "traffic");
-        TimeControl& time = app_->time_control();
-        const float scales[3] = {1, 2, 4};
-        const char* names[3] = {"1x", "2x", "4x"};
-        for (int i = 0; i < 3; ++i) {
-            if (i > 0) ui_.same_line();
-            bool on = std::fabs(time.time_scale - scales[i]) < 1e-3f;
-            if (ui_.toggle(names[i], on)) time.time_scale = scales[i];
-        }
         bool overlay = show_flow_;
-        if (ui_.toggle("Traffic overlay", overlay)) app_->push_command(kCmdFlow);
-        if (ui_.button("Clear traffic", 186)) app_->push_command(kCmdClearCars);
+        if (ui_.toggle("Traffic", overlay)) app_->push_command(kCmdFlow);
         ui_.end_panel();
 
+        // The build panel: the tools, then the road catalogue as cards.
+        ui_.begin_panel(kBuildPanel);
+        draw_build_tools(r);
+        draw_road_cards(r);
+        ui_.end_panel();
         ui_.end();
 
-        // What the road being drawn will cost, next to the cursor.
+        draw_minimap(r);
+
+        const Camera saved = r.camera();
+        r.set_camera(Camera{});
         if (drawing_ && stroke_.size() > 1) {
             const RoadType* type = road_type_.get(roads_);
             float drawn = 0;
             for (usize i = 1; i < stroke_.size(); ++i) drawn += distance(stroke_[i], stroke_[i - 1]);
             const float price = drawn * (type ? type->cost_per_m : 0);
             const Vec2 at = view(cam_center_, zoom_).to_screen(stroke_.back());
-            char cost[64];
-            std::snprintf(cost, sizeof cost, "%.0f m   %.0f EUR", drawn, price);
-            r.draw_text(at.x + 14, at.y + 14, cost, price > money_ ? kBad : rgb(255, 240, 200), 2);
+            std::snprintf(line, sizeof line, "%.0f m   %.0f EUR", drawn, price);
+            r.draw_text(at.x + 14, at.y + 14, line, price > money_ ? kBad : rgb(255, 240, 200), 2);
         }
-        if (refusal_[0]) r.draw_text(12, kHeight - 60, refusal_, kBad, 2);
-        r.draw_text(12, kHeight - 44,
-                    tool_ == kToolBuild   ? "drag: draw a road   right click: cancel, drag to pan   wheel: zoom"
-                    : tool_ == kToolSignals ? "click a junction to put traffic lights on it, or to take them away"
-                                            : "click a road or junction to remove it   right drag: pan   wheel: zoom",
-                    rgb(150, 152, 165));
-        r.draw_text(12, kHeight - 28, "hold F4: rewind   F2: pause   F5: replay + verify   F1: overlay", rgb(110, 112, 125));
+        if (refusal_[0]) r.draw_text(kBuildPanel.x, kBuildPanel.y - 22, refusal_, kBad, 2);
+        r.draw_text(12, kHeight - 210, tool_hint(), rgba(240, 240, 240, 190), 1);
+        r.set_camera(saved);
+    }
+
+    const char* tool_hint() const {
+        if (tool_ == kToolBuild) return "drag: draw a road   right click: cancel, drag to pan   wheel: zoom";
+        if (tool_ == kToolSignals) return "click a junction to put traffic lights on it, or to take them away";
+        return "click a road or junction to remove it   right drag: pan   wheel: zoom";
+    }
+
+    void draw_build_tools(Renderer2D& r) {
+        const char* names[3] = {"Road", "Signals", "Remove"};
+        const u32 tools[3] = {kToolBuild, kToolSignals, kToolBulldoze};
+        for (int i = 0; i < 3; ++i) {
+            const Rect box{kToolStrip.x, kToolStrip.y + static_cast<float>(i) * 26, kToolStrip.w, 24};
+            if (ui_.button_at(box, names[i])) app_->push_command(kCmdTool, static_cast<i32>(tools[i]));
+            if (tool_ == tools[i]) {
+                r.draw_rect({box.x - 2, box.y - 2, box.w + 4, box.h + 4}, kAutobahnBlue);
+                r.draw_rect({box.x - 1, box.y - 1, box.w + 2, box.h + 2}, kAutobahnBlue);
+            }
+        }
+    }
+
+    /// One card per road type, each showing a slab of the road it builds,
+    /// drawn by the same rules as the real thing, with its price per metre.
+    void draw_road_cards(Renderer2D& r) {
+        const float top = kBuildPanel.y + 18;
+        float x = kToolStrip.right() + 16;
+        for (usize i = 0; i < roads_.size(); ++i) {
+            const RoadType& type = roads_.at(i);
+            const Rect card{x, top, kCardWidth - 8, kCardHeight + 16};
+            if (card.right() > kBuildPanel.right() - 8) break;
+            const bool selected = type.id == road_type_.id;
+            if (ui_.button_at(card, "")) app_->push_command(kCmdRoad, static_cast<i32>(i));
+            draw_road_preview(r, Rect{card.x + 6, card.y + 6, card.w - 12, 40}, type);
+            char label[48];
+            std::snprintf(label, sizeof label, "%s", type.id.c_str());
+            r.draw_text(card.x + 8, card.y + 52, label, rgb(46, 48, 54), 2);
+            std::snprintf(label, sizeof label, "%.0f EUR/m", type.cost_per_m);
+            r.draw_text(card.x + 8, card.y + 70, label, rgb(122, 124, 130), 1);
+            if (selected) {
+                r.draw_rect({card.x - 2, card.y - 2, card.w + 4, card.h + 4}, kAutobahnBlue);
+                r.draw_rect({card.x - 1, card.y - 1, card.w + 2, card.h + 2}, kAutobahnBlue);
+            }
+            x += kCardWidth;
+        }
+    }
+
+    /// A slab of road seen from above, with its own lanes and markings.
+    void draw_road_preview(Renderer2D& r, const Rect& box, const RoadType& type) {
+        const float lanes = static_cast<float>(std::max(1u, type.lanes_forward + type.lanes_backward));
+        const float scale = box.h / (lanes * type.lane_width + 2.0f);
+        const float road_h = lanes * type.lane_width * scale;
+        const Rect slab{box.x, box.y + (box.h - road_h) * 0.5f, box.w, road_h};
+        r.fill_rect(slab, kAsphalt);
+        r.fill_rect({slab.x, slab.y - 1.5f, slab.w, 1.5f}, kKerbTop);
+        r.fill_rect({slab.x, slab.bottom(), slab.w, 1.5f}, kKerbTop);
+        // Lane boundaries: solid between the directions, dashed inside one.
+        const float lane_h = road_h / lanes;
+        for (u32 i = 1; i < static_cast<u32>(lanes); ++i) {
+            const float y = slab.y + lane_h * static_cast<float>(i);
+            const bool between = i == type.lanes_backward && type.lanes_forward > 1 && type.lanes_backward > 1;
+            if (between) {
+                r.fill_rect({slab.x, y - 0.5f, slab.w, 1.2f}, kMarkingWhite);
+            } else {
+                for (float dx = 2; dx < slab.w - 3; dx += 9) r.fill_rect({slab.x + dx, y - 0.5f, 5, 1.0f}, kMarkingWhite);
+            }
+        }
+    }
+
+    /// The whole network in the corner, with where the camera is looking.
+    void draw_minimap(Renderer2D& r) {
+        Rect world = network_bounds();
+        if (world.w < 1 || world.h < 1) return;
+        const Camera saved = r.camera();
+        r.set_camera(Camera{});
+        r.fill_rect(kMiniMap, rgba(28, 34, 28, 200));
+        r.draw_rect(kMiniMap, rgba(210, 210, 205, 180));
+        const float scale = std::min((kMiniMap.w - 12) / world.w, (kMiniMap.h - 12) / world.h);
+        const Vec2 origin{kMiniMap.x + kMiniMap.w * 0.5f, kMiniMap.y + kMiniMap.h * 0.5f};
+        const Vec2 centre{world.x + world.w * 0.5f, world.y + world.h * 0.5f};
+        const auto to_map = [&](Vec2 p) { return Vec2{origin.x + (p.x - centre.x) * scale, origin.y + (p.y - centre.y) * scale}; };
+
+        for (const NetEdge& e : net_.edges()) {
+            if (!e.alive) continue;
+            std::vector<Vec2> line;
+            e.path.flatten(8.0f, line);
+            for (Vec2& p : line) p = to_map(p);
+            StrokeStyle s;
+            s.width = std::max(1.0f, e.width * scale);
+            set_color(s, show_flow_ ? flow_color(edge_flow(edge_index(e))) : rgba(226, 226, 220, 220));
+            if (line.size() >= 2) r.draw_polyline(line, s);
+        }
+        for (usize i = 0; i < towns_.size(); ++i) {
+            const Vec2 at = to_map(towns_.at(i).pos());
+            const bool linked = i < access_.size() && access_[i].has;
+            r.fill_circle(at.x, at.y, 3, linked ? rgb(120, 200, 130) : rgb(226, 120, 110), 8);
+        }
+        const Rect view_rect = visible_world();
+        const Vec2 a = to_map({view_rect.x, view_rect.y});
+        const Vec2 b = to_map({view_rect.right(), view_rect.bottom()});
+        r.draw_rect({a.x, a.y, b.x - a.x, b.y - a.y}, rgba(255, 255, 255, 150));
+        r.set_camera(saved);
+    }
+
+    Color flow_color(float flow) const {
+        return flow > 0.6f ? lerp_color(kFlowSlow, kFlowFree, clampf((flow - 0.6f) / 0.4f, 0, 1))
+                           : lerp_color(kFlowJam, kFlowSlow, clampf(flow / 0.6f, 0, 1));
+    }
+
+    /// Everything worth showing on the minimap.
+    Rect network_bounds() const {
+        float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+        const auto grow = [&](Vec2 p) {
+            x0 = std::min(x0, p.x);
+            y0 = std::min(y0, p.y);
+            x1 = std::max(x1, p.x);
+            y1 = std::max(y1, p.y);
+        };
+        for (usize i = 0; i < towns_.size(); ++i) grow(towns_.at(i).pos());
+        for (const NetNode& n : net_.nodes())
+            if (n.alive) grow(n.pos);
+        if (x1 <= x0 || y1 <= y0) return Rect{};
+        const float margin = 120;
+        return Rect{x0 - margin, y0 - margin, x1 - x0 + margin * 2, y1 - y0 + margin * 2};
     }
 
     static void set_color(StrokeStyle& s, Color c) {
