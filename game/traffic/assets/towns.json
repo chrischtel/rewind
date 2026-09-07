@@ -1,10 +1,44 @@
 {
   "rows": [
-    {"id": "altdorf",  "name": "Altdorf",  "x": -640, "y": -200, "size": 3, "plate": 0},
-    {"id": "bergheim", "name": "Bergheim", "x":  140, "y": -660, "size": 2, "plate": 1},
-    {"id": "seefeld",  "name": "Seefeld",  "x":  720, "y":  -80, "size": 3, "plate": 0},
-    {"id": "waldbach", "name": "Waldbach", "x":  400, "y":  540, "size": 2, "plate": 2},
-    {"id": "steinau",  "name": "Steinau",  "x": -440, "y":  500, "size": 2, "plate": 1},
-    {"id": "moosburg", "name": "Moosburg", "x":  -60, "y":   40, "size": 4, "plate": 3}
+    {
+      "id": "altdorf",
+      "name": "Altdorf",
+      "x": -640,
+      "y": -200,
+      "size": 3,
+      "plate": 0
+    },
+    {
+      "id": "bergheim",
+      "name": "Bergheim",
+      "x": 140,
+      "y": -660,
+      "size": 2,
+      "plate": 1
+    },
+    {
+      "id": "seefeld",
+      "name": "Seefeld",
+      "x": 720,
+      "y": -80,
+      "size": 3,
+      "plate": 0
+    },
+    {
+      "id": "waldbach",
+      "name": "Waldbach",
+      "x": 400,
+      "y": 540,
+      "size": 2,
+      "plate": 2
+    },
+    {
+      "id": "steinau",
+      "name": "Steinau",
+      "x": -440,
+      "y": 500,
+      "size": 2,
+      "plate": 1
+    }
   ]
 }

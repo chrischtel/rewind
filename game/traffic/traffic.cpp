@@ -48,11 +48,23 @@ const Color kTownGround = rgb(132, 138, 104);
 const Color kRoofDark = rgb(104, 96, 88);
 const Color kRoofLight = rgb(150, 128, 110);
 const Color kBuildingShadow = rgba(40, 40, 34, 70);
+const Color kRoofWork = rgb(104, 112, 122);
+const Color kRoofShop = rgb(158, 140, 104);
 /// European place-name plates: yellow for a village, blue for a main road
 /// destination, green for a trunk road, white for anything local.
 const Color kPlate[4] = {rgb(226, 190, 60), rgb(40, 82, 158), rgb(30, 110, 76), rgb(96, 100, 110)};
 const Color kAutobahnBlue = rgb(26, 82, 158);
-constexpr float kTownReach = 140.0f; ///< how far a town looks for a road to join
+constexpr float kTownReach = 140.0f;   ///< how far an exit looks for a road to join
+constexpr float kDoorReach = 40.0f;    ///< how far a building looks for its road
+constexpr float kSecondsPerHour = 25.0f; ///< a day is ten minutes at normal speed
+constexpr float kGrowEvery = 6.0f;     ///< seconds between rounds of new buildings
+constexpr u32 kGrowPerRound = 3;
+constexpr float kGrowChance = 0.22f;
+constexpr float kLotSpacing = 24.0f;   ///< metres between building plots along a road
+constexpr float kSetback = 9.0f;       ///< from the kerb to the building
+constexpr usize kMaxBuildings = 360;
+constexpr float kReferenceSpeed = 11.0f; ///< m/s, what a trip should average on clear roads
+constexpr float kLateFactor = 1.7f;
 constexpr float kStartingMoney = 20000;
 constexpr usize kUndoDepth = 16;
 constexpr float kMoneyTarget = 60000;
@@ -163,7 +175,7 @@ const Color kSignalPost = rgb(48, 50, 54);
 // these rectangles are constants and the simulation can decide by itself
 // whether a click belonged to the HUD or to the world.
 const Rect kMoneyPanel{kWidth * 0.5f - 150, 10, 300, 56};
-const Rect kGoalPanel{kWidth - 274, 10, 262, 96};
+const Rect kGoalPanel{kWidth - 372, 10, 360, 120};
 const Rect kBuildPanel{kWidth * 0.5f - 448, kHeight - 132, 896, 120};
 const Rect kMiniMap{12, kHeight - 184, 172, 172};
 const Rect kToolStrip{kBuildPanel.x + 10, kBuildPanel.y + 22, 112, 92};
@@ -285,6 +297,40 @@ struct Town {
     }
 };
 
+/// A building beside a road. Homes send people to work and to the shops
+/// and want them back; workplaces and shops receive them. Buildings appear
+/// by themselves along the roads the player builds, and grow when the trips
+/// they generate arrive in good time.
+struct Building {
+    Vec2 pos;
+    u32 kind = 0;      ///< 0 home, 1 workplace, 2 shop
+    u32 size = 1;      ///< floors, roughly: how many trips it makes and takes
+    u32 edge = 0;      ///< the road it stands beside
+    float along = 0;   ///< metres along that road
+    float side = 1;    ///< which side of the road, +1 or -1
+    float pending = 0; ///< trips waiting to set off
+    u32 served = 0;
+    u32 late = 0;
+    u32 lost = 0;      ///< wanted to go somewhere no road reaches
+
+    void reflect(Visitor& v) {
+        v.field("pos", pos);
+        v.field("kind", kind, {.min = 0, .max = 2});
+        v.field("size", size, {.min = 1, .max = 8});
+        v.field("edge", edge);
+        v.field("along", along);
+        v.field("side", side);
+        v.field("pending", pending);
+        v.field("served", served);
+        v.field("late", late);
+        v.field("lost", lost);
+    }
+};
+
+constexpr u32 kHome = 0;
+constexpr u32 kWork = 1;
+constexpr u32 kShop = 2;
+
 /// Where a town meets the road network, found again whenever the network
 /// changes. Simulation state: the trips depend on it.
 struct TownAccess {
@@ -390,15 +436,19 @@ struct CarInfo {
     u32 type = 0;
     u32 dest_edge = 0; ///< a TrackRef: edge indices stay valid across rebuilds
     u32 dest_track = 0;
-    u32 route = kNone; ///< which town pair this trip serves
+    u32 route = kNone; ///< which town pair this trip serves, for through traffic
+    u32 to_building = kNone; ///< the door it is going to, for local traffic
     u64 started = 0;   ///< tick it set off, for the travel time
+    float expected = 0; ///< seconds the trip should take with the roads clear
 
     void reflect(Visitor& v) {
         v.field("type", type);
         v.field("dest_edge", dest_edge);
         v.field("dest_track", dest_track);
         v.field("route", route);
+        v.field("to_building", to_building);
         v.field("started", started);
+        v.field("expected", expected);
     }
 };
 
@@ -458,6 +508,11 @@ public:
         spawned_ = arrived_ = 0;
         routes_.clear();
         access_.clear();
+        buildings_.clear();
+        doors_.clear();
+        hour_ = 7.5f;
+        grow_timer_ = 0;
+        trips_served_ = trips_late_ = trips_lost_ = 0;
         access_version_ = ~0ull;
         drawing_ = false;
         stroke_.clear();
@@ -491,6 +546,12 @@ public:
         prev_input_ = ctx.input;
 
         clock_ += ctx.dt;
+        hour_ = std::fmod(hour_ + ctx.dt / kSecondsPerHour, 24.0f);
+        grow_timer_ += ctx.dt;
+        if (grow_timer_ >= kGrowEvery) {
+            grow_timer_ -= kGrowEvery;
+            grow_buildings();
+        }
         for (u32 i = 0; i < static_cast<u32>(cars_.agents().size()); ++i) {
             if (!cars_.valid(i) || !cars_.agent(i).done) continue;
             arrive(i, ctx.tick);
@@ -499,11 +560,13 @@ public:
         if (access_version_ != net_.version()) {
             sync_signals();
             refresh_connections();
+            refresh_doors();
         }
         step_signals(ctx.dt);
         apply_speed_limits();
         measure_flow(ctx.dt);
         send_trips(ctx);
+        send_local_trips(ctx);
         cars_.tick(net_, ctx.dt);
     }
 
@@ -538,6 +601,13 @@ public:
         v.field("signals", signals_);
         v.field("town_access", access_);
         v.field("routes", routes_);
+        v.field("buildings", buildings_);
+        v.field("doors", doors_);
+        v.field("hour", hour_, {.min = 0, .max = 24});
+        v.field("grow_timer", grow_timer_);
+        v.field("trips_served", trips_served_, {.read_only = true});
+        v.field("trips_late", trips_late_, {.read_only = true});
+        v.field("trips_lost", trips_lost_, {.read_only = true});
         v.field("access_version", access_version_);
         v.field("clock", clock_);
         v.field("flow", flow_);
@@ -545,6 +615,7 @@ public:
         v.field("spent", spent_, {.read_only = true});
         v.field("show_flow", show_flow_);
         v.field("demand", demand_, {.min = 0.1f, .max = 20, .speed = 0.1f});
+        v.field("local_demand", local_demand_, {.min = 0.1f, .max = 20, .speed = 0.1f});
         v.field("max_cars", max_cars_, {.min = 0, .max = 4000});
         v.field("spawned", spawned_, {.read_only = true});
         v.field("arrived", arrived_, {.read_only = true});
@@ -561,6 +632,7 @@ public:
         draw_roads(r);
         draw_islands(r);
         draw_flow_overlay(r);
+        draw_buildings(r);
         draw_cars(r);
         draw_signals(r);
         draw_towns(r);
@@ -1016,9 +1088,11 @@ private:
         for (usize i = 0; i < routes_.size(); ++i) {
             RouteDemand& r = routes_[i];
             if (!r.connected) continue;
-            // Both towns pull: a big town sends and receives more.
+            // Both exits pull: a bigger road beyond the edge sends more, and
+            // through traffic has its rush hours like everyone else.
             const float weight = static_cast<float>(towns_.at(r.from).size + towns_.at(r.to).size) * 0.5f;
-            r.pending += weight * demand_ / 60.0f * ctx.dt;
+            const float rhythm = 0.35f + departure_rate(kHome, hour_) * 0.5f;
+            r.pending += weight * demand_ * rhythm / 60.0f * ctx.dt;
             r.pending = std::min(r.pending, 4.0f); // a jam must not build up an infinite backlog
             while (r.pending >= 1.0f) {
                 if (cars_.count() >= max_cars_) return;
@@ -1043,7 +1117,14 @@ private:
         const u32 id = cars_.spawn(route, start, params_of(type), type_index);
         const TownAccess& dest = access_[reverse ? r.from : r.to];
         if (id >= car_info_.size()) car_info_.resize(id + 1);
-        car_info_[id] = CarInfo{type_index, dest.edge, dest.track, route_index, tick};
+        CarInfo info;
+        info.type = type_index;
+        info.dest_edge = dest.edge;
+        info.dest_track = dest.track;
+        info.route = route_index;
+        info.started = tick;
+        info.expected = route.cost / kReferenceSpeed + 20.0f;
+        car_info_[id] = info;
         ++r.sent;
         ++spawned_;
         return true;
@@ -1306,13 +1387,178 @@ private:
         }
     }
 
+    // ---- the city ---------------------------------------------------------------
+    //
+    // Local traffic comes from buildings that grow along the roads. A home
+    // sends people out in the morning and takes them back in the evening;
+    // workplaces and shops are where they go. The rhythm is the day.
+
+    /// How keen a building of this kind is to send someone out at this hour,
+    /// as a share of its peak.
+    static float departure_rate(u32 kind, float hour) {
+        const auto bump = [hour](float centre, float width) {
+            const float d = std::fabs(hour - centre);
+            return std::max(0.0f, 1.0f - d / width);
+        };
+        switch (kind) {
+        case kHome: return 0.08f + bump(8.0f, 1.8f) + 0.5f * bump(18.0f, 2.5f) + 0.25f * bump(12.5f, 2.0f);
+        case kWork: return 0.05f + bump(17.0f, 1.8f) + 0.3f * bump(12.5f, 1.5f);
+        default: return 0.05f + 0.6f * bump(13.0f, 4.0f) + 0.5f * bump(18.5f, 2.5f);
+        }
+    }
+
+    /// Where someone leaving this kind of building wants to go at this hour.
+    u32 destination_kind(u32 from_kind, float hour) {
+        if (from_kind != kHome) return kHome;
+        const bool morning = hour > 6 && hour < 10.5f;
+        const float roll = rng_.range_f(0, 1);
+        if (morning) return roll < 0.8f ? kWork : kShop;
+        return roll < 0.35f ? kWork : kShop;
+    }
+
+    /// Find each building's door on the network again after the roads changed.
+    void refresh_doors() {
+        doors_.assign(buildings_.size(), TownAccess{});
+        for (usize i = 0; i < buildings_.size(); ++i) {
+            Location at{};
+            if (!net_.locate(buildings_[i].pos, at, kDoorReach)) continue;
+            doors_[i] = TownAccess{true, at.track.edge, at.track.track, at.distance};
+        }
+    }
+
+    /// Every so often the roads attract new buildings: a stretch of street
+    /// with nothing beside it gets something, homes most often.
+    void grow_buildings() {
+        if (buildings_.size() >= kMaxBuildings) return;
+        u32 added = 0;
+        for (u32 e = 0; e < static_cast<u32>(net_.edges().size()) && added < kGrowPerRound; ++e) {
+            if (!net_.valid_edge(e)) continue;
+            const RoadType* type = road_of(e);
+            if (!type || type->speed_kmh > 70 || is_ring(e)) continue; // nothing lives on a motorway
+            const NetEdge& edge = net_.edge(e);
+            const PathSampler along(edge.path, 0.5f);
+            const float length = along.length();
+            if (length < kLotSpacing * 1.5f) continue;
+            for (float d = kLotSpacing * 0.75f; d < length - kLotSpacing * 0.5f && added < kGrowPerRound; d += kLotSpacing) {
+                const float side = rng_.range_f(0, 1) < 0.5f ? 1.0f : -1.0f;
+                if (rng_.range_f(0, 1) > kGrowChance) continue;
+                const PathPoint p = along.at(d);
+                const Vec2 at = p.position + perp(p.direction) * (side * (edge.width * 0.5f + kSetback));
+                if (crowded(at)) continue;
+                Building b;
+                b.pos = at;
+                const float roll = rng_.range_f(0, 1);
+                b.kind = roll < 0.58f ? kHome : roll < 0.86f ? kWork : kShop;
+                b.edge = e;
+                b.along = d;
+                b.side = side;
+                buildings_.push_back(b);
+                ++added;
+            }
+        }
+        if (added) refresh_doors();
+    }
+
+    bool crowded(Vec2 at) const {
+        for (const Building& b : buildings_)
+            if (distance(b.pos, at) < kLotSpacing * 0.9f) return true;
+        for (usize i = 0; i < towns_.size(); ++i)
+            if (distance(towns_.at(i).pos(), at) < 60.0f) return true;
+        for (const Island& island : islands_)
+            if (distance(island.centre, at) < island.radius + kSetback + 6) return true;
+        return false;
+    }
+
+    /// Buildings send their people out; each trip becomes a car at the door.
+    void send_local_trips(const TickContext& ctx) {
+        if (vehicles_.size() == 0 || buildings_.empty()) return;
+        for (u32 i = 0; i < static_cast<u32>(buildings_.size()); ++i) {
+            Building& b = buildings_[i];
+            b.pending += departure_rate(b.kind, hour_) * static_cast<float>(b.size) * local_demand_ / 60.0f * ctx.dt;
+            b.pending = std::min(b.pending, 3.0f);
+            while (b.pending >= 1.0f) {
+                if (cars_.count() >= max_cars_) return;
+                const int sent = send_from(i, ctx.tick);
+                if (sent == 0) break; // no room at the door, try again next tick
+                b.pending -= 1.0f;
+                if (sent < 0) {
+                    ++b.lost;
+                    ++trips_lost_;
+                }
+            }
+        }
+    }
+
+    /// A trip out of building `from`. 1 sent, 0 no room right now, -1 nowhere to go.
+    int send_from(u32 from, u64 tick) {
+        if (from >= doors_.size() || !doors_[from].has) return -1;
+        const u32 wanted = destination_kind(buildings_[from].kind, hour_);
+        const u32 to = pick_building(wanted, from);
+        if (to == kNone || !doors_[to].has) return -1;
+        const TownAccess& a = doors_[from];
+        const TownAccess& d = doors_[to];
+        if (!net_.valid_edge(a.edge) || !net_.valid_edge(d.edge)) return -1;
+        const Route route = net_.route(Location{TrackRef{a.edge, a.track}, a.distance}, Location{TrackRef{d.edge, d.track}, d.distance});
+        if (!route.found || route.steps.empty()) return -1;
+        const u32 type_index = pick_type();
+        const VehicleType& type = vehicles_.at(type_index);
+        const TrackRef first = net_.track_ref(route.steps.front().index);
+        if (!room_at(first, a.distance, type.length)) return 0;
+        const u32 id = cars_.spawn(route, a.distance, params_of(type), type_index);
+        if (id >= car_info_.size()) car_info_.resize(id + 1);
+        CarInfo info;
+        info.type = type_index;
+        info.dest_edge = d.edge;
+        info.dest_track = d.track;
+        info.to_building = to;
+        info.started = tick;
+        info.expected = route.cost / kReferenceSpeed + 20.0f;
+        car_info_[id] = info;
+        ++spawned_;
+        return 1;
+    }
+
+    /// A building of the wanted kind, bigger ones more often, never itself.
+    u32 pick_building(u32 kind, u32 except) {
+        float total = 0;
+        for (u32 i = 0; i < static_cast<u32>(buildings_.size()); ++i)
+            if (i != except && buildings_[i].kind == kind && i < doors_.size() && doors_[i].has)
+                total += static_cast<float>(buildings_[i].size);
+        if (total <= 0) return kNone;
+        float roll = rng_.range_f(0, total);
+        for (u32 i = 0; i < static_cast<u32>(buildings_.size()); ++i) {
+            if (i == except || buildings_[i].kind != kind || i >= doors_.size() || !doors_[i].has) continue;
+            roll -= static_cast<float>(buildings_[i].size);
+            if (roll <= 0) return i;
+        }
+        return kNone;
+    }
+
     void arrive(u32 car, u64 tick) {
         ++arrived_;
         if (car >= car_info_.size()) return;
         const CarInfo& info = car_info_[car];
+        if (info.to_building != kNone && info.to_building < buildings_.size()) {
+            Building& b = buildings_[info.to_building];
+            const float took = static_cast<float>(tick - info.started) / 60.0f;
+            const bool late = info.expected > 0 && took > info.expected * kLateFactor;
+            ++b.served;
+            ++trips_served_;
+            if (late) {
+                ++b.late;
+                ++trips_late_;
+                money_ += kFarePerTrip * 0.5f;
+            } else {
+                money_ += kFarePerTrip;
+                // A place that is easy to reach grows.
+                if (b.size < 8 && (b.served % 12) == 0) ++b.size;
+            }
+            return;
+        }
         if (info.route >= routes_.size()) return;
         RouteDemand& r = routes_[info.route];
         ++r.arrived;
+        ++trips_served_;
         money_ += kFarePerTrip; // a served trip pays for itself
         const float minutes = static_cast<float>(tick - info.started) / 60.0f / 60.0f;
         r.last_minutes = minutes;
@@ -2534,37 +2780,54 @@ private:
 
     /// A town: a patch of built-up ground and a name plate, in the European
     /// style, sized in pixels so it stays readable at every zoom.
+    /// Homes, workplaces and shops: a block with a roof and a shadow, coloured
+    /// by what it is, taller ones bigger.
+    void draw_buildings(Renderer2D& r) {
+        if (zoom_ < 1.2f) return;
+        r.set_layer(-1);
+        for (u32 i = 0; i < static_cast<u32>(buildings_.size()); ++i) {
+            const Building& b = buildings_[i];
+            if (!net_.valid_edge(b.edge)) continue;
+            const NetEdge& e = net_.edge(b.edge);
+            const PathSampler along(e.path, 0.5f);
+            if (along.empty()) continue;
+            const PathPoint p = along.at(clampf(b.along, 0, along.length()));
+            const Vec2 face = p.direction;                  // the building fronts the road
+            const Vec2 depth = perp(face) * b.side;          // and stretches away from it
+            const float w = 8.0f + static_cast<float>(b.size) * 1.2f;
+            const float d = 7.0f + static_cast<float>(b.size) * 1.6f;
+            const Vec2 c = b.pos + depth * (d * 0.5f - 2.0f);
+            const Vec2 hw = face * (w * 0.5f), hd = depth * (d * 0.5f);
+            const Color roof = b.kind == kHome ? lerp_color(kRoofDark, kRoofLight, unit(cell_hash(static_cast<int>(i), 77)))
+                               : b.kind == kWork ? kRoofWork
+                                                 : kRoofShop;
+            const Vec2 shade{1.4f + static_cast<float>(b.size) * 0.3f, 1.8f + static_cast<float>(b.size) * 0.4f};
+            r.fill_polygon({c - hw - hd + shade, c + hw - hd + shade, c + hw + hd + shade, c - hw + hd + shade}, kBuildingShadow);
+            r.fill_polygon({c - hw - hd, c + hw - hd, c + hw + hd, c - hw + hd}, roof);
+            r.fill_polygon({c - hw - hd * 0.12f, c + hw - hd * 0.12f, c + hw + hd * 0.12f, c - hw + hd * 0.12f},
+                           lerp_color(roof, rgb(255, 245, 225), 0.22f));
+            if (b.kind == kShop && zoom_ > 4) r.fill_rect({c.x - 1.5f, c.y - 1.5f, 3, 3}, rgb(230, 190, 60));
+        }
+        r.set_layer(0);
+    }
+
+    /// An exit: the road carries on off the map, and a sign says where to.
     void draw_towns(Renderer2D& r) {
-        r.set_layer(-3); // under the roads: a road drawn through a village covers it
+        r.set_layer(-3);
         for (usize i = 0; i < towns_.size(); ++i) {
             const Town& t = towns_.at(i);
             const Vec2 at = t.pos();
-            const float radius = 18.0f + static_cast<float>(t.size) * 7.0f;
-            // The ground a village stands on, then its houses: rectangles with
-            // a roof ridge, laid out by hashing so a town always looks the same.
-            r.fill_circle(at.x, at.y, radius, rgba(kTownGround.r, kTownGround.g, kTownGround.b, 120), 24);
-            if (zoom_ < 1.6f) continue; // from up here a village is a patch, not houses
-            const u32 count = 6 + t.size * 4;
-            for (u32 b = 0; b < count; ++b) {
-                const u32 h = cell_hash(static_cast<int>(i) * 977 + static_cast<int>(b), 31337);
-                const float angle = unit(h) * 6.2831853f;
-                const float dist = std::sqrt(unit(h >> 7)) * radius * 0.86f;
-                const Vec2 centre{at.x + std::cos(angle) * dist, at.y + std::sin(angle) * dist};
-                const float w = 4.0f + unit(h >> 13) * 3.5f;
-                const float d = 3.5f + unit(h >> 19) * 2.5f;
-                const float facing = std::atan2(centre.y - at.y, centre.x - at.x);
-                const Vec2 along{std::cos(facing), std::sin(facing)};
-                const Vec2 side = perp(along);
-                const Vec2 hw = along * (w * 0.5f), hd = side * (d * 0.5f);
-                const Color roof = lerp_color(kRoofDark, kRoofLight, unit(h >> 24));
-                r.fill_polygon({centre - hw - hd + Vec2{1.2f, 1.6f}, centre + hw - hd + Vec2{1.2f, 1.6f},
-                                centre + hw + hd + Vec2{1.2f, 1.6f}, centre - hw + hd + Vec2{1.2f, 1.6f}},
-                               kBuildingShadow);
-                r.fill_polygon({centre - hw - hd, centre + hw - hd, centre + hw + hd, centre - hw + hd}, roof);
-                // The ridge line down the middle of the roof.
-                r.fill_polygon({centre - hw - hd * 0.16f, centre + hw - hd * 0.16f, centre + hw + hd * 0.16f,
-                                centre - hw + hd * 0.16f},
-                               lerp_color(roof, rgb(255, 240, 220), 0.25f));
+            // The road runs on beyond the edge of the map: a strip that fades out.
+            Vec2 outward = normalize(at - Vec2{0, 0});
+            if (length_sq(outward) < 0.5f) outward = {1, 0};
+            const float width = 6.0f;
+            for (int step = 0; step < 6; ++step) {
+                const Vec2 a = at + outward * (26.0f * static_cast<float>(step) - 10.0f);
+                const Vec2 b = at + outward * (26.0f * static_cast<float>(step + 1) - 10.0f);
+                StrokeStyle strip;
+                strip.width = width;
+                set_color(strip, rgba(kAsphalt.r, kAsphalt.g, kAsphalt.b, static_cast<u8>(200 - step * 32)));
+                r.draw_polyline({a, b}, strip);
             }
         }
         r.set_layer(4);
@@ -2698,13 +2961,18 @@ private:
         ui_.progress(clampf(money_ / kMoneyTarget, 0, 1), kMoneyPanel.w - 16, kAutobahnBlue);
         ui_.end_panel();
 
-        // The goals: which town pairs still have no road between them.
-        ui_.begin_panel(kGoalPanel, "Routes");
+        // The city: the time, what has grown, and how the trips are going.
+        std::snprintf(line, sizeof line, "%02d:%02d", static_cast<int>(hour_), static_cast<int>(std::fmod(hour_, 1.0f) * 60));
+        ui_.begin_panel(kGoalPanel, line);
+        usize homes = 0, works = 0, shops = 0;
+        for (const Building& b : buildings_) (b.kind == kHome ? homes : b.kind == kWork ? works : shops)++;
+        std::snprintf(line, sizeof line, "%zu homes, %zu jobs, %zu shops", homes, works, shops);
+        ui_.label(line);
+        std::snprintf(line, sizeof line, "%zu cars  %u ok  %u late  %u lost", cars_.count(),
+                      trips_served_ - trips_late_, trips_late_, trips_lost_);
+        ui_.label(line, true);
         const usize open_routes = routes_.size() - routes_connected();
-        if (open_routes == 0) std::snprintf(line, sizeof line, "all %zu connected", routes_.size());
-        else std::snprintf(line, sizeof line, "%zu of %zu unconnected", open_routes, routes_.size());
-        ui_.label(line, open_routes != 0);
-        std::snprintf(line, sizeof line, "%zu cars, %u arrived", cars_.count(), arrived_);
+        std::snprintf(line, sizeof line, "%zu of %zu exits linked", routes_.size() - open_routes, routes_.size());
         ui_.label(line, true);
         bool overlay = show_flow_;
         if (ui_.toggle("Traffic", overlay)) app_->push_command(kCmdFlow);
@@ -2942,13 +3210,21 @@ private:
     std::vector<TownAccess> access_;
     u64 signal_version_ = 0;      ///< bumped whenever a signal is added, removed or re-phased
     std::vector<RouteDemand> routes_;
+    std::vector<Building> buildings_;
+    std::vector<TownAccess> doors_; ///< each building's way onto the network
+    float hour_ = 7.5f;             ///< time of day, 0..24
+    float grow_timer_ = 0;
+    u32 trips_served_ = 0;
+    u32 trips_late_ = 0;
+    u32 trips_lost_ = 0;
     u64 access_version_ = ~0ull;
     std::vector<float> flow_; ///< per lane, 1 = free running, 0 = stopped
     float money_ = 20000;
     float spent_ = 0;
     bool show_flow_ = false;
     float clock_ = 0;    ///< seconds since the map started
-    float demand_ = 3.0f; ///< trips per minute for a pair of size-1 towns
+    float demand_ = 3.0f;       ///< through trips per minute for a pair of size-1 exits
+    float local_demand_ = 2.4f; ///< trips per minute per building floor at its peak
     u32 max_cars_ = 400;
     u32 spawned_ = 0;
     u32 arrived_ = 0;
