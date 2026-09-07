@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace rw {
 
@@ -42,13 +43,14 @@ std::vector<std::vector<Vec2>> apply_dashes(const std::vector<Vec2>& pts, const 
         pieces.push_back(pts);
         return pieces;
     }
-    const float period = style.dash + std::max(style.gap, 0.0f);
-    auto phase = [&](float t) {
-        float p = std::fmod(t, period);
-        if (p < 0) p += period;
-        return p;
-    };
-    float travelled = style.dash_offset;
+    // Every dash is the k-th period's painted stretch [k*period, k*period + dash)
+    // in pattern distance. Intersecting those stretches with each segment,
+    // in double and by index, gives exact pieces with nothing accumulating:
+    // an earlier version walked the line in float steps and, thousands of
+    // units along, could no longer take a step at all.
+    const double dash = style.dash;
+    const double period = dash + std::max(style.gap, 0.0f);
+    double travelled = style.dash_offset;
     std::vector<Vec2> current;
     bool drawing = false;
     const usize n = pts.size();
@@ -58,28 +60,31 @@ std::vector<std::vector<Vec2>> apply_dashes(const std::vector<Vec2>& pts, const 
         const float seg_len = length(sub(b, a));
         if (seg_len <= 0) continue;
         const Vec2 dir = mul(sub(b, a), 1.0f / seg_len);
-        float pos = 0;
-        while (pos < seg_len) {
-            const float p = phase(travelled + pos);
-            const bool on = p < style.dash;
-            const float remaining_in_phase = on ? style.dash - p : period - p;
-            const float step = std::min(remaining_in_phase, seg_len - pos);
-            const Vec2 from = add(a, mul(dir, pos));
-            const Vec2 to = add(a, mul(dir, pos + step));
-            if (on) {
-                if (!drawing) {
-                    current.clear();
-                    current.push_back(from);
-                    drawing = true;
-                }
-                current.push_back(to);
-            } else if (drawing) {
-                pieces.push_back(current);
+        const double s0 = travelled, s1 = travelled + seg_len;
+        for (long long k = static_cast<long long>(std::floor(s0 / period));; ++k) {
+            const double on0 = static_cast<double>(k) * period;
+            const double on1 = on0 + dash;
+            if (on0 >= s1) break;
+            const double lo = std::max(on0, s0), hi = std::min(on1, s1);
+            if (hi <= lo) continue; // this period's dash ended before the segment began
+            const Vec2 from = add(a, mul(dir, static_cast<float>(lo - s0)));
+            const Vec2 to = add(a, mul(dir, static_cast<float>(hi - s0)));
+            // A dash carrying over from the previous segment keeps its piece.
+            const bool carried = drawing && lo <= s0 + 1e-9;
+            if (!carried) {
+                if (drawing && current.size() >= 2) pieces.push_back(current);
+                current.clear();
+                current.push_back(from);
+                drawing = true;
+            }
+            current.push_back(to);
+            if (on1 <= s1) { // the dash ends inside this segment
+                if (current.size() >= 2) pieces.push_back(current);
+                current.clear();
                 drawing = false;
             }
-            pos += std::max(step, 1e-5f);
         }
-        travelled += seg_len;
+        travelled = s1;
     }
     if (drawing && current.size() >= 2) pieces.push_back(current);
     return pieces;

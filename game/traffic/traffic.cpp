@@ -2906,7 +2906,9 @@ private:
         const Vec2 from = points_.back();
         const std::vector<Guide> guides = guides_from(from);
         const Guide* active = active_guide(from, mouse_world_, guides);
-        const float reach = std::max(visible_world().w, visible_world().h);
+        // Long enough to leave the screen, never so long that the dashes run
+        // into float trouble far from the anchor.
+        const float reach = std::min(std::max(visible_world().w, visible_world().h), 1500.0f);
         for (const Guide& g : guides) {
             if (g.kind == 0 && &g != active) continue; // angle steps only show when caught
             StrokeStyle ray;

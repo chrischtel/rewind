@@ -258,7 +258,41 @@ void test_circle() {
 
 } // namespace
 
+/// A dashed line thousands of units long must still finish. It used to spin
+/// forever: far along the line a float cannot represent pos + 1e-5, so the
+/// fixed epsilon that was meant to guarantee progress stopped working.
+void test_polyline_long_dashes() {
+    StrokeStyle style;
+    style.width = 1;
+    style.dash = 15.0f;
+    style.gap = 10.0f;
+    Mesh m;
+    build_polyline({{0, 0}, {4200, 0}}, style, m);
+    CHECK(indices_valid(m));
+    // 4200 / 25 = 168 periods, one quad each, and the area is the painted share.
+    CHECK(m.triangle_count() == 168 * 2);
+    CHECK(near(mesh_area(m), 168 * 15.0f, 2.0f));
+
+    // Tiny dashes on a huge line: many pieces, but it ends, and in bounded time.
+    style.dash = 0.4f;
+    style.gap = 0.3f;
+    Mesh fine;
+    build_polyline({{10000, 10000}, {10000, 13000}}, style, fine);
+    CHECK(indices_valid(fine));
+    // 3000 / 0.7 periods, each painting 0.4 by width 1: pieces may split at
+    // phase boundaries, so the area is what to trust, not the triangle count.
+    CHECK(fine.triangle_count() > 8000);
+    CHECK(near(mesh_area(fine), 3000 * 0.4f / 0.7f, 6.0f));
+
+    // A zero-length segment in the middle is skipped, not spun on.
+    Mesh zero;
+    build_polyline({{0, 0}, {50, 0}, {50, 0}, {100, 0}}, style, zero);
+    CHECK(indices_valid(zero));
+    CHECK(near(mesh_area(zero), 100 * 0.4f / 0.7f, 1.5f));
+}
+
 int main() {
+    test_polyline_long_dashes();
     test_mat4();
     test_polyline_basic();
     test_polyline_joins();

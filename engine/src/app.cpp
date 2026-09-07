@@ -44,7 +44,22 @@ void App::parse_engine_args() {
         else if (s == "--overlay") time_.show_overlay = true;
         else if (s == "--no-vsync") cfg_.vsync = false;
         else if (s == "--no-overlay") time_.show_overlay = false;
-        else if (s == "--command" && has_next) {
+        else if (s == "--mouse" && i + 2 < a.size()) {
+            scripted_mouse_ = true;
+            scripted_mouse_x_ = static_cast<i16>(std::atoi(a[++i].c_str()));
+            scripted_mouse_y_ = static_cast<i16>(std::atoi(a[++i].c_str()));
+        } else if (s == "--press" && i + 2 < a.size()) {
+            // X Y@FROM[-TO]
+            ScriptedPress p;
+            p.x = static_cast<i16>(std::atoi(a[++i].c_str()));
+            const std::string spec = a[++i];
+            const usize at = spec.find('@');
+            p.y = static_cast<i16>(std::atoi(spec.c_str()));
+            p.from = at == std::string::npos ? 1u : static_cast<u32>(std::atoi(spec.c_str() + at + 1));
+            const usize dash = spec.find('-', at == std::string::npos ? 0 : at);
+            p.to = dash == std::string::npos ? p.from + 3 : static_cast<u32>(std::atoi(spec.c_str() + dash + 1));
+            scripted_presses_.push_back(p);
+        } else if (s == "--command" && has_next) {
             // ID[:VALUE]@FRAME
             const std::string spec = a[++i];
             const usize at = spec.find('@');
@@ -321,6 +336,19 @@ InputFrame App::sample_input() const {
         in.wheel = static_cast<i8>(std::clamp(wheel_accum_, -127, 127));
     }
     wheel_accum_ = 0;
+
+    // Scripted input replaces the real mouse for the frames it covers, so a
+    // click can be replayed from the command line exactly.
+    if (scripted_mouse_) {
+        in.mouse_x = scripted_mouse_x_;
+        in.mouse_y = scripted_mouse_y_;
+    }
+    for (const ScriptedPress& p : scripted_presses_) {
+        if (current_frame_ < p.from || current_frame_ > p.to) continue;
+        in.mouse_x = p.x;
+        in.mouse_y = p.y;
+        in.set(Button::MouseLeft, current_frame_ < p.to);
+    }
     return in;
 }
 
@@ -778,6 +806,7 @@ int App::loop() {
 
     while (running_) {
         log_set_frame(++frame_number);
+        current_frame_ = frame_number;
         profiler.begin_frame();
         const u64 now = SDL_GetTicksNS();
         double frame_dt = static_cast<double>(now - prev) / 1e9;

@@ -44,6 +44,9 @@ struct AppConfig {
     ///   --overlay / --no-overlay
     ///   --no-vsync
     ///   --command ID[:VALUE]@FRAME   push a command at that frame
+    ///   --mouse X Y           the mouse sits at these render pixels instead of the real one
+    ///   --press X Y@FRAME[-FRAME]   hold the left button there from one frame to another
+    ///                         (scripted clicks for tests and for reproducing a report)
     /// Everything else is the game's.
     std::vector<std::string> args;
     int width = 1280;
@@ -287,6 +290,14 @@ private:
         u32 id;
         i32 value;
     };
+    struct ScriptedPress {
+        i16 x, y;
+        u32 from, to;
+    };
+    std::vector<ScriptedPress> scripted_presses_;
+    bool scripted_mouse_ = false;
+    i16 scripted_mouse_x_ = 0, scripted_mouse_y_ = 0;
+    u32 current_frame_ = 0;
     void parse_engine_args();
     InputFrame with_command(InputFrame in);
     u32 quit_after_frames_ = 0;
