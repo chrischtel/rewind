@@ -281,7 +281,46 @@ void test_reflection() {
 
 } // namespace
 
+void test_fit() {
+    // A straight stroke is one segment with exact ends.
+    std::vector<Vec2> line;
+    for (int i = 0; i <= 10; ++i) line.push_back({static_cast<float>(i) * 10, static_cast<float>(i) * 5});
+    Path p = fit_path(line, 0.5f);
+    CHECK(p.segments.size() == 1);
+    CHECK(distance(p.start(), line.front()) < 1e-4f && distance(p.end(), line.back()) < 1e-4f);
+
+    // A dense sine wave: few segments, every sample within tolerance.
+    std::vector<Vec2> wave;
+    for (int i = 0; i <= 200; ++i) {
+        const float x = static_cast<float>(i) * 2;
+        wave.push_back({x, std::sin(x / 40) * 50});
+    }
+    Path w = fit_path(wave, 1.0f);
+    CHECK(w.segments.size() >= 2 && w.segments.size() <= 14);
+    PathSampler s(w, 0.05f);
+    float worst = 0;
+    for (const Vec2& v : wave) worst = std::max(worst, s.distance_to(v));
+    CHECK(worst < 1.2f);
+    // A looser tolerance needs fewer pieces.
+    CHECK(fit_path(wave, 8.0f).segments.size() < w.segments.size());
+
+    // Degenerate input.
+    CHECK(fit_path({}, 1).empty());
+    CHECK(fit_path({{1, 1}, {1, 1}, {1, 1}}, 1).empty());
+    CHECK(fit_path({{0, 0}, {0, 0}, {10, 0}}, 1).segments.size() == 1);
+
+    // A circle drawn as a closed stroke comes back closed.
+    std::vector<Vec2> circle;
+    for (int i = 0; i < 36; ++i) {
+        const float a = static_cast<float>(i) / 36 * 6.2831853f;
+        circle.push_back({std::cos(a) * 100, std::sin(a) * 100});
+    }
+    Path c = fit_path(circle, 0.5f, true);
+    CHECK(c.closed && c.segments.size() >= 3 && distance(c.start(), c.end()) < 1e-3f);
+}
+
 int main() {
+    test_fit();
     test_vec2();
     test_bezier();
     test_arc();

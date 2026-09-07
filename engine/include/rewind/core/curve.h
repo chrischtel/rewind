@@ -184,6 +184,13 @@ std::vector<Vec2> offset_polyline(const std::vector<Vec2>& points, float distanc
 /// Drop points that are within `tolerance` of the line between their neighbours (Douglas-Peucker).
 std::vector<Vec2> simplify_polyline(const std::vector<Vec2>& points, float tolerance);
 
+/// Fit cubic Beziers to a drawn stroke (Schneider's least-squares fit with
+/// splitting at the worst point): the result stays within `tolerance` of
+/// every sample and uses as few segments as that allows. Repeated points
+/// are dropped first; fewer than two distinct points give an empty path.
+/// A closed stroke gets its last point joined back to the first.
+Path fit_path(const std::vector<Vec2>& points, float tolerance, bool closed = false);
+
 /// Resample a polyline at a fixed spacing. Keeps the first point; the last
 /// point is added when it is more than half a step from the previous sample.
 std::vector<Vec2> resample_polyline(const std::vector<Vec2>& points, float spacing, bool closed = false);

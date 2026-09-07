@@ -80,7 +80,17 @@ struct Batch {
     u32 first_index;
     u32 index_count;
     i32 layer;
+    float sort_key;
 };
+
+bool same_state(const Batch& a, const Batch& b, const std::vector<u8>& params) {
+    if (a.pipeline != b.pipeline || a.texture != b.texture || a.sampler != b.sampler || a.extra_count != b.extra_count ||
+        a.params_size != b.params_size || a.layer != b.layer)
+        return false;
+    for (u32 i = 0; i < a.extra_count; ++i)
+        if (a.extra_tex[i] != b.extra_tex[i] || a.extra_smp[i] != b.extra_smp[i]) return false;
+    return a.params_size == 0 || std::memcmp(params.data() + a.params_offset, params.data() + b.params_offset, a.params_size) == 0;
+}
 
 /// A stretch of drawing with one target, one view-projection and one depth
 /// setting. Each becomes a render pass.
@@ -170,6 +180,7 @@ struct Renderer2D::Impl {
     Mat4 current_vp;
     bool current_depth = false;
     i32 current_layer = 0;
+    float current_sort_key = 0;
     Material* current_material = nullptr;
     u8 current_params[kMaxParamsBytes] = {};
     u32 current_params_size = 0;
@@ -581,6 +592,46 @@ struct Renderer2D::Impl {
         }
     }
 
+    /// Draw order within a segment: layer, then sort key, then recording
+    /// order. When anything has to move, the index buffer is rebuilt in the
+    /// new order and neighbours with the same state merge into one draw.
+    void sort_batches() {
+        const auto before = [](const Batch& a, const Batch& b) {
+            return a.layer != b.layer ? a.layer < b.layer : a.sort_key < b.sort_key;
+        };
+        bool reorder = false;
+        for (const Segment& seg : segments) {
+            const auto first = batches.begin() + static_cast<std::ptrdiff_t>(seg.first_batch);
+            if (!std::is_sorted(first, first + static_cast<std::ptrdiff_t>(seg.batch_count), before)) reorder = true;
+        }
+        if (!reorder) return;
+
+        std::vector<u32> rebuilt;
+        rebuilt.reserve(indices.size());
+        std::vector<Batch> kept;
+        kept.reserve(batches.size());
+        for (Segment& seg : segments) {
+            const auto first = batches.begin() + static_cast<std::ptrdiff_t>(seg.first_batch);
+            std::stable_sort(first, first + static_cast<std::ptrdiff_t>(seg.batch_count), before);
+            const usize first_kept = kept.size();
+            for (usize i = seg.first_batch; i < seg.first_batch + seg.batch_count; ++i) {
+                Batch b = batches[i];
+                const u32 start = static_cast<u32>(rebuilt.size());
+                rebuilt.insert(rebuilt.end(), indices.begin() + b.first_index, indices.begin() + b.first_index + b.index_count);
+                if (kept.size() > first_kept && same_state(kept.back(), b, params_blob)) {
+                    kept.back().index_count += b.index_count;
+                } else {
+                    b.first_index = start;
+                    kept.push_back(b);
+                }
+            }
+            seg.first_batch = first_kept;
+            seg.batch_count = kept.size() - first_kept;
+        }
+        batches.swap(kept);
+        indices.swap(rebuilt);
+    }
+
     void upload_geometry() {
         if (vertices.empty() || indices.empty()) return;
         ensure_buffers();
@@ -693,6 +744,7 @@ struct Renderer2D::Impl {
         current_custom_vp = false;
         current_depth = false;
         current_layer = 0;
+        current_sort_key = 0;
         current_material = nullptr;
         current_params_size = 0;
         for (Texture*& t : extra) t = nullptr;
@@ -721,7 +773,7 @@ struct Renderer2D::Impl {
             Batch& last = batches.back();
             bool same = last.pipeline == pipe && last.texture == t.handle && last.sampler == sampler &&
                         last.extra_count == extra_count && last.params_size == params_size &&
-                        last.layer == current_layer;
+                        last.layer == current_layer && last.sort_key == current_sort_key;
             for (u32 i = 0; same && i < extra_count; ++i)
                 same = last.extra_tex[i] == ex_tex[i] && last.extra_smp[i] == ex_smp[i];
             if (same && params_size > 0)
@@ -744,6 +796,7 @@ struct Renderer2D::Impl {
         b.first_index = static_cast<u32>(indices.size());
         b.index_count = 0;
         b.layer = current_layer;
+        b.sort_key = current_sort_key;
         batches.push_back(b);
         ++seg.batch_count;
         return batches.back();
@@ -886,6 +939,8 @@ void Renderer2D::set_depth_test(bool enabled) {
 
 void Renderer2D::set_layer(i32 layer) { impl_->current_layer = layer; }
 i32 Renderer2D::layer() const { return impl_->current_layer; }
+void Renderer2D::set_sort_key(float key) { impl_->current_sort_key = key; }
+float Renderer2D::sort_key() const { return impl_->current_sort_key; }
 
 void Renderer2D::draw_mesh(const Mesh& mesh, const Texture* texture, const Mat4* transform, bool world) {
     Impl& im = *impl_;
@@ -949,6 +1004,7 @@ void Renderer2D::end_frame(ImDrawData* overlay) {
         im.reset_frame();
         return;
     }
+    im.sort_batches();
     im.upload_geometry();
     if (overlay) ImGui_ImplSDLGPU3_PrepareDrawData(overlay, im.cmd);
     im.record_passes(overlay);

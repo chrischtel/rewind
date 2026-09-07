@@ -56,6 +56,10 @@ It is not for 3D games, and not for people who want a no-code workflow.
 - Meshes: your own triangle lists with texture and vertex colour, thick
   polylines with joins, caps, dashes and UVs along the length, polygons,
   draw layers, 4x4 transforms and depth-tested passes ready for 3D.
+- Particles with reflected definitions, bursts and continuous emitters,
+  positional audio with distance volume and panning, per-draw sort keys
+  for y-sorted scenes, and curve fitting that turns a drawn stroke into
+  Beziers (the network tool draws roads freehand).
 - Curves: Bezier paths, arcs and Catmull-Rom splines with arc-length
   sampling, closest point, split, join, offset and flattening; polygon
   offset, simplification, hull and intersection helpers.
@@ -107,7 +111,7 @@ It is not for 3D games, and not for people who want a no-code workflow.
   links, enums by name, curve previews, asset pickers.
 - Always-on profiler, engine log with an in-game console, gamepad, mouse
   (with wheel) and keyboard input as part of the deterministic input record.
-- Thirty-one headless test suites and a CI workflow for Windows and Ubuntu.
+- Thirty-two headless test suites and a CI workflow for Windows and Ubuntu.
 
 Four samples show all of it: `bounce`, `pixels`, `duel` (a four-player netcode arena with a lobby) and
 `towerdefense`, a complete small game.

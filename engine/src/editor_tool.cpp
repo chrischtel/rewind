@@ -54,6 +54,8 @@ void NetworkTool::cancel() {
     from_ = kNone;
     press_node_ = kNone;
     dragging_ = false;
+    stroke_.clear();
+    stroke_from_ = kNone;
 }
 
 void NetworkTool::update(ToolContext& ctx) {
@@ -116,6 +118,41 @@ void NetworkTool::update(ToolContext& ctx) {
         }
         ctx.status = "Delete: click a node or an edge";
         break;
+    case Mode::Draw:
+        if (ctx.pressed && ctx.hovered) {
+            stroke_.clear();
+            stroke_from_ = hover_node_;
+            stroke_.push_back(hover_node_ != kNone ? net_->node(hover_node_).pos : ctx.snap(ctx.mouse_world));
+        }
+        if (ctx.down && !stroke_.empty() && distance(ctx.mouse_world, stroke_.back()) > ctx.px(2)) stroke_.push_back(ctx.mouse_world);
+        if (ctx.released && !stroke_.empty()) {
+            // The stroke ends where the button came up.
+            if (distance(ctx.mouse_world, stroke_.back()) > ctx.px(1)) stroke_.push_back(ctx.mouse_world);
+            float drawn = 0;
+            for (usize i = 1; i < stroke_.size(); ++i) drawn += distance(stroke_[i], stroke_[i - 1]);
+            if (stroke_.size() >= 2 && drawn > ctx.px(8)) {
+                const u32 a = stroke_from_ != kNone ? stroke_from_ : place_node(ctx, stroke_.front());
+                u32 b = hover_node_ != kNone && hover_node_ != a ? hover_node_ : kNone;
+                if (b == kNone) {
+                    stroke_.back() = ctx.snap(stroke_.back());
+                    b = place_node(ctx, stroke_.back());
+                } else {
+                    stroke_.back() = net_->node(b).pos;
+                }
+                Path path = fit_path(simplify_polyline(stroke_, ctx.px(1)), ctx.px(draw_tolerance_px));
+                const u32 edge = path.empty() ? kNone : net_->add_edge(a, b, &path);
+                if (edge != kNone) {
+                    net_->set_tracks(edge, forward_tracks, backward_tracks, track_width);
+                    edited = true;
+                    from_ = b;
+                }
+            }
+            stroke_.clear();
+            stroke_from_ = kNone;
+        }
+        ctx.status = stroke_.empty() ? "Draw: drag a stroke to add a curved edge; start or end on a node to connect it"
+                                     : "Draw: release to fit the stroke";
+        break;
     }
 
     if (edited) {
@@ -136,6 +173,13 @@ void NetworkTool::update(ToolContext& ctx) {
             s.r = 1; s.g = 0.86f; s.b = 0.3f; s.a = 0.35f;
             r.draw_path(net_->edge(hover_edge_).path, s);
         }
+        if (stroke_.size() >= 2) {
+            StrokeStyle s;
+            s.width = 2 * px;
+            s.join = LineJoin::Round;
+            s.r = 1; s.g = 0.86f; s.b = 0.3f; s.a = 0.8f;
+            r.draw_polyline(stroke_, s);
+        }
         if (from_ != kNone && net_->valid_node(from_) && !dragging_) {
             const Vec2 a = net_->node(from_).pos;
             const Vec2 b = hover_node_ != kNone ? net_->node(hover_node_).pos : ctx.snap(ctx.mouse_world);
@@ -147,8 +191,9 @@ void NetworkTool::update(ToolContext& ctx) {
 
 void NetworkTool::panel() {
     int m = static_cast<int>(mode);
-    const char* modes[] = {"Place", "Split", "Delete"};
-    if (ImGui::Combo("mode", &m, modes, 3)) mode = static_cast<Mode>(m);
+    const char* modes[] = {"Place", "Split", "Delete", "Draw"};
+    if (ImGui::Combo("mode", &m, modes, 4)) mode = static_cast<Mode>(m);
+    if (mode == Mode::Draw) ImGui::DragFloat("fit tolerance (px)", &draw_tolerance_px, 0.1f, 0.5f, 20);
     int fwd = static_cast<int>(forward_tracks), back = static_cast<int>(backward_tracks);
     if (ImGui::SliderInt("forward tracks", &fwd, 0, 6)) forward_tracks = static_cast<u32>(fwd);
     if (ImGui::SliderInt("backward tracks", &back, 0, 6)) backward_tracks = static_cast<u32>(back);

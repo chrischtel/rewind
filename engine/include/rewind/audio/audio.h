@@ -1,5 +1,6 @@
 #pragma once
 
+#include "rewind/core/math.h"
 #include "rewind/core/types.h"
 #include "rewind/project/asset_ref.h"
 #include "rewind/sim/reflect.h"
@@ -26,6 +27,20 @@ struct Sound {
 
     float seconds() const;
 };
+
+/// The player's ears for positional sounds (play_at): full volume within
+/// `near_distance`, silent beyond `max_distance`, linear in between, and
+/// panned left or right by where the source is relative to the listener.
+struct AudioListener {
+    Vec2 position;
+    float max_distance = 800;
+    float near_distance = 40;
+};
+
+/// Volume factor (0..1) for a source at `position`.
+float positional_gain(Vec2 position, const AudioListener& listener);
+/// Pan for a source at `position`: -1 fully left, 0 centre, 1 fully right.
+float positional_pan(Vec2 position, const AudioListener& listener);
 
 /// Volumes a player sets: master times one group. play() takes the group.
 struct AudioMix {
@@ -90,11 +105,25 @@ public:
     Sound* find_sound(const std::string& name) const;
 
     /// Start playing. `volume` is linear, 1 = as recorded; the mix's master
-    /// and group volumes multiply in.
-    void play(const Sound& sound, float volume = 1.0f, u32 group = kAudioSfx);
-    void play(const Sound* sound, float volume = 1.0f, u32 group = kAudioSfx) {
-        if (sound) play(*sound, volume, group);
+    /// and group volumes multiply in. Returns a voice id (0 = not started).
+    u32 play(const Sound& sound, float volume = 1.0f, u32 group = kAudioSfx);
+    u32 play(const Sound* sound, float volume = 1.0f, u32 group = kAudioSfx) {
+        return sound ? play(*sound, volume, group) : 0;
     }
+
+    /// Play at a world position: the distance to the listener sets the
+    /// volume (followed as the listener or the voice moves), the direction
+    /// the pan (fixed when the voice starts). Out of range = not started.
+    u32 play_at(const Sound& sound, Vec2 position, float volume = 1.0f, u32 group = kAudioSfx);
+    u32 play_at(const Sound* sound, Vec2 position, float volume = 1.0f, u32 group = kAudioSfx) {
+        return sound ? play_at(*sound, position, volume, group) : 0;
+    }
+    void set_listener(const AudioListener& listener);
+    const AudioListener& listener() const { return listener_; }
+    /// A moving source: re-evaluates the distance volume.
+    void move_voice(u32 voice, Vec2 position);
+    void stop(u32 voice);
+    bool playing(u32 voice) const;
 
     /// Stop every voice at once.
     void stop_all();
@@ -119,7 +148,19 @@ private:
     float master_ = 1.0f;
     AudioMix mix_;
     int max_voices_ = 32;
-    std::vector<SDL_AudioStream*> voices_;
+    struct Voice {
+        SDL_AudioStream* stream;
+        u32 id;
+        bool positional;
+        Vec2 position;
+        float volume;
+        u32 group;
+    };
+    u32 start_voice(const Sound& sound, float gain, float pan, bool positional, Vec2 position, float volume, u32 group);
+    float base_gain(float volume, u32 group) const;
+    std::vector<Voice> voices_;
+    AudioListener listener_;
+    u32 next_voice_ = 1;
     std::unordered_map<std::string, std::unique_ptr<Sound>> sounds_;
     std::unordered_set<std::string> stale_files_;
     std::unordered_map<std::string, std::string> aliases_; ///< resolved path -> name the game used

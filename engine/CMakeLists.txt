@@ -76,6 +76,7 @@ add_library(rewind SHARED
     src/network.cpp
     src/network_agents.cpp
     src/network_draw.cpp
+    src/particles.cpp
     src/net_loopback.cpp
     src/net_session.cpp
     src/net_udp.cpp

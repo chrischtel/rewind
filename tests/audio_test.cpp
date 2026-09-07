@@ -2,6 +2,7 @@
 // round trip, downmix, bad input.
 
 #include <rewind/assets/audio_decode.h>
+#include <rewind/audio/audio.h>
 #include <rewind/project/cooked.h>
 
 #include <cstdio>
@@ -96,7 +97,26 @@ void test_wav_and_cook() {
 
 } // namespace
 
+void test_positional() {
+    AudioListener l;
+    l.position = {100, 100};
+    l.max_distance = 500;
+    l.near_distance = 50;
+    CHECK(positional_gain({100, 100}, l) == 1 && positional_gain({140, 100}, l) == 1);
+    CHECK(positional_gain({600, 100}, l) == 0 && positional_gain({100, 900}, l) == 0);
+    const float mid = positional_gain({100 + 275, 100}, l); // halfway between near and max
+    CHECK(mid > 0.49f && mid < 0.51f);
+    CHECK(positional_pan({100, 100}, l) == 0);
+    CHECK(positional_pan({350, 100}, l) == 1 && positional_pan({-500, 100}, l) == -1);
+    const float half = positional_pan({225, 100}, l);
+    CHECK(half > 0.49f && half < 0.51f);
+    // A listener with no range never hears anything beyond near.
+    l.max_distance = l.near_distance;
+    CHECK(positional_gain({100, 100}, l) == 1 && positional_gain({200, 100}, l) == 0);
+}
+
 int main() {
+    test_positional();
     test_wav_and_cook();
     if (failures == 0) std::printf("audio_test: all passed\n");
     return failures == 0 ? 0 : 1;

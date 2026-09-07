@@ -3,6 +3,7 @@
 #include <rewind/debug/editor_tool.h>
 #include <rewind/sim/network.h>
 
+#include <cmath>
 #include <cstdio>
 
 using namespace rw;
@@ -121,9 +122,82 @@ void test_place_and_connect() {
     empty.cancel();
 }
 
+/// Draw mode: a freehand arc becomes one curved edge between two new nodes,
+/// and a second stroke starting on a node continues from it.
+void test_draw() {
+    CurveNetwork net;
+    NetworkTool tool(&net);
+    tool.mode = NetworkTool::Mode::Draw;
+    ToolContext down;
+    down.hovered = true;
+    down.pressed = true;
+    down.down = true;
+    down.mouse_world = {0, 0};
+    tool.update(down);
+    for (int i = 1; i < 20; ++i) {
+        ToolContext move;
+        move.hovered = true;
+        move.down = true;
+        const float k = static_cast<float>(i) / 20;
+        move.mouse_world = {k * 200, -std::sin(k * 3.1415926f) * 80};
+        tool.update(move);
+    }
+    CHECK(tool.stroke().size() > 10);
+    ToolContext up;
+    up.hovered = true;
+    up.released = true;
+    up.mouse_world = {200, 0};
+    tool.update(up);
+    CHECK(up.edited && tool.stroke().empty());
+    CHECK(net.nodes().size() == 2 && net.edges().size() == 1);
+    const NetEdge& e = net.edge(0);
+    CHECK(distance(e.path.start(), net.node(e.a).pos) < 1e-3f && distance(e.path.end(), net.node(e.b).pos) < 1e-3f);
+    PathSampler s(e.path, 0.1f);
+    const Vec2 mid = s.at(s.length() * 0.5f).position;
+    CHECK(mid.y < -60 && mid.y > -95 && std::fabs(mid.x - 100) < 15); // follows the arc, not the chord
+    CHECK(!e.tracks.empty());
+
+    // Start on the end node: the new edge leaves from it.
+    ToolContext again;
+    again.hovered = true;
+    again.pressed = true;
+    again.down = true;
+    again.mouse_world = {202, 1};
+    tool.update(again);
+    for (int i = 1; i <= 10; ++i) {
+        ToolContext move;
+        move.hovered = true;
+        move.down = true;
+        move.mouse_world = {200 + static_cast<float>(i) * 10, static_cast<float>(i) * 5};
+        tool.update(move);
+    }
+    ToolContext up2;
+    up2.hovered = true;
+    up2.released = true;
+    up2.mouse_world = {300, 50};
+    tool.update(up2);
+    CHECK(up2.edited && net.nodes().size() == 3 && net.edges().size() == 2);
+    CHECK(net.edge(1).a == e.b);
+
+    // A tiny stroke is a slip, not an edge.
+    ToolContext tap;
+    tap.hovered = true;
+    tap.pressed = true;
+    tap.down = true;
+    tap.mouse_world = {500, 500};
+    tool.update(tap);
+    ToolContext tap_up;
+    tap_up.hovered = true;
+    tap_up.released = true;
+    tap_up.mouse_world = {502, 500};
+    tool.update(tap_up);
+    CHECK(!tap_up.edited && net.nodes().size() == 3);
+}
+
 } // namespace
 
 int main() {
+    test_draw();
     test_place_and_connect();
     if (failures == 0) std::printf("tool_test: all passed\n");
     return failures == 0 ? 0 : 1;

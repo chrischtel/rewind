@@ -594,6 +594,138 @@ void douglas_peucker(const std::vector<Vec2>& pts, usize first, usize last, floa
 }
 } // namespace
 
+// ---- curve fitting (Schneider, Graphics Gems 1990) ---------------------------------------
+
+namespace {
+
+struct Fitter {
+    const std::vector<Vec2>& d;
+    float error_sq;
+    std::vector<CubicBezier> out;
+
+    static float b0(float u) { const float t = 1 - u; return t * t * t; }
+    static float b1(float u) { const float t = 1 - u; return 3 * u * t * t; }
+    static float b2(float u) { const float t = 1 - u; return 3 * u * u * t; }
+    static float b3(float u) { return u * u * u; }
+
+    Vec2 left_tangent(usize end) const { return normalize(d[end + 1] - d[end]); }
+    Vec2 right_tangent(usize end) const { return normalize(d[end - 1] - d[end]); }
+    Vec2 center_tangent(usize c) const {
+        const Vec2 v1 = d[c - 1] - d[c], v2 = d[c] - d[c + 1];
+        Vec2 t = normalize(Vec2{(v1.x + v2.x) * 0.5f, (v1.y + v2.y) * 0.5f});
+        if (length_sq(t) < 1e-12f) t = normalize(v1);
+        return t;
+    }
+
+    std::vector<float> chord_parameterize(usize first, usize last) const {
+        std::vector<float> u(last - first + 1, 0.0f);
+        for (usize i = first + 1; i <= last; ++i) u[i - first] = u[i - first - 1] + distance(d[i], d[i - 1]);
+        const float total = u.back();
+        for (float& v : u) v = total > 0 ? v / total : 0;
+        return u;
+    }
+
+    CubicBezier generate(usize first, usize last, const std::vector<float>& u, Vec2 t1, Vec2 t2) const {
+        float c00 = 0, c01 = 0, c11 = 0, x0 = 0, x1 = 0;
+        for (usize i = 0; i <= last - first; ++i) {
+            const Vec2 a0 = t1 * b1(u[i]), a1 = t2 * b2(u[i]);
+            c00 += dot(a0, a0);
+            c01 += dot(a0, a1);
+            c11 += dot(a1, a1);
+            const Vec2 tmp = d[first + i] - (d[first] * (b0(u[i]) + b1(u[i])) + d[last] * (b2(u[i]) + b3(u[i])));
+            x0 += dot(a0, tmp);
+            x1 += dot(a1, tmp);
+        }
+        const float det_c = c00 * c11 - c01 * c01;
+        const float det_c0x = c00 * x1 - c01 * x0;
+        const float det_xc1 = x0 * c11 - x1 * c01;
+        float alpha_l = det_c == 0 ? 0 : det_xc1 / det_c;
+        float alpha_r = det_c == 0 ? 0 : det_c0x / det_c;
+        const float seg_len = distance(d[first], d[last]);
+        const float epsilon = 1e-6f * seg_len;
+        if (alpha_l < epsilon || alpha_r < epsilon) alpha_l = alpha_r = seg_len / 3; // Wu/Barsky heuristic
+        CubicBezier b;
+        b.p0 = d[first];
+        b.p3 = d[last];
+        b.p1 = b.p0 + t1 * alpha_l;
+        b.p2 = b.p3 + t2 * alpha_r;
+        return b;
+    }
+
+    void reparameterize(usize first, usize last, std::vector<float>& u, const CubicBezier& b) const {
+        for (usize i = 0; i <= last - first; ++i) {
+            const float t = u[i];
+            const Vec2 q = b.point(t), q1 = b.derivative(t);
+            // Second derivative of a cubic.
+            const Vec2 q2 = ((b.p2 - b.p1 * 2.0f + b.p0) * (1 - t) + (b.p3 - b.p2 * 2.0f + b.p1) * t) * 6.0f;
+            const Vec2 diff = q - d[first + i];
+            const float numerator = dot(diff, q1);
+            const float denominator = dot(q1, q1) + dot(diff, q2);
+            if (denominator != 0) u[i] = std::clamp(t - numerator / denominator, 0.0f, 1.0f);
+        }
+    }
+
+    float max_error(usize first, usize last, const CubicBezier& b, const std::vector<float>& u, usize& split) const {
+        split = (last - first + 1) / 2 + first;
+        float worst = 0;
+        for (usize i = first + 1; i < last; ++i) {
+            const float e = length_sq(b.point(u[i - first]) - d[i]);
+            if (e >= worst) {
+                worst = e;
+                split = i;
+            }
+        }
+        return worst;
+    }
+
+    void fit(usize first, usize last, Vec2 t1, Vec2 t2) {
+        if (last - first + 1 == 2) {
+            const float dist = distance(d[first], d[last]) / 3;
+            out.push_back(CubicBezier{d[first], d[first] + t1 * dist, d[last] + t2 * dist, d[last]});
+            return;
+        }
+        std::vector<float> u = chord_parameterize(first, last);
+        CubicBezier b = generate(first, last, u, t1, t2);
+        usize split = 0;
+        float err = max_error(first, last, b, u, split);
+        if (err < error_sq) {
+            out.push_back(b);
+            return;
+        }
+        if (err < error_sq * 4) {
+            for (int iteration = 0; iteration < 4; ++iteration) {
+                reparameterize(first, last, u, b);
+                b = generate(first, last, u, t1, t2);
+                err = max_error(first, last, b, u, split);
+                if (err < error_sq) {
+                    out.push_back(b);
+                    return;
+                }
+            }
+        }
+        const Vec2 tc = center_tangent(split);
+        fit(first, split, t1, tc);
+        fit(split, last, tc * -1.0f, t2);
+    }
+};
+
+} // namespace
+
+Path fit_path(const std::vector<Vec2>& points, float tolerance, bool closed) {
+    std::vector<Vec2> d;
+    d.reserve(points.size() + 1);
+    for (const Vec2& p : points)
+        if (d.empty() || distance(p, d.back()) > 1e-5f) d.push_back(p);
+    if (closed && d.size() > 2 && distance(d.front(), d.back()) > 1e-5f) d.push_back(d.front());
+    Path path;
+    if (d.size() < 2) return path;
+    Fitter f{d, std::max(tolerance, 1e-4f) * std::max(tolerance, 1e-4f), {}};
+    f.fit(0, d.size() - 1, f.left_tangent(0), f.right_tangent(d.size() - 1));
+    path.segments = std::move(f.out);
+    path.closed = closed && d.size() > 2;
+    return path;
+}
+
 std::vector<Vec2> simplify_polyline(const std::vector<Vec2>& pts, float tolerance) {
     if (pts.size() < 3) return pts;
     std::vector<bool> keep(pts.size(), false);

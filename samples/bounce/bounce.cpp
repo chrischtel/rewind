@@ -145,7 +145,7 @@ public:
                 }
                 s.color = static_cast<u8>((s.color + 1) % kPaletteSize);
                 ++bounces_;
-                ctx.emit(kEvBounce);
+                ctx.emit(kEvBounce, t.x, t.y);
             }
         });
     }
@@ -192,6 +192,7 @@ public:
         // Draw layers: the balls are recorded first but the track (layer -1)
         // still ends up underneath them.
         world_.each<Transform, Shape>([&](Entity, Transform& t, Shape& s) {
+            r.set_sort_key(t.y + s.radius); // lower balls cover the ones behind them
             r.fill_circle(t.x, t.y, s.radius, kPalette[s.color % kPaletteSize]);
         });
 
@@ -238,6 +239,11 @@ public:
         }
         r.draw_polyline(ring, halo);
 
+        // Particles are presentation: fed by bounce events, stepped with the frame time.
+        r.set_sort_key(0);
+        particles_.update(app_ ? app_->stats().frame_ms / 1000.0f : 1.0f / 60);
+        particles_.draw(r);
+
         draw_hud(r);
         r.draw_text(12, kHeight - 60, "arrows / WASD: move   Z: launch a ball   X: pop one", rgb(160, 160, 180));
         r.draw_text(12, kHeight - 44, "hold F4: rewind   F2: pause   F3: step   F5: replay + verify", rgb(160, 160, 180));
@@ -253,6 +259,12 @@ public:
     }
 
     std::vector<DataTableBase*> data_tables() override { return {&kinds_}; }
+
+    /// Sparks where a ball hit the player. Events re-fire on replay, so the
+    /// sparks come back with the bounce.
+    void on_event(const SimEvent& e, Audio&) override {
+        if (e.id == kEvBounce) particles_.emit(spark_, {e.a, e.b});
+    }
 
     /// HUD with the game UI: presentation, so it runs after the world is
     /// drawn; clicks that change the simulation go in as commands.
@@ -356,6 +368,23 @@ private:
     NetworkTool net_tool_{&net_, "Network"};
     App* app_ = nullptr;
     DataTable<BallKind> kinds_{"ball_kinds", "ball_kinds.json"};
+    ParticleSystem particles_{42};
+    ParticleDef spark_ = [] {
+        ParticleDef d;
+        d.id = "spark";
+        d.lifetime_min = 0.25f;
+        d.lifetime_max = 0.6f;
+        d.speed_min = 60;
+        d.speed_max = 220;
+        d.gravity = {0, 400};
+        d.drag = 1.5f;
+        d.size_start = 5;
+        d.size_end = 0;
+        d.color_start = rgb(255, 235, 160);
+        d.color_end = rgba(255, 120, 60, 0);
+        d.burst = 14;
+        return d;
+    }();
     Ui ui_;                  // presentation only
     bool hud_wants_mouse_ = false;
     u32 bounces_ = 0;

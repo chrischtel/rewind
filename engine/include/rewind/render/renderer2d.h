@@ -143,6 +143,13 @@ public:
     /// and UI in any code order.
     void set_layer(i32 layer);
     i32 layer() const;
+    /// Sort key for everything drawn from now on, within the layer: lower
+    /// keys draw first, equal keys keep their order. Top-down games set it
+    /// to the sprite's feet (y + height) so things further down cover
+    /// things behind them. Draws with the same state still batch after
+    /// sorting. Reset to 0 by begin_frame().
+    void set_sort_key(float key);
+    float sort_key() const;
 
     /// Replace the pixel-space projection for subsequent drawing with your
     /// own view-projection (column-major, see Mat4::perspective/look_at).

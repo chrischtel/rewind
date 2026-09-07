@@ -65,10 +65,12 @@ public:
 /// Place: click empty space for a node (chained to the previous one by an
 /// edge), click a node to connect or start from it, drag a node to move
 /// it, right-click to end the chain. Split: click an edge. Delete: click a
-/// node or edge. New edges get the tool's track layout.
+/// node or edge. Draw: drag a freehand stroke; it is fitted to a curve and
+/// becomes an edge, from and to existing nodes when the stroke starts or
+/// ends on one. New edges get the tool's track layout.
 class NetworkTool final : public EditorTool {
 public:
-    enum class Mode { Place, Split, Delete };
+    enum class Mode { Place, Split, Delete, Draw };
 
     explicit NetworkTool(CurveNetwork* network, const char* name = "Network") : net_(network), name_(name) {}
 
@@ -86,8 +88,10 @@ public:
     bool smooth = true;          ///< new edges leave the previous node along its last edge
     bool draw_debug = true;      ///< draw_network() overlay
     float pick_px = 10;          ///< hit radius in pixels
+    float draw_tolerance_px = 3; ///< Draw: how far the fitted curve may stray from the stroke
 
     u32 chain_from() const { return from_; }
+    const std::vector<Vec2>& stroke() const { return stroke_; }
     u32 hovered_node() const { return hover_node_; }
     u32 hovered_edge() const { return hover_edge_; }
 
@@ -106,6 +110,8 @@ private:
     u32 press_node_ = kNone;
     Vec2 press_pos_;
     bool dragging_ = false;
+    std::vector<Vec2> stroke_;
+    u32 stroke_from_ = kNone;
 };
 
 } // namespace rw

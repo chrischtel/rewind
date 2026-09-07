@@ -196,8 +196,15 @@ knows what a car is. Decided 2026-09-06.
    `Game::data_tables()` for hot reload and the editor's Data panel,
    `rewind_add_game(... ASSETS dir)`, `data_table_test`; bounce's ball
    kinds come from a table.
-7. Curve fitting for drawn strokes, particles, positional audio, per-draw
-   sort keys.
+7. ~~Curve fitting for drawn strokes, particles, positional audio, per-draw
+   sort keys.~~ Done: `fit_path` (Schneider) and the network tool's Draw
+   mode, `render/particles.h` (defs, bursts, emitters, discs or sprites,
+   seeded), `Audio::play_at`/`set_listener`/`move_voice` with distance
+   volume and constant-power pan, `Renderer2D::set_sort_key` with index
+   rebuild and re-batching, `particles_test` plus new cases in curve, tool
+   and audio tests; bounce sparks on bounce events and y-sorted balls.
+
+All seven items of this list are done.
 
 ## Later
 

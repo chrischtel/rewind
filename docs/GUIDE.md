@@ -300,6 +300,16 @@ are the other steering helpers. The state machine is data only (current,
 previous, time in state, transitions, a one-tick `entered` flag); the
 logic is a switch in your tick, and the names show up in the inspector.
 
+### Curve fitting
+
+`fit_path(points, tolerance)` turns a drawn stroke into a `Path` of cubic
+Beziers (Schneider's least-squares fit, splitting at the worst point until
+every sample is within `tolerance`): a few segments for a smooth stroke,
+more where the hand wobbled. Run `simplify_polyline` first for a noisy
+mouse and pass `closed` for loops. The network tool's Draw mode is built
+on it: drag a stroke in the scene view and it becomes a curved edge, from
+and to existing nodes when the stroke starts or ends on one.
+
 ### Curve networks
 
 `sim/network.h` connects curves into something agents can travel: roads
@@ -436,6 +446,14 @@ order its code finds convenient. Layers are sorted per frame; batches do
 not merge across layers. The bounce sample draws its road at layer -1
 after the balls and still ends up underneath them.
 
+Sort keys order draws within a layer: `set_sort_key(k)` tags everything
+drawn afterwards, lower keys draw first, equal keys keep their recording
+order. A top-down game sets it to each sprite's feet (`y + height`) so
+what is further down the screen covers what stands behind it, regardless
+of the order entities are iterated. When keys reorder anything, the index
+buffer is rebuilt in the new order and neighbours with the same texture
+and material merge again, so y-sorted sprites still batch.
+
 ### Game UI and commands
 
 `render/ui.h` is the UI players see: an immediate-mode `Ui` with panels,
@@ -491,6 +509,24 @@ quarter, half, double or quadruple speed: more or fewer fixed ticks per
 second, never a different tick, so the timeline and the fingerprints stay
 exactly what they would be at 1x. The overlay's timeline panel and the
 editor status bar show it.
+
+### Particles
+
+`render/particles.h`: a `ParticleDef` says what a particle is (lifetime,
+speed and spread, spawn radius, gravity and drag, size and colour over its
+life, spin, an optional texture), a `ParticleSystem` holds the live ones.
+`emit(def, at, count, velocity)` is a burst, `add_emitter(def, at)` a
+continuous source at `def.emit_rate` per second that `move_emitter` and
+`remove_emitter` control; `update(dt)` integrates and drops the dead;
+`draw(r)` draws discs, `draw(r, texture_of)` sprites.
+
+Particles are presentation: step them in `render()` with the frame's time
+and they never touch the simulation, the fingerprint or the timeline. Emit
+them from `on_event()`, as the bounce sample does for its sparks, and a
+replay fires them again exactly where the bounce was. The system has its
+own seeded `Rng`, so the same calls give the same picture, and the def is a
+reflected struct with an id: keep a `DataTable<ParticleDef>` and tune
+effects in the Data panel while the game runs.
 
 ### Materials
 
@@ -579,6 +615,16 @@ void on_event(const SimEvent& e, Audio& audio) override {
 
 `Audio` loads WAV files, accepts float samples you generate yourself, plays
 them polyphonically, and is cached by name so hot reloads keep the pointers.
+
+Positional sound: `set_listener({position, max_distance, near_distance})`
+says where the player's ears are, and `play_at(sound, position)` plays a
+sound there: full volume within `near_distance`, silent beyond
+`max_distance`, linear in between, panned left or right by where the
+source is (constant power, baked into a stereo copy when the voice starts).
+Both return a voice id: `move_voice(id, position)` follows a moving source,
+`set_listener` re-evaluates every positional voice, `stop(id)` and
+`playing(id)` do what they say. `positional_gain` and `positional_pan` are
+the same curves as free functions, for your own mixing or tests.
 
 ## Asset hot reload
 
