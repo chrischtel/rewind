@@ -1,4 +1,4 @@
-# rewind_add_game(<name> SOURCES <files...> [SHADERS <glsl files...>])
+# rewind_add_game(<name> SOURCES <files...> [SHADERS <glsl files...>] [ASSETS <dir>])
 #
 # Creates two targets from the same sources:
 #   <name>       a normal executable with the game linked in (ship this)
@@ -11,8 +11,13 @@
 # when glslc is available. The engine loads them by that path (relative paths
 # are resolved against the executable's directory) and, when the GLSL source
 # changes at runtime, recompiles them live with the same glslc.
+#
+# ASSETS names a folder that becomes an asset root while developing (the
+# executable and the hot DLL both add it at startup), so a sample without a
+# project can still load textures, sounds and data tables from source files
+# and see them hot reload. Ship with `rewind cook` and `rewind pack` instead.
 function(rewind_add_game name)
-    cmake_parse_arguments(ARG "" "" "SOURCES;SHADERS" ${ARGN})
+    cmake_parse_arguments(ARG "" "ASSETS" "SOURCES;SHADERS" ${ARGN})
 
     add_executable(${name} ${ARG_SOURCES})
     target_link_libraries(${name} PRIVATE rewind::rewind)
@@ -29,6 +34,12 @@ function(rewind_add_game name)
         rewind_add_shaders(${name}_shaders ${ARG_SHADERS})
         add_dependencies(${name} ${name}_shaders)
         add_dependencies(${name}_hot ${name}_shaders)
+    endif()
+
+    if(ARG_ASSETS)
+        get_filename_component(assets_abs ${ARG_ASSETS} ABSOLUTE)
+        target_compile_definitions(${name} PRIVATE REWIND_GAME_ASSETS="${assets_abs}/")
+        target_compile_definitions(${name}_hot PRIVATE REWIND_GAME_ASSETS="${assets_abs}/")
     endif()
 endfunction()
 

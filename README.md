@@ -94,6 +94,10 @@ It is not for 3D games, and not for people who want a no-code workflow.
   Console, Profiler and Project panels. Edit and play modes (Stop returns
   to the edited state), undo and redo, a free camera, gizmos with snapping,
   right-click placement, entity names and search.
+- Data tables: definitions as rows of a reflected struct in JSON, with
+  ids, nested structs, arrays and asset references, id references that
+  resolve against the table, hot reload on edit, and a Data panel in the
+  editor to add, edit and save rows.
 - Projects with a fixed layout, stable asset ids in sidecars, an
   incremental, content-hash-based asset cook, scenes and prefabs with
   per-instance overrides, asset references by id with a picker and
@@ -103,7 +107,7 @@ It is not for 3D games, and not for people who want a no-code workflow.
   links, enums by name, curve previews, asset pickers.
 - Always-on profiler, engine log with an in-game console, gamepad, mouse
   (with wheel) and keyboard input as part of the deterministic input record.
-- Thirty headless test suites and a CI workflow for Windows and Ubuntu.
+- Thirty-one headless test suites and a CI workflow for Windows and Ubuntu.
 
 Four samples show all of it: `bounce`, `pixels`, `duel` (a four-player netcode arena with a lobby) and
 `towerdefense`, a complete small game.

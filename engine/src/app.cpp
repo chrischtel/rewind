@@ -1,4 +1,5 @@
 #include "rewind/core/app.h"
+#include "rewind/project/data_table.h"
 
 #include "rewind/core/input_map.h"
 #include "rewind/core/player_settings.h"
@@ -361,11 +362,27 @@ void App::poll_hot_reload() {
 }
 
 void App::poll_assets() {
+    // Data tables the game lists are watched like any other asset.
+    const std::vector<DataTableBase*> tables = game_->data_tables();
+    for (DataTableBase* t : tables) {
+        const std::string file = t->resolved_path();
+        if (!file.empty() && !assets_.tracks(file)) assets_.track(file);
+    }
     const std::vector<std::string> changed = assets_.poll();
     if (changed.empty()) return;
     for (const std::string& path : changed) {
         renderer_->invalidate_file(path);
         audio_.invalidate_file(path);
+        for (DataTableBase* t : tables) {
+            if (t->resolved_path() != path) continue;
+            std::string error;
+            if (t->load(&error)) {
+                RW_LOG_INFO("app", "data table %s reloaded: %zu rows%s", t->name().c_str(), t->size(),
+                            t->problems().empty() ? "" : " (with problems, see the Data panel)");
+            } else {
+                RW_LOG_ERROR("app", "%s", error.c_str());
+            }
+        }
         RW_LOG_INFO("app", "asset changed: %s", path.c_str());
     }
     RW_PROFILE_SCOPE("load_assets");

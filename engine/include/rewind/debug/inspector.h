@@ -73,6 +73,7 @@ private:
         std::vector<std::string*> strings;
     };
     bool asset_widget(Frame& f);
+    bool def_widget(Frame& f);
 
     usize max_elements_;
     bool changed_ = false;

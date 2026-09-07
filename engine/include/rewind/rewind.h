@@ -7,6 +7,7 @@
 #include "rewind/assets/png.h"
 #include "rewind/project/asset_db.h"
 #include "rewind/project/asset_ref.h"
+#include "rewind/project/data_table.h"
 #include "rewind/project/cooked.h"
 #include "rewind/project/pack.h"
 #include "rewind/project/project.h"

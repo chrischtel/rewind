@@ -12,6 +12,7 @@ namespace rw {
 
 class App;
 class Audio;
+class DataTableBase;
 class EditorTool;
 class Renderer2D;
 class World;
@@ -124,6 +125,11 @@ public:
     /// selection: a network editor, a tile painter, whatever the game
     /// needs (see debug/editor_tool.h). The game owns them.
     virtual std::vector<EditorTool*> editor_tools() { return {}; }
+
+    /// Data tables (project/data_table.h) the engine should look after:
+    /// reloaded when their file changes on disk, listed in the editor's
+    /// Data panel for editing and saving.
+    virtual std::vector<DataTableBase*> data_tables() { return {}; }
 };
 
 } // namespace rw

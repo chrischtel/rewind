@@ -44,7 +44,10 @@ struct EditorState {
     bool settings_dirty = false;
     bool layout_done = false;
     bool show_scene = true, show_timeline = true, show_inspector = true, show_console = true, show_profiler = true,
-         show_project = true, show_assets = true, show_keys = false, show_settings = false, show_saves = false;
+         show_project = true, show_assets = true, show_keys = false, show_settings = false, show_saves = false,
+         show_data = true;
+    int data_table = 0;
+    int data_row = -1;
     std::string status;
     std::vector<std::string> cook_log;
     // Free camera for the scene view: pan with right/middle drag, zoom with
@@ -576,6 +579,7 @@ void draw_menu(rw::App& app) {
         ImGui::MenuItem("Timeline", nullptr, &g_editor.show_timeline);
         ImGui::MenuItem("Inspector", nullptr, &g_editor.show_inspector);
         ImGui::MenuItem("Assets", nullptr, &g_editor.show_assets, g_editor.has_project);
+        ImGui::MenuItem("Data", nullptr, &g_editor.show_data);
         ImGui::MenuItem("Console", nullptr, &g_editor.show_console);
         ImGui::MenuItem("Profiler", nullptr, &g_editor.show_profiler);
         ImGui::MenuItem("Project", nullptr, &g_editor.show_project);
@@ -948,6 +952,111 @@ void draw_selected_asset(rw::App& app) {
     }
 }
 
+/// Data tables the game registers: rows on the left, the selected row's
+/// fields in an inspector on the right, reload and save per table.
+void draw_data(rw::App& app) {
+    if (!g_editor.show_data) return;
+    if (!ImGui::Begin("Data", &g_editor.show_data)) {
+        ImGui::End();
+        return;
+    }
+    const std::vector<rw::DataTableBase*> tables = app.game().data_tables();
+    if (tables.empty()) {
+        ImGui::TextWrapped("The game registers no data tables. Return them from Game::data_tables() to edit "
+                           "definitions here and have them reload when their JSON changes.");
+        ImGui::End();
+        return;
+    }
+    g_editor.data_table = std::clamp(g_editor.data_table, 0, static_cast<int>(tables.size()) - 1);
+    rw::DataTableBase& table = *tables[static_cast<rw::usize>(g_editor.data_table)];
+
+    // Table picker and its actions.
+    ImGui::SetNextItemWidth(180);
+    if (ImGui::BeginCombo("##table", table.name().c_str())) {
+        for (int i = 0; i < static_cast<int>(tables.size()); ++i) {
+            char label[160];
+            std::snprintf(label, sizeof label, "%s (%zu rows)", tables[static_cast<rw::usize>(i)]->name().c_str(),
+                          tables[static_cast<rw::usize>(i)]->size());
+            if (ImGui::Selectable(label, i == g_editor.data_table)) {
+                g_editor.data_table = i;
+                g_editor.data_row = -1;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reload")) {
+        std::string error;
+        g_editor.status = table.load(&error) ? "reloaded " + table.path() : error;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Save")) {
+        std::string error;
+        g_editor.status = table.save(&error) ? "saved " + table.path() : error;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", table.path().c_str());
+    for (const std::string& problem : table.problems()) ImGui::TextColored(ImVec4(1, 0.45f, 0.45f, 1), "%s", problem.c_str());
+
+    // Rows.
+    if (ImGui::BeginChild("rows", ImVec2(200, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeX)) {
+        static char new_id[64] = "";
+        ImGui::SetNextItemWidth(-ImGui::GetFrameHeight() - 4);
+        const bool enter = ImGui::InputTextWithHint("##new", "new id", new_id, sizeof new_id, ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::SameLine();
+        if ((ImGui::Button("+") || enter) && new_id[0]) {
+            if (table.add_row(new_id)) {
+                g_editor.data_row = static_cast<int>(table.size()) - 1;
+                new_id[0] = '\0';
+            } else {
+                g_editor.status = std::string("cannot add \"") + new_id + "\": empty or already used";
+            }
+        }
+        ImGui::Separator();
+        for (int i = 0; i < static_cast<int>(table.size()); ++i) {
+            const std::string& id = table.id_at(static_cast<rw::usize>(i));
+            char label[128];
+            std::snprintf(label, sizeof label, "%s##%d", id.empty() ? "(no id)" : id.c_str(), i);
+            if (ImGui::Selectable(label, i == g_editor.data_row)) g_editor.data_row = i;
+        }
+    }
+    ImGui::EndChild();
+    ImGui::SameLine();
+
+    // The selected row.
+    if (ImGui::BeginChild("row")) {
+        if (g_editor.data_row >= 0 && g_editor.data_row < static_cast<int>(table.size())) {
+            const rw::usize row = static_cast<rw::usize>(g_editor.data_row);
+            if (ImGui::Button("Duplicate")) {
+                const std::string base = table.id_at(row);
+                std::string candidate;
+                for (int n = 2; n < 1000; ++n) {
+                    candidate = base + "_" + std::to_string(n);
+                    if (!table.has(candidate)) break;
+                }
+                if (table.duplicate_row(row, candidate)) g_editor.data_row = static_cast<int>(row) + 1;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Remove")) {
+                table.remove_row(row);
+                g_editor.data_row = std::min(g_editor.data_row, static_cast<int>(table.size()) - 1);
+            }
+            ImGui::Separator();
+            if (g_editor.data_row >= 0 && g_editor.data_row < static_cast<int>(table.size())) {
+                ImGui::PushItemWidth(200);
+                rw::InspectorVisitor inspector;
+                table.reflect_row(static_cast<rw::usize>(g_editor.data_row), inspector);
+                ImGui::PopItemWidth();
+                if (inspector.changed()) table.changed(); // ids may have moved; DefRefs refresh
+            }
+        } else {
+            ImGui::TextDisabled("select a row");
+        }
+    }
+    ImGui::EndChild();
+    ImGui::End();
+}
+
 void draw_assets(rw::App& app) {
     if (!g_editor.show_assets || !g_editor.assets) return;
     if (ImGui::Begin("Assets", &g_editor.show_assets)) {
@@ -1257,6 +1366,7 @@ void draw_panels(rw::App& app) {
     }
 
     draw_assets(app);
+    draw_data(app);
 
     if (g_editor.show_project) {
         if (ImGui::Begin("Project", &g_editor.show_project)) {

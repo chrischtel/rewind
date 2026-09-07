@@ -38,12 +38,34 @@ struct Velocity {
     }
 };
 
+/// A row of the ball_kinds table (samples/bounce/assets/ball_kinds.json):
+/// what a launched ball can be. Edit the file while the game runs, or the
+/// rows in the editor's Data panel, and the next launches use it.
+struct BallKind {
+    std::string id;
+    float min_radius = 8;
+    float max_radius = 26;
+    float speed = 1;  ///< multiplies the launch velocity
+    u8 color = 0;     ///< palette index
+    AssetRef sprite;  ///< optional, a texture reference like any other row field
+    void reflect(Visitor& v) {
+        v.field("id", id);
+        v.field("min_radius", min_radius, {.min = 2, .max = 60});
+        v.field("max_radius", max_radius, {.min = 2, .max = 60});
+        v.field("speed", speed, {.min = 0.1f, .max = 4, .speed = 0.05f});
+        v.field("color", color, {.min = 0, .max = 5});
+        v.field("sprite", sprite, {.asset_type = "texture"});
+    }
+};
+
 struct Shape {
     float radius = 10;
     u8 color = 0;
+    DefRef<BallKind> kind; ///< which row made this ball; the inspector offers the table's ids
     void reflect(Visitor& v) {
         v.field("radius", radius, {.min = 2, .max = 60});
         v.field("color", color, {.min = 0, .max = 5});
+        v.field("kind", kind, {.table = "ball_kinds"});
     }
 };
 
@@ -224,7 +246,13 @@ public:
 
     World* world() override { return &world_; }
 
-    void start(App& app) override { app_ = &app; }
+    void start(App& app) override {
+        app_ = &app;
+        std::string error;
+        if (!kinds_.load(&error)) RW_LOG_WARN("bounce", "%s (launching plain balls)", error.c_str());
+    }
+
+    std::vector<DataTableBase*> data_tables() override { return {&kinds_}; }
 
     /// HUD with the game UI: presentation, so it runs after the world is
     /// drawn; clicks that change the simulation go in as commands.
@@ -288,8 +316,16 @@ private:
     void spawn_ball() {
         const Entity e = world_.create();
         world_.add(e, Transform{player_x_ + kPlayerSize * 0.5f, player_y_ + kPlayerSize * 0.5f});
-        world_.add(e, Velocity{rng_.range_f(-320.0f, 320.0f), rng_.range_f(-420.0f, -120.0f)});
-        world_.add(e, Shape{rng_.range_f(8.0f, 26.0f), static_cast<u8>(rng_.below(kPaletteSize))});
+        // Definitions are data: the table decides what a ball can be, the
+        // deterministic rng picks which. A missing table means plain balls.
+        if (kinds_.size() > 0) {
+            const BallKind& kind = kinds_.at(rng_.below(static_cast<u32>(kinds_.size())));
+            world_.add(e, Velocity{rng_.range_f(-320.0f, 320.0f) * kind.speed, rng_.range_f(-420.0f, -120.0f) * kind.speed});
+            world_.add(e, Shape{rng_.range_f(kind.min_radius, kind.max_radius), kind.color, DefRef<BallKind>{kind.id}});
+        } else {
+            world_.add(e, Velocity{rng_.range_f(-320.0f, 320.0f), rng_.range_f(-420.0f, -120.0f)});
+            world_.add(e, Shape{rng_.range_f(8.0f, 26.0f), static_cast<u8>(rng_.below(kPaletteSize))});
+        }
     }
 
     void pop_ball() {
@@ -319,6 +355,7 @@ private:
     CurveNetwork net_;
     NetworkTool net_tool_{&net_, "Network"};
     App* app_ = nullptr;
+    DataTable<BallKind> kinds_{"ball_kinds", "ball_kinds.json"};
     Ui ui_;                  // presentation only
     bool hud_wants_mouse_ = false;
     u32 bounces_ = 0;

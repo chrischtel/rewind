@@ -189,7 +189,13 @@ knows what a car is. Decided 2026-09-06.
    nine-slice skins), `App::ui_input`, `App::push_command` into the
    deterministic `InputFrame`, `TimeControl::time_scale` with speed buttons
    in the overlay and the editor, `ui_test`; bounce has a HUD.
-6. Data tables: definitions in JSON with ids and asset references.
+6. ~~Data tables: definitions in JSON with ids and asset references.~~
+   Done: `project/data_table.h` `DataTable<T>` (rows of a reflected struct
+   with an id, load/save JSON, lookup, validation, editing), `DefRef<T>`
+   with cached resolution and an inspector dropdown, the table registry,
+   `Game::data_tables()` for hot reload and the editor's Data panel,
+   `rewind_add_game(... ASSETS dir)`, `data_table_test`; bounce's ball
+   kinds come from a table.
 7. Curve fitting for drawn strokes, particles, positional audio, per-draw
    sort keys.
 

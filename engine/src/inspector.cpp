@@ -1,10 +1,12 @@
 #include "rewind/debug/inspector.h"
 
 #include "rewind/project/asset_ref.h"
+#include "rewind/project/data_table.h"
 
 #include <imgui.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 
 namespace rw {
@@ -237,6 +239,7 @@ void InspectorVisitor::end_struct() {
         break;
     case Widget::Path: edited = path_widget(f); break;
     case Widget::Asset: edited = asset_widget(f); break;
+    case Widget::Def: edited = def_widget(f); break;
     case Widget::Default: break;
     }
     ImGui::EndDisabled();
@@ -320,6 +323,62 @@ bool InspectorVisitor::asset_widget(Frame& f) {
         ImGui::EndChild();
         ImGui::EndPopup();
     }
+    ImGui::PopID();
+    return edited && !f.meta.read_only;
+}
+
+// A DefRef: the id, red when its table exists and has no such row, and a
+// filterable dropdown of the table's ids when the field names one.
+bool InspectorVisitor::def_widget(Frame& f) {
+    if (f.strings.empty()) return false;
+    std::string& id = *f.strings[0];
+    const std::string name = f.label.substr(0, f.label.find("##"));
+    const DataTableBase* table = f.meta.table ? DataTableBase::find(f.meta.table) : nullptr;
+    const bool missing = table && !id.empty() && !table->has(id);
+    bool edited = false;
+    ImGui::PushID(f.label.c_str());
+
+    if (!table) {
+        char buf[128];
+        std::snprintf(buf, sizeof buf, "%s", id.c_str());
+        ImGui::SetNextItemWidth(-ImGui::CalcTextSize(name.c_str()).x - 16);
+        if (ImGui::InputText("##id", buf, sizeof buf) && !f.meta.read_only) {
+            id = buf;
+            edited = true;
+        }
+        if (ImGui::IsItemHovered() && f.meta.table) ImGui::SetTooltip("table \"%s\" is not loaded", f.meta.table);
+    } else {
+        if (missing) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 0.45f, 0.45f, 1));
+        ImGui::SetNextItemWidth(-ImGui::CalcTextSize(name.c_str()).x - 16);
+        if (ImGui::BeginCombo("##id", id.empty() ? "(none)" : id.c_str())) {
+            if (missing) ImGui::PopStyleColor();
+            static char filter[64] = "";
+            if (ImGui::IsWindowAppearing()) filter[0] = '\0';
+            ImGui::SetNextItemWidth(-1);
+            ImGui::InputTextWithHint("##filter", "filter", filter, sizeof filter);
+            if (ImGui::Selectable("(none)", id.empty()) && !f.meta.read_only) {
+                id.clear();
+                edited = true;
+            }
+            for (usize i = 0; i < table->size(); ++i) {
+                const std::string& row = table->id_at(i);
+                if (filter[0] && row.find(filter) == std::string::npos) continue;
+                if (ImGui::Selectable(row.c_str(), row == id) && !f.meta.read_only) {
+                    id = row;
+                    edited = true;
+                }
+            }
+            ImGui::EndCombo();
+        } else if (missing) {
+            ImGui::PopStyleColor();
+        }
+        if (ImGui::IsItemHovered()) {
+            if (missing) ImGui::SetTooltip("no row \"%s\" in table %s", id.c_str(), table->name().c_str());
+            else ImGui::SetTooltip("table %s (%zu rows)", table->name().c_str(), table->size());
+        }
+    }
+    ImGui::SameLine();
+    ImGui::TextUnformatted(name.c_str());
     ImGui::PopID();
     return edited && !f.meta.read_only;
 }

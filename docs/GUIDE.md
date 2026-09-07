@@ -712,6 +712,61 @@ and a drop target: drag a row out of the Assets panel onto it. Rows there
 also offer "Copy id" and "Copy path". `AssetIndex::refresh(ref)` updates
 a reference after a move, for tools that rewrite files.
 
+### Data tables
+
+`project/data_table.h` holds a game's definitions, the unit types, items,
+tiles, recipes or waves that designers tune, as rows in a JSON file, one
+row per id. A row is any reflected struct with a `std::string id`, so it
+can carry numbers, names, colours, nested structs, arrays and `AssetRef`s:
+
+```cpp
+struct UnitDef {
+    std::string id;
+    float speed = 1;
+    Stats stats;
+    AssetRef sprite;
+    void reflect(Visitor& v) {
+        v.field("id", id);
+        v.field("speed", speed);
+        v.field("stats", stats);
+        v.field("sprite", sprite, {.asset_type = "texture"});
+    }
+};
+
+DataTable<UnitDef> units{"units", "data/units.json"};
+units.load();                              // through the asset roots and packs
+const UnitDef* tank = units.find("tank");  // or at(i), index_of(id), rows()
+```
+
+The file is `{"rows": [{"id": "tank", ...}, ...]}` or a bare array; missing
+fields keep their defaults, unknown fields are ignored. Empty and duplicate
+ids end up in `problems()` instead of failing the load. `add_row`,
+`duplicate_row`, `remove_row` and `save()` edit and write it back, and
+`changed()` after editing a row's id through `at()` rebuilds the index.
+
+A `DefRef<UnitDef>` is a reference to a row by id. It saves, hashes and
+compares as the string, and `get(table)` resolves it, cached until the
+table's `version()` changes, so a reloaded table never leaves a stale
+pointer behind. Tables register by name while they exist
+(`DataTableBase::find`, `DataTable<T>::find_table`), which lets a field
+name its table for the inspector: `v.field("unit", unit, {.table =
+"units"})` draws a filterable dropdown of ids, red when the id is not in
+the table.
+
+Return the tables from `Game::data_tables()` and the engine looks after
+them: the file is watched like any other asset and reloaded when it
+changes on disk (edit it with the game running, the next spawn uses the
+new numbers), and the editor's **Data** panel lists them with their rows,
+adds, duplicates and removes rows, edits the selected one through the
+inspector and saves the file.
+
+Definitions are data, not simulation state: they are not on the timeline
+and not part of the fingerprint. Changing them mid-replay changes the
+replay, exactly like changing code. The bounce sample keeps its ball
+kinds in `samples/bounce/assets/ball_kinds.json`; `rewind_add_game(...
+ASSETS assets)` makes that folder an asset root while developing (for
+shipping, cook and pack it).
+
 ### Scenes and prefabs
 
 A scene file in `scenes/` lists entities with their components by name, as
