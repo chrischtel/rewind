@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -53,6 +54,7 @@ const Color kPlate[4] = {rgb(226, 190, 60), rgb(40, 82, 158), rgb(30, 110, 76), 
 const Color kAutobahnBlue = rgb(26, 82, 158);
 constexpr float kTownReach = 140.0f; ///< how far a town looks for a road to join
 constexpr float kStartingMoney = 20000;
+constexpr usize kUndoDepth = 16;
 constexpr float kMoneyTarget = 60000;
 constexpr float kFarePerTrip = 12;
 const Color kAsphalt = rgb(58, 57, 57);
@@ -120,6 +122,7 @@ const Color kFlowJam = rgb(212, 62, 54);
 /// Commands from the HUD. They ride in the input frame, so a click on a
 /// button is recorded, rewinds and replays like a key press.
 enum Command : u32 {
+    kCmdUndo = 8,
     kCmdTool = 1,
     kCmdRoad = 2,
     kCmdClearCars = 3,
@@ -164,7 +167,7 @@ const Rect kGoalPanel{kWidth - 274, 10, 262, 96};
 const Rect kBuildPanel{kWidth * 0.5f - 448, kHeight - 132, 896, 120};
 const Rect kMiniMap{12, kHeight - 184, 172, 172};
 const Rect kToolStrip{kBuildPanel.x + 10, kBuildPanel.y + 22, 112, 92};
-const Rect kShapeStrip{kBuildPanel.x + 130, kBuildPanel.y + 22, 216, 46};
+const Rect kShapeStrip{kBuildPanel.x + 130, kBuildPanel.y + 16, 216, 72};
 constexpr float kCardWidth = 102;
 constexpr float kCardHeight = 76;
 
@@ -370,6 +373,17 @@ struct Island {
     }
 };
 
+/// What an edit could change, saved before it happens so it can be put back.
+struct BeforeImage {
+    std::vector<u8> bytes; ///< the network, the islands, the signals, the pockets
+    float money = 0;
+
+    void reflect(Visitor& v) {
+        v.field("bytes", bytes);
+        v.field("money", money);
+    }
+};
+
 /// What the game knows about a car beyond what the agent itself carries.
 /// Indexed like the agents, so it survives in the saved state.
 struct CarInfo {
@@ -459,6 +473,7 @@ public:
         signals_.clear();
         islands_.clear();
         pockets_.clear();
+        history_.clear();
         show_flow_ = start_flow_;
         demand_ = start_demand_;
         build_starting_map();
@@ -505,6 +520,7 @@ public:
         v.field("tool", tool_, {.names = kToolNames, .name_count = 4});
         v.field("islands", islands_);
         v.field("pockets", pockets_);
+        v.field("history", history_);
         v.field("auto_pockets", auto_pockets_);
         v.field("road_type", road_type_, {.table = "road_types"});
         v.field("stroke", stroke_);
@@ -590,6 +606,7 @@ private:
             break;
         case kCmdSnapAngle: snap_angle_ = !snap_angle_; break;
         case kCmdSnapGrid: snap_grid_ = !snap_grid_; break;
+        case kCmdUndo: undo(); break;
         default: break;
         }
     }
@@ -684,11 +701,15 @@ private:
         } else if (tool_ == kToolRoundabout) {
             if (release && !on_hud) place_roundabout(ctx, world);
         } else if (tool_ == kToolSignals) {
-            if (release && !on_hud && hover_node_ != kNone) toggle_signal(hover_node_);
+            if (release && !on_hud && hover_node_ != kNone) {
+                remember();
+                toggle_signal(hover_node_);
+            }
         } else if (tool_ == kToolBulldoze) {
             if (release && !on_hud) {
                 Vec2 at{};
                 bool removed = false;
+                if (hover_node_ != kNone || hover_edge_ != kNone) remember();
                 if (hover_node_ != kNone) {
                     at = net_.node(hover_node_).pos;
                     net_.remove_node(hover_node_);
@@ -717,6 +738,67 @@ private:
     /// existing road, a grid corner, or a direction locked to a step from the
     /// point before it. Snapping is what makes click-to-click building feel
     /// like a tool rather than a sketch.
+    /// A line the player can snap to while building, and where it comes from.
+    struct Guide {
+        Vec2 from;
+        Vec2 dir;
+        u8 kind; ///< 0 angle step, 1 in line with a road, 2 square to a road
+    };
+
+    /// Everything worth snapping to from the point being drawn from: the
+    /// directions of the roads at the anchor and their perpendiculars, and
+    /// the angle steps in between. In line with a road wins over a plain
+    /// angle, because that is what keeps an interchange square.
+    std::vector<Guide> guides_from(Vec2 from) const {
+        std::vector<Guide> out;
+        const u32 node = net_.nearest_node(from, 1.0f);
+        if (node != kNone) {
+            for (u32 e : net_.edges_at(node)) {
+                const NetEdge& edge = net_.edge(e);
+                if (edge.path.empty()) continue;
+                const Vec2 out_dir = edge.a == node ? edge.path.segments.front().direction(0)
+                                                    : edge.path.segments.back().direction(1) * -1.0f;
+                out.push_back(Guide{from, out_dir * -1.0f, 1}); // carrying straight on
+                out.push_back(Guide{from, perp(out_dir), 2});
+                out.push_back(Guide{from, perp(out_dir) * -1.0f, 2});
+            }
+        }
+        if (snap_angle_) {
+            const float step = kAngleStep * 3.14159265f / 180.0f;
+            for (int i = 0; i < 24; ++i) out.push_back(Guide{from, Vec2{std::cos(i * step), std::sin(i * step)}, 0});
+        }
+        return out;
+    }
+
+    /// The guide the cursor is on, if it is close enough to count.
+    const Guide* active_guide(Vec2 from, Vec2 at, const std::vector<Guide>& guides) const {
+        const Vec2 delta = at - from;
+        const float len = length(delta);
+        if (len < 0.5f) return nullptr;
+        const float reach = std::max(px(7), 1.5f);
+        const Guide* best = nullptr;
+        float best_score = 1e30f;
+        for (const Guide& g : guides) {
+            const float along = dot(delta, g.dir);
+            if (along <= 0) continue;
+            const float off = std::fabs(cross(g.dir, delta));
+            if (off > reach) continue;
+            // A road line beats an angle step at the same distance.
+            const float score = off + (g.kind == 0 ? reach * 0.5f : 0.0f);
+            if (score < best_score) {
+                best_score = score;
+                best = &g;
+            }
+        }
+        return best;
+    }
+
+    /// The radius an interchange designer would pick: a round number.
+    static float nice_radius(float radius) {
+        const float step = radius < 60 ? 5.0f : radius < 200 ? 10.0f : 25.0f;
+        return std::max(step, std::round(radius / step) * step);
+    }
+
     Vec2 snap_point(Vec2 world) const {
         if (hover_node_ != kNone) return net_.node(hover_node_).pos;
         if (hover_edge_ != kNone) {
@@ -724,14 +806,21 @@ private:
             if (!s.empty()) return s.closest(world).position;
         }
         Vec2 at = world;
-        if (!points_.empty() && snap_angle_) {
+        if (!points_.empty()) {
             const Vec2 from = points_.back();
-            const Vec2 delta = at - from;
-            const float len = length(delta);
-            if (len > 0.5f) {
-                const float step = kAngleStep * 3.14159265f / 180.0f;
-                const float snapped = std::round(angle_of(delta) / step) * step;
-                at = from + Vec2{std::cos(snapped), std::sin(snapped)} * len;
+            const std::vector<Guide> guides = guides_from(from);
+            if (const Guide* g = active_guide(from, at, guides)) at = from + g->dir * dot(at - from, g->dir);
+            // In arc mode the end is slid along its own direction so the bend
+            // comes out with a radius you could write on a drawing.
+            if (shape_ == kShapeSmooth && length_sq(entry_dir_) > 0.1f) {
+                float radius = 0;
+                traffic::arc_between(from, entry_dir_, at, &radius);
+                if (radius > 0) {
+                    const Vec2 chord = at - from;
+                    const float d = length(chord);
+                    const float sin_theta = d > 0 ? std::fabs(cross(normalize(entry_dir_), chord / d)) : 0;
+                    if (sin_theta > 0.05f) at = from + chord / d * (2.0f * nice_radius(radius) * sin_theta);
+                }
             }
         }
         if (snap_grid_) at = {std::round(at.x / kGridStep) * kGridStep, std::round(at.y / kGridStep) * kGridStep};
@@ -825,10 +914,12 @@ private:
             return false;
         }
         const traffic::RoadSpec spec = spec_for(*type);
+        remember();
         auto standing = capture_cars(); // build_road rebuilds, which invalidates every route
         const traffic::BuildResult built = traffic::build_road(net_, path, spec, snap_range());
         if (!built.ok) {
             refusal_ = built.refusal;
+            history_.pop_back(); // nothing happened
             restore_cars(standing);
             return false;
         }
@@ -1254,10 +1345,12 @@ private:
             return;
         }
         const traffic::RoadSpec spec = spec_for(*ring);
+        remember();
         auto standing = capture_cars();
         const traffic::BuildResult built = traffic::build_roundabout(net_, at, kRoundaboutRadius, spec, snap_range());
         if (!built.ok) {
             refusal_ = built.refusal;
+            history_.pop_back();
             restore_cars(standing);
             return;
         }
@@ -1370,6 +1463,56 @@ private:
     bool is_ring(u32 edge) const {
         const RoadType* type = road_of(edge);
         return type && type->id == "roundabout";
+    }
+
+    // ---- undo ------------------------------------------------------------------
+
+    /// Everything an edit can touch, as bytes.
+    struct Editable {
+        CurveNetwork* net;
+        std::vector<Island>* islands;
+        std::vector<Signal>* signals;
+        std::vector<u32>* pockets;
+        void reflect(Visitor& v) {
+            v.field("network", *net);
+            v.field("islands", *islands);
+            v.field("signals", *signals);
+            v.field("pockets", *pockets);
+        }
+    };
+
+    void remember() {
+        BeforeImage image;
+        Writer w;
+        {
+            SaveVisitor save(w);
+            Editable e{&net_, &islands_, &signals_, &pockets_};
+            e.reflect(save);
+        }
+        image.bytes = w.bytes();
+        image.money = money_;
+        history_.push_back(std::move(image));
+        if (history_.size() > kUndoDepth) history_.erase(history_.begin());
+    }
+
+    void undo() {
+        if (history_.empty()) return;
+        auto standing = capture_cars();
+        BeforeImage image = std::move(history_.back());
+        history_.pop_back();
+        {
+            Reader r(image.bytes);
+            LoadVisitor load(r);
+            Editable e{&net_, &islands_, &signals_, &pockets_};
+            e.reflect(load);
+        }
+        money_ = image.money;
+        ++signal_version_;
+        net_.rebuild();
+        restore_cars(standing);
+        refresh_connections();
+        points_.clear();
+        entry_dir_ = Vec2{};
     }
 
     /// The network is about to change shape, so every route and every track
@@ -1693,9 +1836,12 @@ private:
         };
         const NetNode& n = net_.node(node);
         const usize arm_count = net_.edges_at(node).size();
-        if (arm_count < 3) return; // a joint between two pieces of one road needs no paving
+        if (arm_count < 2) return;
+        // A seam between two pieces of one road is paved only as wide as the
+        // road itself; a junction is paved out to its own radius.
+        const bool seam = arm_count == 2;
         std::vector<Arm> arms;
-        float radius = n.radius;
+        float radius = seam ? 0.0f : n.radius;
         for (u32 index : net_.edges_at(node)) {
             const NetEdge& e = net_.edge(index);
             if (e.path.empty()) continue;
@@ -1704,7 +1850,7 @@ private:
             else if (e.b == node) dir = e.path.segments.back().direction(1) * -1.0f;
             else continue;
             if (length_sq(dir) < 1e-6f) continue;
-            radius = std::max(radius, e.width * 0.55f);
+            radius = std::max(radius, e.width * (seam ? 0.5f : 0.55f));
             arms.push_back(Arm{angle_of(dir), Vec2{}, dir, perp(dir) * (e.width * 0.5f)});
         }
         if (arms.size() < 2) return; // a dead end is just the road's own end cap
@@ -2022,7 +2168,7 @@ private:
     /// pieces of the same road eats almost nothing, so the markings run on.
     float end_clearance(u32 node, const NetEdge& e) const {
         if (!net_.valid_node(node)) return 0;
-        if (net_.edges_at(node).size() < 3) return std::min(net_.node(node).radius, 1.0f);
+        if (net_.edges_at(node).size() < 3) return 0.0f;
         return std::max(net_.node(node).radius, e.width * 0.55f);
     }
 
@@ -2086,8 +2232,10 @@ private:
         if (!body.empty()) add_line(body.offset(lane.offset + inward * lane.width * 0.5f), dotted);
     }
 
-    /// The dotted guide lines that carry a lane across a junction, so a
-    /// turning driver can see where they are meant to come out.
+    /// The dotted lines that carry lanes across a junction. Lanes making the
+    /// same movement from one road onto another are one group: the group's
+    /// outer edges and the boundaries between its lanes are drawn dotted, so
+    /// two lanes turning together stay two bounded lanes all the way round.
     void build_junction_guides() {
         if (zoom_ < 5.0f) return;
         StrokeStyle guide;
@@ -2095,16 +2243,85 @@ private:
         guide.dash = kGuideDash;
         guide.gap = kGuideGap;
         set_color(guide, kGuideWhite);
-        for (const Connector& c : net_.connectors()) {
-            if (c.path.empty() || c.length < 4) continue;
-            // Only the left turn is guided across the junction: it is the
-            // movement that crosses oncoming traffic and the one drivers get
-            // wrong. Guiding everything turns a junction into spaghetti.
-            if (turn_sense(net_, c.from, c.to) >= 0) continue;
-            std::vector<Vec2> line;
-            c.path.flatten(0.3f, line);
-            add_line(line, guide);
+
+        struct Movement {
+            u32 connector;
+            u32 rank; ///< from the kerb, so the group sorts kerb to centre
+        };
+        struct Key {
+            u32 from_edge, to_edge;
+            int sense;
+            bool operator<(const Key& o) const {
+                if (from_edge != o.from_edge) return from_edge < o.from_edge;
+                if (to_edge != o.to_edge) return to_edge < o.to_edge;
+                return sense < o.sense;
+            }
+        };
+        std::map<Key, std::vector<Movement>> groups;
+        for (u32 i = 0; i < static_cast<u32>(net_.connectors().size()); ++i) {
+            const Connector& c = net_.connectors()[i];
+            if (c.path.empty() || c.length < 3 || net_.edges_at(c.node).size() < 3) continue;
+            const int sense = turn_sense(net_, c.from, c.to);
+            groups[Key{c.from.edge, c.to.edge, sense}].push_back(
+                Movement{i, traffic::rank_from_kerb(net_.edge(c.from.edge), c.from.track)});
         }
+
+        for (auto& [key, movements] : groups) {
+            // Going straight on, the lane lines stop at the stop line; only the
+            // turns are guided. A lone left turn gets the one dotted line on
+            // its inner side; two lanes turning together get their edges and
+            // the boundary between them, so they stay two lanes all the way.
+            if (key.sense == 0) continue;
+            const auto lane_width_of = [&](const Movement& m) {
+                const Connector& c = net_.connectors()[m.connector];
+                return net_.edge(c.from.edge).tracks[c.from.track].width;
+            };
+            if (movements.size() == 1) {
+                if (key.sense > 0) continue; // a lone right turn hugs the kerb and needs no guide
+                const Connector& only = net_.connectors()[movements.front().connector];
+                add_line(only.path.offset(-kerb_sign(only) * lane_width_of(movements.front()) * 0.5f, 0.3f), guide);
+                continue;
+            }
+            std::sort(movements.begin(), movements.end(), [](const Movement& a, const Movement& b) { return a.rank < b.rank; });
+            // Outer edges of the whole movement: the kerb side of the kerb
+            // lane and the centre side of the centre lane.
+            {
+                const Connector& kerb = net_.connectors()[movements.front().connector];
+                const Connector& inner = net_.connectors()[movements.back().connector];
+                const float side = kerb_sign(kerb);
+                add_line(kerb.path.offset(side * lane_width_of(movements.front()) * 0.5f, 0.3f), guide);
+                add_line(inner.path.offset(-side * lane_width_of(movements.back()) * 0.5f, 0.3f), guide);
+            }
+            // Boundaries between neighbouring lanes of the group.
+            for (usize i = 1; i < movements.size(); ++i) {
+                const Connector& a = net_.connectors()[movements[i - 1].connector];
+                const Connector& b = net_.connectors()[movements[i].connector];
+                add_line(midline(a.path, b.path), guide);
+            }
+        }
+    }
+
+    /// Which side of a connector's path its kerb is on: +1 for the perp() side.
+    /// Forward lanes keep the kerb on the positive offset side, and the
+    /// connector runs the same way as the lane it leaves.
+    float kerb_sign(const Connector& c) const {
+        const Track& lane = net_.edge(c.from.edge).tracks[c.from.track];
+        return lane.forward ? 1.0f : -1.0f;
+    }
+
+    /// The curve halfway between two paths, sampled by how far along each one is.
+    static std::vector<Vec2> midline(const Path& a, const Path& b) {
+        const PathSampler sa(a, 0.3f), sb(b, 0.3f);
+        std::vector<Vec2> out;
+        if (sa.empty() || sb.empty()) return out;
+        const int steps = 14;
+        for (int i = 0; i <= steps; ++i) {
+            const float t = static_cast<float>(i) / steps;
+            const Vec2 pa = sa.at(t * sa.length()).position;
+            const Vec2 pb = sb.at(t * sb.length()).position;
+            out.push_back((pa + pb) * 0.5f);
+        }
+        return out;
     }
 
     void add_line(const std::vector<Vec2>& points, const StrokeStyle& style) {
@@ -2232,8 +2449,21 @@ private:
             }
             for (const Vec2& p : points_) r.fill_circle(p.x, p.y, std::max(0.8f, px(4)), kGhost, 12);
             const Vec2 at = snap_point(mouse_world_);
+            draw_guides(r, at);
             r.fill_circle(at.x, at.y, std::max(0.6f, px(3)), rgba(255, 255, 255, 180), 10);
             if (snap_grid_) draw_grid(r);
+            // What a click would land on glows, so there is no guessing.
+            if (hover_node_ != kNone) {
+                const NetNode& n = net_.node(hover_node_);
+                r.fill_circle(n.pos.x, n.pos.y, std::max(n.radius, px(6)), rgba(255, 214, 90, 90), 16);
+            } else if (hover_edge_ != kNone) {
+                StrokeStyle s;
+                s.width = std::max(0.25f, px(1.5f));
+                set_color(s, rgba(255, 214, 90, 160));
+                const float half = net_.edge(hover_edge_).width * 0.5f;
+                r.draw_polyline(net_.edge(hover_edge_).path.offset(half), s);
+                r.draw_polyline(net_.edge(hover_edge_).path.offset(-half), s);
+            }
         } else if (tool_ == kToolBuild) {
             const RoadType* type = road_type_.get(roads_);
             if (drawing_ && stroke_.size() >= 2) {
@@ -2406,6 +2636,42 @@ private:
         return skin;
     }
 
+    /// The rays the cursor can snap to, the one it is on drawn brighter, and
+    /// in arc mode the centre of the bend with its radius.
+    void draw_guides(Renderer2D& r, Vec2 at) {
+        if (points_.empty()) return;
+        const Vec2 from = points_.back();
+        const std::vector<Guide> guides = guides_from(from);
+        const Guide* active = active_guide(from, mouse_world_, guides);
+        const float reach = std::max(visible_world().w, visible_world().h);
+        for (const Guide& g : guides) {
+            if (g.kind == 0 && &g != active) continue; // angle steps only show when caught
+            StrokeStyle ray;
+            ray.width = std::max(0.08f, px(1));
+            ray.dash = px(6);
+            ray.gap = px(4);
+            const bool on = &g == active;
+            set_color(ray, on ? rgba(255, 230, 140, 220) : rgba(255, 255, 255, 60));
+            r.draw_polyline({from, from + g.dir * reach}, ray);
+        }
+        if (shape_ == kShapeSmooth && length_sq(entry_dir_) > 0.1f) {
+            float radius = 0;
+            const Path arc = traffic::arc_between(from, entry_dir_, at, &radius);
+            if (radius > 0 && !arc.empty()) {
+                const Vec2 side = perp(normalize(entry_dir_));
+                const float sign = cross(normalize(entry_dir_), at - from) >= 0 ? 1.0f : -1.0f;
+                const Vec2 centre = from + side * (radius * sign);
+                StrokeStyle spoke;
+                spoke.width = std::max(0.08f, px(1));
+                set_color(spoke, rgba(255, 255, 255, 90));
+                const PathSampler sampler(arc, 0.3f);
+                const Vec2 mid = sampler.at(sampler.length() * 0.5f).position;
+                r.draw_polyline({centre, mid}, spoke);
+                r.fill_circle(centre.x, centre.y, std::max(0.4f, px(2.5f)), rgba(255, 255, 255, 140), 8);
+            }
+        }
+    }
+
     /// The faint grid the player is snapping to.
     void draw_grid(Renderer2D& r) {
         const Rect view_rect = visible_world();
@@ -2523,6 +2789,10 @@ private:
         outline_if(r, angle, snap_angle_);
         if (ui_.button_at(grid, "grid")) app_->push_command(kCmdSnapGrid);
         outline_if(r, grid, snap_grid_);
+        const Rect undo_box{kShapeStrip.x, kShapeStrip.y + 50, kShapeStrip.w, 21};
+        char undo_label[32];
+        std::snprintf(undo_label, sizeof undo_label, "Undo (%zu)", history_.size());
+        if (ui_.button_at(undo_box, undo_label) && !history_.empty()) app_->push_command(kCmdUndo);
     }
 
     void outline_if(Renderer2D& r, const Rect& box, bool on) const {
@@ -2665,6 +2935,7 @@ private:
     float zoom_ = 2.2f;
     float zoom_target_ = 2.2f;
     std::vector<Island> islands_;
+    std::vector<BeforeImage> history_; ///< what to put back, newest last
     std::vector<u32> pockets_; ///< edges that carry a turn pocket, for the taper marking
     bool auto_pockets_ = true;
     std::vector<Signal> signals_; ///< kept sorted by node
