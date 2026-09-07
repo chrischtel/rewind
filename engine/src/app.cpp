@@ -19,6 +19,8 @@
 #include <imgui_impl_sdlgpu3.h>
 
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
 #include <cmath>
 #include <ctime>
 #include <filesystem>
@@ -27,16 +29,50 @@ namespace rw {
 
 App::App(AppConfig cfg) : cfg_(std::move(cfg)), timeline_(cfg_.timeline) {
     time_.show_overlay = cfg_.start_with_overlay;
+    parse_engine_args();
+}
+
+void App::parse_engine_args() {
+    const auto& a = cfg_.args;
+    for (usize i = 0; i < a.size(); ++i) {
+        const std::string& s = a[i];
+        const bool has_next = i + 1 < a.size();
+        if (s == "--frames" && has_next) quit_after_frames_ = static_cast<u32>(std::max(0, std::atoi(a[++i].c_str())));
+        else if (s == "--screenshot" && has_next) auto_screenshot_ = a[++i];
+        else if (s == "--speed" && has_next) time_.time_scale = std::max(0.0f, static_cast<float>(std::atof(a[++i].c_str())));
+        else if (s == "--overlay") time_.show_overlay = true;
+        else if (s == "--no-vsync") cfg_.vsync = false;
+        else if (s == "--no-overlay") time_.show_overlay = false;
+        else if (s == "--command" && has_next) {
+            // ID[:VALUE]@FRAME
+            const std::string spec = a[++i];
+            const usize at = spec.find('@');
+            const usize colon = spec.find(':');
+            ScriptedCommand c;
+            c.id = static_cast<u32>(std::atoi(spec.c_str()));
+            c.value = colon != std::string::npos && colon < at ? std::atoi(spec.c_str() + colon + 1) : 0;
+            c.frame = at != std::string::npos ? static_cast<u32>(std::atoi(spec.c_str() + at + 1)) : 1;
+            scripted_commands_.push_back(c);
+        }
+    }
 }
 
 App::~App() { shutdown_platform(); }
 
 bool App::init_platform() {
     log_capture_sdl();
+    // DirectInput enumeration can block SDL_Init for half a minute on some
+    // machines (a HID device with a slow driver). XInput, RawInput, WGI and
+    // HIDAPI cover modern controllers, so it is off unless asked for; an
+    // SDL_JOYSTICK_DIRECTINPUT environment variable still wins.
+    SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_DIRECTINPUT, cfg_.legacy_joysticks ? "1" : "0", SDL_HINT_DEFAULT);
+    const u64 t0 = SDL_GetTicksNS();
+    auto ms_since = [&] { return static_cast<double>(SDL_GetTicksNS() - t0) / 1e6; };
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         RW_LOG_ERROR("app", "SDL_Init failed: %s", SDL_GetError());
         return false;
     }
+    RW_LOG_DEBUG("app", "startup: SDL_Init %.0f ms", ms_since());
 
     SDL_WindowFlags flags = 0;
     if (cfg_.resizable) flags |= SDL_WINDOW_RESIZABLE;
@@ -46,6 +82,7 @@ bool App::init_platform() {
         RW_LOG_ERROR("app", "SDL_CreateWindow failed: %s", SDL_GetError());
         return false;
     }
+    RW_LOG_DEBUG("app", "startup: window %.0f ms", ms_since());
 
     // Shader formats we can actually supply: SPIR-V when it was embedded at
     // build time, DXBC compiled at runtime on Windows.
@@ -71,7 +108,7 @@ bool App::init_platform() {
             present = SDL_GPU_PRESENTMODE_IMMEDIATE;
     }
     SDL_SetGPUSwapchainParameters(device_, window_, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, present);
-    RW_LOG_INFO("app", "gpu: %s", SDL_GetGPUDeviceDriver(device_));
+    RW_LOG_INFO("app", "gpu: %s (device ready after %.0f ms)", SDL_GetGPUDeviceDriver(device_), ms_since());
 
     renderer_ = std::make_unique<Renderer2D>(device_, window_);
     if (!renderer_->ok()) {
@@ -135,6 +172,10 @@ bool App::init_platform() {
 
 void App::shutdown_platform() {
     if (!window_) return;
+    const auto t0 = std::chrono::steady_clock::now();
+    auto ms_since = [&] {
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    };
     audio_.shutdown();
     if (device_) SDL_WaitForGPUIdle(device_);
     if (imgui_ready_) {
@@ -153,7 +194,11 @@ void App::shutdown_platform() {
         device_ = nullptr;
     }
     SDL_DestroyWindow(window_);
+    // SDL_Quit joins its device hotplug thread; on a machine where a HID
+    // device answers HidD_GetManufacturerString slowly, a run shorter than
+    // that scan waits here for it to finish.
     SDL_Quit();
+    RW_LOG_DEBUG("app", "shutdown: SDL_Quit %.0f ms", ms_since());
     window_ = nullptr;
 }
 
@@ -275,11 +320,6 @@ InputFrame App::sample_input() const {
         in.wheel = static_cast<i8>(std::clamp(wheel_accum_, -127, 127));
     }
     wheel_accum_ = 0;
-    if (!commands_.empty()) {
-        in.command = commands_.front().first;
-        in.command_value = commands_.front().second;
-        const_cast<App*>(this)->commands_.pop_front();
-    }
     return in;
 }
 
@@ -366,13 +406,14 @@ void App::simulate(const InputFrame& live, double frame_dt) {
             // The session decides how far we may run; stalls leave time in
             // the accumulator, capped so a long stall does not turn into a sprint.
             const u32 wanted = static_cast<u32>(accumulator_ / dt);
-            const u32 advanced = session_->step(timeline_, *game_, live, wanted, &events_, SDL_GetTicks());
+            const u32 advanced = session_->step(
+                timeline_, *game_, [&] { return with_command(live); }, wanted, &events_, SDL_GetTicks());
             accumulator_ -= advanced * dt;
             accumulator_ = std::min(accumulator_, dt * 2.0);
             break;
         }
         while (accumulator_ >= dt) {
-            timeline_.advance(*game_, live, &events_);
+            timeline_.advance(*game_, with_command(live), &events_);
             accumulator_ -= dt;
         }
         break;
@@ -527,6 +568,17 @@ UiInput App::ui_input() const {
 }
 
 void App::push_command(u32 command, i32 value) { commands_.emplace_back(command, value); }
+
+InputFrame App::with_command(InputFrame in) {
+    // One queued command per tick, so a click never lands twice on a slow
+    // frame and never gets lost on a frame without a tick.
+    if (!commands_.empty()) {
+        in.command = commands_.front().first;
+        in.command_value = commands_.front().second;
+        commands_.pop_front();
+    }
+    return in;
+}
 
 void App::restart(net::Session* session) {
     if (!game_) return;
@@ -721,6 +773,10 @@ int App::loop() {
             poll_assets();
             handle_events();
         }
+        for (const ScriptedCommand& c : scripted_commands_)
+            if (c.frame == frame_number) push_command(c.id, c.value);
+        if (!auto_screenshot_.empty() && (quit_after_frames_ == 0 ? frame_number == 60 : frame_number == quit_after_frames_))
+            screenshot(auto_screenshot_);
         const InputFrame live = sample_input();
         apply_requests(live);
 
@@ -752,6 +808,11 @@ int App::loop() {
         stats_.vertices = renderer_->vertices_last_frame();
         stats_.net = session_ ? &session_->stats() : nullptr;
         profiler.end_frame();
+        if (quit_after_frames_ && frame_number >= quit_after_frames_) {
+            running_ = false;
+            RW_LOG_INFO("app", "quit after %u frames at tick %llu (speed %.2fx)", frame_number,
+                        static_cast<unsigned long long>(timeline_.head()), time_.time_scale);
+        }
 
         stats_.frame_ms = static_cast<float>(frame_dt * 1000.0);
         fps_window += frame_dt;

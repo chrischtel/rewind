@@ -210,6 +210,11 @@ void Session::check_syncs(Timeline& timeline) {
 
 u32 Session::step(Timeline& timeline, Game& game, const InputFrame& local, u32 wanted_ticks, EventQueue* events,
                   u64 now_ms) {
+    return step(timeline, game, [&local] { return local; }, wanted_ticks, events, now_ms);
+}
+
+u32 Session::step(Timeline& timeline, Game& game, const std::function<InputFrame()>& next_local, u32 wanted_ticks,
+                  EventQueue* events, u64 now_ms) {
     RW_PROFILE_SCOPE("net");
     receive(timeline, now_ms);
 
@@ -229,7 +234,7 @@ u32 Session::step(Timeline& timeline, Game& game, const InputFrame& local, u32 w
     u32 advanced = 0;
     for (u32 i = 0; i < wanted_ticks; ++i) {
         const Tick tick = timeline.head();
-        add_local(tick + config_.input_delay, local);
+        add_local(tick + config_.input_delay, next_local());
 
         Tick remote_known = std::numeric_limits<Tick>::max();
         for (u32 p = 0; p < config_.player_count; ++p)

@@ -4,6 +4,7 @@
 #include "rewind/net/transport.h"
 #include "rewind/sim/input.h"
 
+#include <functional>
 #include <deque>
 #include <vector>
 
@@ -73,6 +74,10 @@ public:
     /// many ticks were advanced. `now_ms` is any monotonic clock.
     u32 step(Timeline& timeline, Game& game, const InputFrame& local, u32 wanted_ticks, EventQueue* events,
              u64 now_ms);
+    /// Same, with a fresh local input per advanced tick (App uses it so a
+    /// queued command lands in exactly one tick).
+    u32 step(Timeline& timeline, Game& game, const std::function<InputFrame()>& next_local, u32 wanted_ticks,
+             EventQueue* events, u64 now_ms);
 
     const SessionConfig& config() const { return config_; }
     const SessionStats& stats() const { return stats_; }

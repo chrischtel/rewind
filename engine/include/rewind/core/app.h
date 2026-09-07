@@ -36,13 +36,26 @@ class Session;
 
 struct AppConfig {
     std::string title = "Rewind";
-    std::vector<std::string> args; ///< Command line, without the program name.
+    /// Command line, without the program name. The engine understands a few
+    /// of them itself, for scripts, CI and documentation screenshots:
+    ///   --frames N            quit after N frames
+    ///   --screenshot FILE     write a PNG of the last frame (or of --frames' last one)
+    ///   --speed X             simulation time scale
+    ///   --overlay / --no-overlay
+    ///   --no-vsync
+    ///   --command ID[:VALUE]@FRAME   push a command at that frame
+    /// Everything else is the game's.
+    std::vector<std::string> args;
     int width = 1280;
     int height = 720;
     bool vsync = true;
     bool resizable = true;
     bool start_with_overlay = true;
     bool audio = true; ///< Open the default playback device. Off = play() is a no-op.
+    /// Also enumerate DirectInput joysticks. Off by default: modern
+    /// controllers come through XInput, RawInput, Windows.Gaming.Input and
+    /// HIDAPI, and DirectInput can stall startup for half a minute.
+    bool legacy_joysticks = false;
 
     /// GPU backend: "" lets SDL choose (Direct3D 12 or Vulkan on Windows),
     /// or force "vulkan" / "direct3d12" / "metal".
@@ -269,6 +282,16 @@ private:
     CompiledBindings compiled_;
     std::string pressed_key_;
     std::string pressed_pad_;
+    struct ScriptedCommand {
+        u32 frame;
+        u32 id;
+        i32 value;
+    };
+    void parse_engine_args();
+    InputFrame with_command(InputFrame in);
+    u32 quit_after_frames_ = 0;
+    std::string auto_screenshot_;
+    std::vector<ScriptedCommand> scripted_commands_;
     std::deque<std::pair<u32, i32>> commands_;
     mutable bool ui_prev_down_ = false;
     mutable bool ui_down_ = false;

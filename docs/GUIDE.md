@@ -473,6 +473,19 @@ next tick's `InputFrame` (`command`, `command_value`, one per tick): the game
 handles it in `tick()` like a key, and because it is part of the input
 record it rewinds, replays and reaches every peer in a session.
 
+Every game built with the engine also understands a few command line
+arguments, for scripts, CI and documentation screenshots:
+
+```
+bounce --frames 240 --screenshot shot.png --command 1@30 --speed 4 --no-vsync --no-overlay
+```
+
+`--frames N` quits after N frames, `--screenshot FILE` writes a PNG of the
+last frame, `--command ID[:VALUE]@FRAME` pushes a command as if the HUD had
+been clicked, `--speed X` sets the time scale, `--overlay`, `--no-overlay`
+and `--no-vsync` do what they say. The log line at exit tells the frame,
+the tick and the speed. Everything else in `AppConfig::args` is the game's.
+
 `TimeControl::time_scale` (`app.time_control()`) runs the simulation at a
 quarter, half, double or quadruple speed: more or fewer fixed ticks per
 second, never a different tick, so the timeline and the fingerprints stay

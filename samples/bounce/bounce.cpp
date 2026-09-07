@@ -232,9 +232,9 @@ public:
         if (!app_) return;
         Ui& ui = ui_;
         ui.begin(&r, app_->ui_input());
-        ui.begin_panel({kWidth - 232, 12, 220, 150}, "Bounce");
+        ui.begin_panel({kWidth - 262, 12, 250, 150}, "Bounce");
         char line[64];
-        std::snprintf(line, sizeof line, "%zu balls, %u bounces", world_.entity_count(), bounces_);
+        std::snprintf(line, sizeof line, "%zu balls  %u hits", world_.entity_count(), bounces_);
         ui.label(line, true);
         if (ui.button("Launch")) app_->push_command(kCmdLaunch);
         ui.tooltip("same as Z: goes through the input record");
@@ -247,7 +247,7 @@ public:
             if (i > 0) ui.same_line();
             if (ui.button(names[i], 56)) t.time_scale = scales[i];
         }
-        ui.progress(static_cast<float>(world_.entity_count()) / 40.0f, 204, {0, 0, 0, 0}, "capacity");
+        ui.progress(static_cast<float>(world_.entity_count()) / 40.0f, 234, {0, 0, 0, 0}, "capacity");
         ui.end_panel();
         ui.end();
         hud_wants_mouse_ = ui.wants_mouse();
