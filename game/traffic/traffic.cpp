@@ -106,7 +106,15 @@ const Color kFlowJam = rgb(212, 62, 54);
 
 /// Commands from the HUD. They ride in the input frame, so a click on a
 /// button is recorded, rewinds and replays like a key press.
-enum Command : u32 { kCmdTool = 1, kCmdRoad = 2, kCmdClearCars = 3, kCmdFlow = 4 };
+enum Command : u32 {
+    kCmdTool = 1,
+    kCmdRoad = 2,
+    kCmdClearCars = 3,
+    kCmdFlow = 4,
+    kCmdShape = 5,
+    kCmdSnapAngle = 6,
+    kCmdSnapGrid = 7,
+};
 enum Event : u32 { kEvBuilt = 1, kEvRemoved = 2 };
 
 constexpr u32 kToolBuild = 0;
@@ -115,6 +123,15 @@ constexpr u32 kToolSignals = 2;
 constexpr u32 kToolRoundabout = 3;
 const char* const kToolNames[] = {"build", "bulldoze", "signals", "roundabout"};
 constexpr float kRoundaboutRadius = 15.0f; ///< centreline; a 32 m inscribed circle
+
+/// How a road is drawn. Straight and curve are click to click, the way a
+/// road builder works; freehand is the pencil.
+constexpr u32 kShapeStraight = 0;
+constexpr u32 kShapeCurve = 1;
+constexpr u32 kShapeFree = 2;
+const char* const kShapeNames[] = {"straight", "curve", "freehand"};
+constexpr float kGridStep = 10.0f;   ///< metres, when snapping to the grid
+constexpr float kAngleStep = 15.0f;  ///< degrees, when snapping the direction
 const Color kIslandGrass = rgb(104, 128, 74);
 const Color kIslandApron = rgb(150, 146, 138);
 const Color kLightRed = rgb(226, 62, 52);
@@ -128,10 +145,11 @@ const Color kSignalPost = rgb(48, 50, 54);
 // whether a click belonged to the HUD or to the world.
 const Rect kMoneyPanel{kWidth * 0.5f - 150, 10, 300, 56};
 const Rect kGoalPanel{kWidth - 274, 10, 262, 96};
-const Rect kBuildPanel{kWidth * 0.5f - 372, kHeight - 132, 744, 120};
+const Rect kBuildPanel{kWidth * 0.5f - 420, kHeight - 132, 840, 120};
 const Rect kMiniMap{12, kHeight - 184, 172, 172};
-const Rect kToolStrip{kBuildPanel.x + 10, kBuildPanel.y + 22, 150, 92};
-constexpr float kCardWidth = 108;
+const Rect kToolStrip{kBuildPanel.x + 10, kBuildPanel.y + 22, 112, 92};
+const Rect kShapeStrip{kBuildPanel.x + 130, kBuildPanel.y + 22, 180, 46};
+constexpr float kCardWidth = 100;
 constexpr float kCardHeight = 76;
 
 inline bool over_hud(float x, float y) {
@@ -370,7 +388,9 @@ public:
         access_version_ = ~0ull;
         drawing_ = false;
         stroke_.clear();
+        points_.clear();
         stroke_from_ = kNone;
+        shape_ = kShapeStraight;
         tool_ = kToolBuild;
         road_type_ = DefRef<RoadType>{roads_.size() ? roads_.id_at(0) : std::string("street")};
         // Everything the starting map may fill in has to be empty first.
@@ -426,6 +446,10 @@ public:
         v.field("islands", islands_);
         v.field("road_type", road_type_, {.table = "road_types"});
         v.field("stroke", stroke_);
+        v.field("points", points_);
+        v.field("shape", shape_, {.names = kShapeNames, .name_count = 3});
+        v.field("snap_angle", snap_angle_);
+        v.field("snap_grid", snap_grid_);
         v.field("stroke_from", stroke_from_);
         v.field("drawing", drawing_);
         v.field("cam_center", cam_center_);
@@ -494,6 +518,14 @@ private:
             break;
         case kCmdClearCars: clear_traffic(); break;
         case kCmdFlow: show_flow_ = !show_flow_; break;
+        case kCmdShape:
+            if (static_cast<u32>(in.command_value) <= kShapeFree) {
+                shape_ = static_cast<u32>(in.command_value);
+                points_.clear();
+            }
+            break;
+        case kCmdSnapAngle: snap_angle_ = !snap_angle_; break;
+        case kCmdSnapGrid: snap_grid_ = !snap_grid_; break;
         default: break;
         }
     }
@@ -538,7 +570,24 @@ private:
             if (e != kNone && distance(closest_on_edge(e, world), world) <= net_.edge(e).width * 0.5f + px(3)) hover_edge_ = e;
         }
 
-        if (tool_ == kToolBuild) {
+        if (tool_ == kToolBuild && shape_ != kShapeFree) {
+            // Click to click, the way a road is really laid out: one click for
+            // the start, one for the end, and for a curve one more in between
+            // that the road bends around. The end becomes the start of the
+            // next piece, so a route is drawn as a chain.
+            if (cancel) {
+                points_.clear();
+            } else if (press && !on_hud) {
+                points_.push_back(snap_point(world));
+                const usize needed = shape_ == kShapeCurve ? 3u : 2u;
+                if (points_.size() >= needed) {
+                    const Path path = shape_path(points_);
+                    const Vec2 last = points_.back();
+                    if (commit_path(ctx, path)) points_ = {last};
+                    else points_.clear();
+                }
+            }
+        } else if (tool_ == kToolBuild) {
             if (drawing_ && cancel) {
                 drawing_ = false;
                 stroke_.clear();
@@ -552,7 +601,8 @@ private:
                 if (distance(world, stroke_.back()) > 2.0f) stroke_.push_back(world);
             } else if (drawing_ && release) {
                 stroke_.push_back(world);
-                finish_stroke(ctx);
+                const Path path = fit_path(simplify_polyline(stroke_, 0.4f), 1.2f);
+                commit_path(ctx, path);
                 drawing_ = false;
                 stroke_.clear();
                 stroke_from_ = kNone;
@@ -589,19 +639,60 @@ private:
         return s.closest(p).position;
     }
 
-    /// Turn the drawn stroke into a road. Everything it crosses is split, so
-    /// a line drawn over another road becomes a junction rather than a bridge.
-    void finish_stroke(const TickContext& ctx) {
-        if (stroke_.size() < 2) return;
+    /// Where a click actually lands: an existing junction, a point on an
+    /// existing road, a grid corner, or a direction locked to a step from the
+    /// point before it. Snapping is what makes click-to-click building feel
+    /// like a tool rather than a sketch.
+    Vec2 snap_point(Vec2 world) const {
+        if (hover_node_ != kNone) return net_.node(hover_node_).pos;
+        if (hover_edge_ != kNone) {
+            const PathSampler s(net_.edge(hover_edge_).path, 0.25f);
+            if (!s.empty()) return s.closest(world).position;
+        }
+        Vec2 at = world;
+        if (!points_.empty() && snap_angle_) {
+            const Vec2 from = points_.back();
+            const Vec2 delta = at - from;
+            const float len = length(delta);
+            if (len > 0.5f) {
+                const float step = kAngleStep * 3.14159265f / 180.0f;
+                const float snapped = std::round(angle_of(delta) / step) * step;
+                at = from + Vec2{std::cos(snapped), std::sin(snapped)} * len;
+            }
+        }
+        if (snap_grid_) at = {std::round(at.x / kGridStep) * kGridStep, std::round(at.y / kGridStep) * kGridStep};
+        return at;
+    }
+
+    /// Two points make a straight, three make a curve bending around the middle one.
+    static Path shape_path(const std::vector<Vec2>& points) {
+        Path path;
+        if (points.size() < 2) return path;
+        path.move_to(points[0]);
+        if (points.size() == 2) path.line_to(points[1]);
+        else path.quad_to(points[1], points[2]);
+        return path;
+    }
+
+    /// The road that is being drawn right now, including where the mouse is.
+    Path preview_path() const {
+        std::vector<Vec2> points = points_;
+        if (points.empty()) return Path{};
+        points.push_back(snap_point(mouse_world_));
+        if (shape_ == kShapeCurve && points.size() == 2) return shape_path(points); // straight until the bend is set
+        return shape_path(points);
+    }
+
+    /// Lay a road along `path`. Everything it crosses is split, so a line
+    /// drawn over another road becomes a junction rather than a bridge.
+    bool commit_path(const TickContext& ctx, const Path& path) {
         const RoadType* type = road_type_.get(roads_);
-        if (!type) return;
-        const Path path = fit_path(simplify_polyline(stroke_, 0.4f), 1.2f);
-        if (path.empty()) return;
+        if (!type || path.empty()) return false;
 
         const float price = path.length() * type->cost_per_m;
         if (price > money_) {
             refusal_ = "not enough money";
-            return;
+            return false;
         }
         traffic::RoadSpec spec{type->lanes_forward, type->lanes_backward, type->lane_width};
         spec.tag = static_cast<u32>(roads_.index_of(road_type_.id) < 0 ? 0 : roads_.index_of(road_type_.id));
@@ -610,7 +701,7 @@ private:
         if (!built.ok) {
             refusal_ = built.refusal;
             restore_cars(standing);
-            return;
+            return false;
         }
         refusal_ = "";
         money_ -= built.length * type->cost_per_m;
@@ -619,6 +710,7 @@ private:
         refresh_connections();
         const Vec2 mid = path.sub_path(0, path.length() * 0.5f).end();
         ctx.emit(kEvBuilt, mid.x, mid.y);
+        return true;
     }
 
     // ---- traffic ------------------------------------------------------------
@@ -1778,7 +1870,28 @@ private:
 
     void draw_tool(Renderer2D& r) {
         r.set_layer(2);
-        if (tool_ == kToolBuild) {
+        if (tool_ == kToolBuild && shape_ != kShapeFree) {
+            const RoadType* type = road_type_.get(roads_);
+            const Path ghost = preview_path();
+            if (!ghost.empty()) {
+                std::vector<Vec2> line;
+                ghost.flatten(0.4f, line);
+                StrokeStyle road;
+                road.width = type ? type->width() : 7;
+                road.join = LineJoin::Round;
+                road.cap = LineCap::Butt;
+                set_color(road, rgba(kAsphalt.r, kAsphalt.g, kAsphalt.b, 150));
+                r.draw_polyline(line, road);
+                StrokeStyle edge;
+                edge.width = std::max(0.3f, px(1.5f));
+                set_color(edge, kGhost);
+                r.draw_polyline(line, edge);
+            }
+            for (const Vec2& p : points_) r.fill_circle(p.x, p.y, std::max(0.8f, px(4)), kGhost, 12);
+            const Vec2 at = snap_point(mouse_world_);
+            r.fill_circle(at.x, at.y, std::max(0.6f, px(3)), rgba(255, 255, 255, 180), 10);
+            if (snap_grid_) draw_grid(r);
+        } else if (tool_ == kToolBuild) {
             const RoadType* type = road_type_.get(roads_);
             if (drawing_ && stroke_.size() >= 2) {
                 StrokeStyle ghost;
@@ -1950,6 +2063,19 @@ private:
         return skin;
     }
 
+    /// The faint grid the player is snapping to.
+    void draw_grid(Renderer2D& r) {
+        const Rect view_rect = visible_world();
+        if (view_rect.w / kGridStep > 260) return; // too far out to be anything but haze
+        StrokeStyle line;
+        line.width = std::max(0.08f, px(1));
+        set_color(line, rgba(255, 255, 255, 26));
+        for (float x = std::floor(view_rect.x / kGridStep) * kGridStep; x < view_rect.right(); x += kGridStep)
+            r.draw_polyline({{x, view_rect.y}, {x, view_rect.bottom()}}, line);
+        for (float y = std::floor(view_rect.y / kGridStep) * kGridStep; y < view_rect.bottom(); y += kGridStep)
+            r.draw_polyline({{view_rect.x, y}, {view_rect.right(), y}}, line);
+    }
+
     void draw_hud(Renderer2D& r) {
         if (!app_) return;
         const UiStyle skin = paper_skin();
@@ -1986,12 +2112,12 @@ private:
 
         const Camera saved = r.camera();
         r.set_camera(Camera{});
-        if (drawing_ && stroke_.size() > 1) {
+        const float drawn = pending_length();
+        if (drawn > 0.5f) {
             const RoadType* type = road_type_.get(roads_);
-            float drawn = 0;
-            for (usize i = 1; i < stroke_.size(); ++i) drawn += distance(stroke_[i], stroke_[i - 1]);
             const float price = drawn * (type ? type->cost_per_m : 0);
-            const Vec2 at = view(cam_center_, zoom_).to_screen(stroke_.back());
+            const Vec2 tip = shape_ == kShapeFree && !stroke_.empty() ? stroke_.back() : snap_point(mouse_world_);
+            const Vec2 at = view(cam_center_, zoom_).to_screen(tip);
             std::snprintf(line, sizeof line, "%.0f m   %.0f EUR", drawn, price);
             r.draw_text(at.x + 14, at.y + 14, line, price > money_ ? kBad : rgb(255, 240, 200), 2);
         }
@@ -2000,8 +2126,25 @@ private:
         r.set_camera(saved);
     }
 
+    /// How long the road being drawn is, whichever tool is drawing it.
+    float pending_length() const {
+        if (tool_ != kToolBuild) return 0;
+        if (shape_ == kShapeFree) {
+            if (!drawing_ || stroke_.size() < 2) return 0;
+            float drawn = 0;
+            for (usize i = 1; i < stroke_.size(); ++i) drawn += distance(stroke_[i], stroke_[i - 1]);
+            return drawn;
+        }
+        const Path ghost = preview_path();
+        return ghost.empty() ? 0 : ghost.length();
+    }
+
     const char* tool_hint() const {
-        if (tool_ == kToolBuild) return "drag: draw a road   right click: cancel, drag to pan   wheel: zoom";
+        if (tool_ == kToolBuild && shape_ == kShapeStraight)
+            return "click where the road starts, then where it ends; right click to stop";
+        if (tool_ == kToolBuild && shape_ == kShapeCurve)
+            return "click the start, the bend and the end; right click to stop";
+        if (tool_ == kToolBuild) return "drag to draw freehand   right click: cancel, drag to pan   wheel: zoom";
         if (tool_ == kToolSignals) return "click a junction to put traffic lights on it, or to take them away";
         if (tool_ == kToolRoundabout) return "click where a roundabout should go; the roads it crosses become its entries";
         return "click a road or junction to remove it   right drag: pan   wheel: zoom";
@@ -2013,18 +2156,36 @@ private:
         for (int i = 0; i < 4; ++i) {
             const Rect box{kToolStrip.x, kToolStrip.y + static_cast<float>(i) * 23, kToolStrip.w, 21};
             if (ui_.button_at(box, names[i])) app_->push_command(kCmdTool, static_cast<i32>(tools[i]));
-            if (tool_ == tools[i]) {
-                r.draw_rect({box.x - 2, box.y - 2, box.w + 4, box.h + 4}, kAutobahnBlue);
-                r.draw_rect({box.x - 1, box.y - 1, box.w + 2, box.h + 2}, kAutobahnBlue);
-            }
+            outline_if(r, box, tool_ == tools[i]);
         }
+
+        // How the road is drawn, and what the clicks snap to.
+        const char* shapes[3] = {"Line", "Curve", "Free"};
+        const float shape_w = (kShapeStrip.w - 12) / 3;
+        for (int i = 0; i < 3; ++i) {
+            const Rect box{kShapeStrip.x + static_cast<float>(i) * (shape_w + 6), kShapeStrip.y, shape_w, 21};
+            if (ui_.button_at(box, shapes[i])) app_->push_command(kCmdShape, i);
+            outline_if(r, box, tool_ == kToolBuild && shape_ == static_cast<u32>(i));
+        }
+        const Rect angle{kShapeStrip.x, kShapeStrip.y + 25, kShapeStrip.w * 0.5f - 2, 21};
+        const Rect grid{kShapeStrip.x + kShapeStrip.w * 0.5f + 2, kShapeStrip.y + 25, kShapeStrip.w * 0.5f - 2, 21};
+        if (ui_.button_at(angle, "15 deg")) app_->push_command(kCmdSnapAngle);
+        outline_if(r, angle, snap_angle_);
+        if (ui_.button_at(grid, "grid")) app_->push_command(kCmdSnapGrid);
+        outline_if(r, grid, snap_grid_);
+    }
+
+    void outline_if(Renderer2D& r, const Rect& box, bool on) const {
+        if (!on) return;
+        r.draw_rect({box.x - 2, box.y - 2, box.w + 4, box.h + 4}, kAutobahnBlue);
+        r.draw_rect({box.x - 1, box.y - 1, box.w + 2, box.h + 2}, kAutobahnBlue);
     }
 
     /// One card per road type, each showing a slab of the road it builds,
     /// drawn by the same rules as the real thing, with its price per metre.
     void draw_road_cards(Renderer2D& r) {
         const float top = kBuildPanel.y + 18;
-        float x = kToolStrip.right() + 16;
+        float x = kShapeStrip.right() + 12;
         for (usize i = 0; i < roads_.size(); ++i) {
             const RoadType& type = roads_.at(i);
             const Rect card{x, top, kCardWidth - 8, kCardHeight + 16};
@@ -2141,8 +2302,12 @@ private:
     Rng rng_{20260907};
     u32 tool_ = kToolBuild;
     DefRef<RoadType> road_type_{"street"};
-    std::vector<Vec2> stroke_;
+    std::vector<Vec2> stroke_;   ///< freehand only
+    std::vector<Vec2> points_;   ///< the clicks of a straight or a curve so far
     u32 stroke_from_ = kNone;
+    u32 shape_ = kShapeStraight;
+    bool snap_angle_ = true;
+    bool snap_grid_ = false;
     bool drawing_ = false;
     Vec2 cam_center_{0, 0};
     Vec2 cam_target_{0, 0};
