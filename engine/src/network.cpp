@@ -186,7 +186,9 @@ void CurveNetwork::build_tracks() {
             else p = Path::from_polyline(e.path.offset(t.offset, kFlattenTolerance));
             if (!t.forward) p = p.reversed();
             // Stop short of junction nodes so connectors have room.
-            const float ra = nodes_[t.forward ? e.a : e.b].radius, rb = nodes_[t.forward ? e.b : e.a].radius;
+            const u32 na = t.forward ? e.a : e.b, nb = t.forward ? e.b : e.a;
+            const float ra = trim_ ? trim_(*this, na, ei) : nodes_[na].radius;
+            const float rb = trim_ ? trim_(*this, nb, ei) : nodes_[nb].radius;
             if (ra > 0 || rb > 0) {
                 const float len = p.length();
                 if (len > ra + rb + 1.0f) p = p.sub_path(ra, len - rb, kFlattenTolerance);

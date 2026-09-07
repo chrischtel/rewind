@@ -161,6 +161,10 @@ public:
     /// Default: everything except turning straight back onto the same edge.
     using ConnectFilter = std::function<bool(const CurveNetwork&, u32 node, TrackRef from, TrackRef to)>;
     void set_connect_filter(ConnectFilter filter) { filter_ = std::move(filter); }
+    /// How far short of a node the tracks of an edge stop, leaving room for
+    /// the connectors. Default: the node's radius, the same for every arm.
+    using TrackTrim = std::function<float(const CurveNetwork&, u32 node, u32 edge)>;
+    void set_track_trim(TrackTrim trim) { trim_ = std::move(trim); }
     /// Extra cost added to sideways track changes when routing.
     float change_penalty = 4;
     /// Runtime cost added to entering a track (congestion, closure, wear).
@@ -246,6 +250,7 @@ private:
     std::vector<NetNode> nodes_;
     std::vector<NetEdge> edges_;
     ConnectFilter filter_;
+    TrackTrim trim_;
 
     // Derived.
     std::vector<TrackRef> track_refs_;

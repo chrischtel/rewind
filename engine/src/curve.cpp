@@ -330,7 +330,10 @@ Path Path::sub_path(float d0, float d1, float tolerance) const {
     open.closed = false;
     open.split(b.segment, b.t, cut, rest);
     if (a.segment < cut.segments.size()) {
-        cut.split(a.segment, a.t, head, tail);
+        // The tail cut shortened the last segment of `cut`, so a head cut in
+        // that same segment has to be rescaled to what is left of it.
+        const float t = (a.segment == b.segment && b.t > 1e-6f) ? clampf(a.t / b.t, 0, 1) : a.t;
+        cut.split(a.segment, t, head, tail);
         return tail;
     }
     return cut;

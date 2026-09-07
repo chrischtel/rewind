@@ -319,6 +319,20 @@ void test_fit() {
     CHECK(c.closed && c.segments.size() >= 3 && distance(c.start(), c.end()) < 1e-3f);
 }
 
+void test_sub_path_single_segment() {
+    // Both cuts inside one segment: the head cut has to be rescaled to the
+    // piece that is left after the tail cut, or it lands short.
+    const Path line = Path::from_polyline({{0, 0}, {100, 0}});
+    const Path mid = line.sub_path(10, 90);
+    CHECK(near(mid.start().x, 10, 0.05f));
+    CHECK(near(mid.end().x, 90, 0.05f));
+    CHECK(near(mid.length(), 80, 0.1f));
+    const Path head = line.sub_path(0, 30);
+    CHECK(near(head.end().x, 30, 0.05f));
+    const Path tail = line.sub_path(70, 100);
+    CHECK(near(tail.start().x, 70, 0.05f));
+}
+
 int main() {
     test_fit();
     test_vec2();
@@ -328,6 +342,7 @@ int main() {
     test_path_editing();
     test_flatten_and_sampler();
     test_offsets();
+    test_sub_path_single_segment();
     test_predicates();
     test_reflection();
     if (failures == 0) std::printf("curve_test: all passed\n");

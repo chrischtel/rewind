@@ -106,6 +106,8 @@ constexpr float kArrowHead = 1.75f;
 constexpr float kArrowHeadWidth = 1.50f;
 constexpr float kArrowSetback = 8.0f; ///< tip this far before the stop line
 constexpr float kArrowTurn = 1.30f;
+constexpr float kSeamOverlap = 0.6f;     ///< how far a seam zone's paint runs into the road
+constexpr float kKerbRadius = 6.0f;      ///< how a junction's corners are rounded
 constexpr float kKerbBand = 0.30f;
 constexpr float kKerbShadowBand = 0.15f;
 const Color kKerbTop = rgb(172, 170, 163);
@@ -467,7 +469,7 @@ public:
         // Handy for screenshots and scripted runs: traffic --zoom 6 --spawn 0.3
         for (usize i = 0; i + 1 < cfg.args.size(); ++i) {
             if (cfg.args[i] == "--zoom") start_zoom_ = clampf(std::stof(cfg.args[i + 1]), 0.3f, 24.0f);
-            if (cfg.args[i] == "--demo") demo_ = std::stoi(cfg.args[i + 1]) != 0;
+            if (cfg.args[i] == "--demo") demo_ = std::stoi(cfg.args[i + 1]);
             if (cfg.args[i] == "--overlay-flow") start_flow_ = std::stoi(cfg.args[i + 1]) != 0;
             if (cfg.args[i] == "--at" && i + 2 < cfg.args.size()) {
                 start_at_ = Vec2{std::stof(cfg.args[i + 1]), std::stof(cfg.args[i + 2])};
@@ -481,6 +483,7 @@ public:
         app_ = &app;
         net_.set_connect_filter(
             [](const CurveNetwork& net, u32, TrackRef from, TrackRef to) { return traffic::may_connect(net, from, to); });
+        net_.set_track_trim([this](const CurveNetwork&, u32 node, u32 edge) { return trim_at(node, edge); });
         cars_.set_entry_rule([this](const NetworkAgents& agents, u32 agent, u32 connector) {
             return may_enter(agents, agent, connector);
         });
@@ -598,6 +601,7 @@ public:
         v.field("cam_target", cam_target_);
         v.field("zoom", zoom_, {.min = 1, .max = 40});
         v.field("zoom_target", zoom_target_, {.min = 1, .max = 40});
+        v.field("zoom_anchor", zoom_anchor_);
         v.field("signals", signals_);
         v.field("town_access", access_);
         v.field("routes", routes_);
@@ -654,8 +658,14 @@ private:
     // ---- input --------------------------------------------------------------
 
     Camera view(Vec2 center, float zoom) const { return Camera::centered(center, zoom, kWidth, kHeight); }
+    /// The centre the view is drawn from: the smoothed pan, corrected so the
+    /// point under the cursor holds still while the zoom catches up with it.
+    Vec2 view_center() const {
+        const Vec2 off = zoom_anchor_ - Vec2{kWidth * 0.5f, kHeight * 0.5f};
+        return cam_center_ + off * (1.0f / zoom_target_ - 1.0f / zoom_);
+    }
     Vec2 to_world(const InputFrame& in) const {
-        return view(cam_center_, zoom_).to_world({static_cast<float>(in.mouse_x), static_cast<float>(in.mouse_y)});
+        return view(view_center(), zoom_).to_world({static_cast<float>(in.mouse_x), static_cast<float>(in.mouse_y)});
     }
     /// Pixels converted to world units at the current zoom.
     float px(float pixels) const { return pixels / (zoom_ > 0 ? zoom_ : 1); }
@@ -691,8 +701,9 @@ private:
         if (in.wheel != 0) {
             // Zoom around the cursor: the world point under it stays put.
             const Vec2 mouse{static_cast<float>(in.mouse_x), static_cast<float>(in.mouse_y)};
+            zoom_anchor_ = mouse;
             const Vec2 before = view(cam_target_, zoom_target_).to_world(mouse);
-            zoom_target_ = clampf(zoom_target_ * std::pow(1.2f, static_cast<float>(in.wheel)), 0.35f, 24.0f);
+            zoom_target_ = clampf(zoom_target_ * std::pow(1.32f, static_cast<float>(in.wheel)), 0.35f, 24.0f);
             const Vec2 after = view(cam_target_, zoom_target_).to_world(mouse);
             cam_target_ = cam_target_ + (before - after);
         }
@@ -702,9 +713,11 @@ private:
         }
         // Plain arithmetic smoothing on the fixed step: the view is part of
         // the simulation, so rewinding gives back the camera motion too.
-        const float k = clampf(12.0f * dt, 0, 1);
-        cam_center_ = cam_center_ + (cam_target_ - cam_center_) * k;
-        zoom_ += (zoom_target_ - zoom_) * k;
+        const float pan_k = clampf(16.0f * dt, 0, 1);
+        const float zoom_k = clampf(28.0f * dt, 0, 1);
+        cam_center_ = cam_center_ + (cam_target_ - cam_center_) * pan_k;
+        // Zoom in log space, so a step in and a step out feel the same size.
+        zoom_ = std::exp(std::log(zoom_) + (std::log(zoom_target_) - std::log(zoom_)) * zoom_k);
     }
 
     void update_tool(const TickContext& ctx) {
@@ -1638,10 +1651,11 @@ private:
     /// towards. Lanes run left to right, so the slot next to the centre line
     /// is where both directions put their left turn.
     ///
-    /// The lanes of the direction that gains the pocket keep the offsets they
-    /// had: the road grows on the other side of the new lane. Re-centring the
-    /// whole cross-section instead would slide every through lane sideways by
-    /// half a lane, and the connectors at the taper would become dog-legs.
+    /// The direction that gains the pocket moves its own lanes outward to
+    /// make room, and the pocket takes the slot beside the centre line; the
+    /// other direction keeps its offsets, so through traffic on it runs
+    /// straight past the junction. The approach swings out over the taper,
+    /// which is how a pocket is set out on the ground.
     static void insert_pocket(NetEdge& e, bool forward, bool left, float width) {
         usize backward_count = 0;
         for (const Track& t : e.tracks)
@@ -1655,18 +1669,28 @@ private:
         } else if (at >= e.tracks.size()) {
             offset = e.tracks.back().offset + e.tracks.back().width * 0.5f + width * 0.5f;
         } else if (forward) {
-            // Grows towards the centre: the lanes to the left of it move over.
             const Track& next = e.tracks[at];
-            offset = next.offset - next.width * 0.5f - width * 0.5f;
-            for (usize i = 0; i < at; ++i) e.tracks[i].offset -= width;
+            offset = next.offset - next.width * 0.5f + width * 0.5f;
+            for (usize i = at; i < e.tracks.size(); ++i) e.tracks[i].offset += width;
         } else {
             const Track& previous = e.tracks[at - 1];
-            offset = previous.offset + previous.width * 0.5f + width * 0.5f;
-            for (usize i = at; i < e.tracks.size(); ++i) e.tracks[i].offset += width;
+            offset = previous.offset + previous.width * 0.5f - width * 0.5f;
+            for (usize i = 0; i < at; ++i) e.tracks[i].offset -= width;
         }
         Track lane{offset, forward, width, static_cast<u32>(left ? LaneKind::LeftTurn : LaneKind::RightTurn)};
         e.tracks.insert(e.tracks.begin() + static_cast<std::ptrdiff_t>(at), lane);
         e.width += width;
+    }
+
+    /// Can traffic arriving on `edge` turn left at `node` at all? At a T the
+    /// arm on the far side has nowhere to turn left to, and a pocket there
+    /// would only be paint.
+    bool has_left_turn(u32 node, u32 edge) const {
+        for (u32 c : net_.connectors_at(node)) {
+            const Connector& conn = net_.connectors()[c];
+            if (conn.from.edge == edge && turn_sense(net_, conn.from, conn.to) < 0) return true;
+        }
+        return false;
     }
 
     /// Give one approach of a junction its pocket. Returns whether anything
@@ -1700,8 +1724,9 @@ private:
         for (u32 node : nodes) {
             if (!net_.valid_node(node)) continue;
             const std::vector<u32> arms = net_.edges_at(node);
-            if (arms.size() < 4) continue;
-            for (u32 edge : arms) changed |= add_pocket(node, edge, true);
+            if (arms.size() < 3) continue;
+            for (u32 edge : arms)
+                if (has_left_turn(node, edge)) changed |= add_pocket(node, edge, true);
         }
         if (changed) net_.rebuild();
     }
@@ -1830,7 +1855,8 @@ private:
             else net_.set_tracks(edge, lanes_f, lanes_b, lane_w);
         }
         net_.rebuild();
-        if (demo_) build_demo_roads();
+        if (demo_ == 1) build_demo_roads();
+        if (demo_ == 2) build_demo_t();
         refresh_connections();
     }
 
@@ -1870,6 +1896,18 @@ private:
         // Signals wherever four arms meet, so the demo shows them working.
         for (u32 n = 0; n < static_cast<u32>(net_.nodes().size()); ++n)
             if (net_.valid_node(n) && net_.edges_at(n).size() >= 4) toggle_signal(n);
+    }
+
+    /// A T junction: an avenue running east to west, a street ending on it.
+    void build_demo_t() {
+        const auto spec_of = [this](const RoadType* t) { return t ? spec_for(*t) : traffic::RoadSpec{}; };
+        traffic::build_road(net_, Path::from_polyline({{-400, 0}, {400, 0}}), spec_of(roads_.find("avenue")), 10.0f);
+        traffic::build_road(net_, Path::from_polyline({{0, 400}, {0, 0}}), spec_of(roads_.find("street")), 10.0f);
+        std::vector<u32> nodes;
+        for (u32 n = 0; n < static_cast<u32>(net_.nodes().size()); ++n)
+            if (net_.valid_node(n)) nodes.push_back(n);
+        if (auto_pockets_) ensure_pockets(nodes);
+        net_.rebuild();
     }
 
     void build_starting_grid() {
@@ -1997,7 +2035,7 @@ private:
     }
 
     Rect visible_world() const {
-        const Camera c = view(cam_center_, zoom_);
+        const Camera c = view(view_center(), zoom_);
         const Vec2 top_left = c.to_world({0, 0});
         const Vec2 bottom_right = c.to_world({kWidth, kHeight});
         return Rect{top_left.x, top_left.y, bottom_right.x - top_left.x, bottom_right.y - top_left.y};
@@ -2048,46 +2086,75 @@ private:
         road_signal_version_ = signal_version_;
         surface_mesh_.clear();
         marking_mesh_.clear();
+        seam_shift_.assign(net_.nodes().size(), 0);
+        for (usize i = 0; i < net_.nodes().size(); ++i)
+            if (net_.node(static_cast<u32>(i)).alive && seam_shifts(static_cast<u32>(i))) seam_shift_[i] = 1;
         for (const NetEdge& e : net_.edges()) {
             if (!e.alive) continue;
             build_edge_surface(e);
             build_edge_markings(e);
         }
-        for (usize i = 0; i < net_.nodes().size(); ++i)
-            if (net_.node(static_cast<u32>(i)).alive) build_junction(static_cast<u32>(i));
+        for (usize i = 0; i < net_.nodes().size(); ++i) {
+            if (!net_.node(static_cast<u32>(i)).alive) continue;
+            build_junction(static_cast<u32>(i));
+            if (seam_shift_[i]) build_seam_zone(static_cast<u32>(i));
+        }
         build_junction_guides();
     }
 
+    /// Where the paving of an edge lies across its centreline. Lanes need not
+    /// be symmetric (a turn pocket, a bus lane one way), so the surface
+    /// follows the lanes rather than half the width each side.
+    static void section_extent(const NetEdge& e, float& left, float& right) {
+        left = 1e30f;
+        right = -1e30f;
+        for (const Track& t : e.tracks) {
+            left = std::min(left, t.offset - t.width * 0.5f);
+            right = std::max(right, t.offset + t.width * 0.5f);
+        }
+        if (e.tracks.empty()) {
+            left = -e.width * 0.5f;
+            right = e.width * 0.5f;
+        }
+    }
+
     void build_edge_surface(const NetEdge& e) {
-        std::vector<Vec2> line;
-        e.path.flatten(0.35f, line);
+        float left = 0, right = 0;
+        section_extent(e, left, right);
+        // A shifting seam paves itself along its lanes; the straight body
+        // would poke out past the kerb that swings away from it.
+        const float total = e.path.length();
+        const float head = seam_shift(e.a) ? net_.node(e.a).radius : 0.0f;
+        const float tail = seam_shift(e.b) ? net_.node(e.b).radius : 0.0f;
+        if (total - head - tail < 0.5f) return;
+        const Path body = (head > 0 || tail > 0) ? e.path.sub_path(head, total - tail) : e.path;
+        const std::vector<Vec2> line = body.offset((left + right) * 0.5f, 0.35f);
         if (line.size() < 2) return;
         StrokeStyle s;
-        s.width = e.width;
+        s.width = right - left;
         s.join = LineJoin::Miter;
         s.cap = LineCap::Butt;
         set_color(s, kAsphalt);
         build_polyline(line, s, surface_mesh_);
     }
 
-    /// The paved area where roads meet: each arm is cut off a little way from
-    /// the node and the gaps between them are closed at the point where their
-    /// kerbs would cross. Much closer to a real junction than a disc.
-    void build_junction(u32 node) {
-        struct Arm {
-            float angle;
-            Vec2 at;   ///< on the centreline, one junction radius out
-            Vec2 dir;  ///< away from the node
-            Vec2 side; ///< perpendicular, half a carriageway wide
-        };
-        const NetNode& n = net_.node(node);
-        const usize arm_count = net_.edges_at(node).size();
-        if (arm_count < 2) return;
-        // A seam between two pieces of one road is paved only as wide as the
-        // road itself; a junction is paved out to its own radius.
-        const bool seam = arm_count == 2;
+    /// One road arriving at a junction, seen from the node.
+    struct Arm {
+        u32 edge;
+        float angle;
+        Vec2 dir;  ///< away from the node
+        float lo;  ///< kerb offsets along perp(dir): the two edges of the paving
+        float hi;
+        float cut; ///< how far out along the arm the junction's paving reaches
+        Vec2 at() const { return origin + dir * cut; }
+        Vec2 origin;
+    };
+
+    /// The arms of a junction in ring order, with the kerb offsets of each
+    /// measured the way the arm leaves the node.
+    std::vector<Arm> arms_of(u32 node) const {
         std::vector<Arm> arms;
-        float radius = seam ? 0.0f : n.radius;
+        const NetNode& n = net_.node(node);
         for (u32 index : net_.edges_at(node)) {
             const NetEdge& e = net_.edge(index);
             if (e.path.empty()) continue;
@@ -2096,28 +2163,274 @@ private:
             else if (e.b == node) dir = e.path.segments.back().direction(1) * -1.0f;
             else continue;
             if (length_sq(dir) < 1e-6f) continue;
-            radius = std::max(radius, e.width * (seam ? 0.5f : 0.55f));
-            arms.push_back(Arm{angle_of(dir), Vec2{}, dir, perp(dir) * (e.width * 0.5f)});
+            // Offsets are measured along the edge's own direction; an arm that
+            // leaves the node against it sees them mirrored.
+            float left = 0, right = 0;
+            section_extent(e, left, right);
+            const bool along = e.a == node;
+            arms.push_back(Arm{index, angle_of(dir), dir, along ? left : -right, along ? right : -left, 0, n.pos});
         }
-        if (arms.size() < 2) return; // a dead end is just the road's own end cap
-        for (Arm& a : arms) a.at = n.pos + a.dir * radius;
         std::sort(arms.begin(), arms.end(), [](const Arm& a, const Arm& b) { return a.angle < b.angle; });
+        return arms;
+    }
+
+    /// Where the kerb on the high side of `a` meets the kerb on the low side
+    /// of `b`, the next arm round. False when they run parallel.
+    static bool kerb_corner(const Arm& a, const Arm& b, Vec2& corner) {
+        return line_intersection(a.origin + perp(a.dir) * a.hi, a.dir, b.origin + perp(b.dir) * b.lo, b.dir, corner);
+    }
+
+    /// How far the paving reaches along each arm: at least the node's own
+    /// radius, and past every corner by enough to round it. The markings on
+    /// that arm stop at the same distance, so paint never lands on the pad.
+    void cut_arms(std::vector<Arm>& arms, float base) const {
+        for (Arm& a : arms) a.cut = base;
+        if (arms.size() < 3) return;
+        for (usize i = 0; i < arms.size(); ++i) {
+            Arm& a = arms[i];
+            Arm& b = arms[(i + 1) % arms.size()];
+            Vec2 corner;
+            if (!kerb_corner(a, b, corner)) continue;
+            const float along_a = dot(corner - a.origin, a.dir);
+            const float along_b = dot(corner - b.origin, b.dir);
+            const float room = kKerbRadius * 0.9f;
+            if (along_a > -50 && along_a < 80) a.cut = std::max(a.cut, along_a + room);
+            if (along_b > -50 && along_b < 80) b.cut = std::max(b.cut, along_b + room);
+        }
+    }
+
+    float pad_base(u32 node) const {
+        const std::vector<u32> edges = net_.edges_at(node);
+        const bool seam = edges.size() == 2;
+        float radius = seam ? 0.0f : net_.node(node).radius;
+        for (u32 e : edges) radius = std::max(radius, net_.edge(e).width * (seam ? 0.5f : 0.55f));
+        return radius;
+    }
+
+    /// How much of an edge the junction at `node` takes for its own paving.
+    float arm_cut(u32 node, u32 edge) const {
+        if (!net_.valid_node(node)) return 0;
+        std::vector<Arm> arms = arms_of(node);
+        if (arms.size() < 3) return 0.0f; // a seam in one road: the markings run through
+        cut_arms(arms, pad_base(node));
+        for (const Arm& a : arms)
+            if (a.edge == edge) return a.cut;
+        return pad_base(node);
+    }
+
+    /// Where the tracks of an edge stop at a node: at the paving of a
+    /// junction, or the node's own radius across a seam, which is the room
+    /// the lanes have to shift sideways.
+    float trim_at(u32 node, u32 edge) const {
+        if (!net_.valid_node(node)) return 0;
+        if (net_.edges_at(node).size() >= 3) return arm_cut(node, edge);
+        return net_.node(node).radius;
+    }
+
+    /// A seam where the lanes on the two sides do not line up: a lane opens
+    /// or closes, or the road swings sideways to make room for one.
+    bool seam_shifts(u32 node) const {
+        const std::vector<u32> edges = net_.edges_at(node);
+        if (edges.size() != 2) return false;
+        if (net_.edge(edges[0]).tracks.size() != net_.edge(edges[1]).tracks.size()) return true;
+        for (u32 c : net_.connectors_at(node)) {
+            const Connector& k = net_.connectors()[c];
+            if (k.path.empty()) continue;
+            const Vec2 d = k.path.segments.front().direction(0);
+            if (absf(cross(d, k.path.end() - k.path.start())) > 0.15f) return true;
+        }
+        return false;
+    }
+    bool seam_shift(u32 node) const { return node < seam_shift_.size() && seam_shift_[node] != 0; }
+
+    /// The paved area where roads meet: each arm is cut off a little way from
+    /// the node and the gaps between them are closed at the point where their
+    /// kerbs would cross, rounded off the way a real corner is.
+    void build_junction(u32 node) {
+        std::vector<Arm> arms = arms_of(node);
+        if (arms.size() < 2) return;
+        const bool seam = arms.size() == 2;
+        if (seam && seam_shift(node)) return; // paves itself along its lanes
+        cut_arms(arms, pad_base(node));
 
         std::vector<Vec2> pad;
-        pad.reserve(arms.size() * 3);
+        pad.reserve(arms.size() * 9);
         for (usize i = 0; i < arms.size(); ++i) {
             const Arm& a = arms[i];
             const Arm& next = arms[(i + 1) % arms.size()];
-            pad.push_back(a.at - a.side);
-            pad.push_back(a.at + a.side);
-            // Where this arm's kerb and the next arm's kerb would meet.
+            const Vec2 a_lo = a.at() + perp(a.dir) * a.lo;
+            const Vec2 a_hi = a.at() + perp(a.dir) * a.hi;
+            const Vec2 n_lo = next.at() + perp(next.dir) * next.lo;
+            pad.push_back(a_lo);
+            pad.push_back(a_hi);
             Vec2 corner;
-            if (line_intersection(a.at + a.side, a.dir, next.at - next.side, next.dir, corner)) {
-                const float reach = radius + std::max(length(a.side), length(next.side)) * 3.0f;
-                if (distance(corner, n.pos) < reach) pad.push_back(corner);
+            if (!kerb_corner(a, next, corner)) continue;
+            const float reach = pad_base(node) + std::max(a.hi - a.lo, next.hi - next.lo) * 3.0f + kKerbRadius;
+            if (distance(corner, a.origin) > reach) continue;
+            if (seam) {
+                pad.push_back(corner);
+                continue;
+            }
+            // The corner, rounded: a quadratic through the corner point from
+            // one kerb to the other is within a few centimetres of the arc.
+            const float back = std::min({kKerbRadius, distance(corner, a_hi) * 0.7f, distance(corner, n_lo) * 0.7f});
+            const Vec2 from = corner + normalize(a_hi - corner) * back;
+            const Vec2 to = corner + normalize(n_lo - corner) * back;
+            for (int k = 0; k <= 6; ++k) {
+                const float t = static_cast<float>(k) / 6;
+                const float u = 1 - t;
+                pad.push_back(from * (u * u) + corner * (2 * u * t) + to * (t * t));
             }
         }
         build_polygon(pad, kAsphalt.r / 255.0f, kAsphalt.g / 255.0f, kAsphalt.b / 255.0f, 1.0f, surface_mesh_);
+    }
+
+    /// Across a shifting seam every lane follows its connector: the lane
+    /// lines swing with the road, and a pocket opens in the wedge beside the
+    /// lane that moved over, which is how it is set out on the ground.
+    void build_seam_zone(u32 node) {
+        struct SeamLane {
+            Path path;     ///< across the seam, in the lane's own travel direction
+            float lateral; ///< where it starts, across the seam in one fixed frame
+            float sign;    ///< +1 when the lane's own right is the frame's positive side
+            float width;
+            LaneKind kind;
+            bool with_axis;
+        };
+        const std::vector<Arm> arms = arms_of(node);
+        if (arms.size() != 2) return;
+        const Vec2 axis = arms[0].dir * -1.0f;
+        const Vec2 across = perp(axis);
+        const Vec2 origin = net_.node(node).pos;
+        std::vector<SeamLane> lanes;
+        const auto add_lane = [&](const Path& path, const Track& t) {
+            if (path.empty()) return;
+            const Vec2 d = path.segments.front().direction(0);
+            lanes.push_back(SeamLane{path, dot(path.start() - origin, across), dot(perp(d), across) >= 0 ? 1.0f : -1.0f,
+                                     t.width, kind_of(t), dot(d, axis) > 0});
+        };
+        for (u32 c : net_.connectors_at(node)) {
+            const Connector& k = net_.connectors()[c];
+            add_lane(k.path, net_.edge(k.from.edge).tracks[k.from.track]);
+        }
+        // Lanes that are not for cars have no connectors, but a cycle lane or
+        // a shoulder does carry on across the seam: each pairs with the lane
+        // of its kind the same distance from the kerb on the other side.
+        const auto kind_rank = [](const NetEdge& e, u32 track) {
+            const Track& lane = e.tracks[track];
+            const float side = traffic::kerb_side(lane.forward);
+            u32 rank = 0;
+            for (const Track& t : e.tracks)
+                if (t.forward == lane.forward && kind_of(t) == kind_of(lane) && (t.offset - lane.offset) * side > 0.01f) ++rank;
+            return rank;
+        };
+        for (int pass = 0; pass < 2; ++pass) {
+            const u32 from_edge = arms[pass].edge, to_edge = arms[1 - pass].edge;
+            const NetEdge& in = net_.edge(from_edge);
+            const NetEdge& out = net_.edge(to_edge);
+            for (u32 i = 0; i < static_cast<u32>(in.tracks.size()); ++i) {
+                const Track& t = in.tracks[i];
+                if (is_carriageway(kind_of(t))) continue;
+                if ((t.forward ? in.b : in.a) != node) continue; // has to arrive here
+                for (u32 j = 0; j < static_cast<u32>(out.tracks.size()); ++j) {
+                    const Track& u = out.tracks[j];
+                    if (kind_of(u) != kind_of(t) || (u.forward ? out.a : out.b) != node) continue;
+                    if (kind_rank(in, i) != kind_rank(out, j)) continue;
+                    const Path& a = net_.track_path(TrackRef{from_edge, i});
+                    const Path& b = net_.track_path(TrackRef{to_edge, j});
+                    if (a.empty() || b.empty()) continue;
+                    const Vec2 p0 = a.end(), p3 = b.start();
+                    const Vec2 d0 = a.segments.back().direction(1), d3 = b.segments.front().direction(0);
+                    const float reach = std::max(distance(p0, p3) * 0.4f, 0.01f);
+                    Path path;
+                    path.segments.push_back({p0, p0 + d0 * reach, p3 - d3 * reach, p3});
+                    add_lane(path, t);
+                    break;
+                }
+            }
+        }
+        if (lanes.empty()) return;
+        std::sort(lanes.begin(), lanes.end(), [](const SeamLane& a, const SeamLane& b) { return a.lateral < b.lateral; });
+
+        // One edge of a lane: `side` is +1 on the frame's positive side, and
+        // `extra` pushes the line further out. Always runs with the axis.
+        const auto boundary = [&](const SeamLane& l, float side, float extra) {
+            std::vector<Vec2> line = l.path.offset(l.sign * side * (l.width * 0.5f + extra), 0.3f);
+            if (!l.with_axis) std::reverse(line.begin(), line.end());
+            // A little way into the road on either side, so nothing shows
+            // through the join with the body's own paint.
+            if (line.size() >= 2) {
+                const Vec2 head = normalize(line[0] - line[1]);
+                const Vec2 tail = normalize(line.back() - line[line.size() - 2]);
+                line.insert(line.begin(), line[0] + head * kSeamOverlap);
+                line.push_back(line.back() + tail * kSeamOverlap);
+            }
+            return line;
+        };
+
+        // The paving between the outermost lanes.
+        std::vector<Vec2> pad = boundary(lanes.front(), -1.0f, 0.0f);
+        const std::vector<Vec2> far = boundary(lanes.back(), 1.0f, 0.0f);
+        pad.insert(pad.end(), far.rbegin(), far.rend());
+        if (pad.size() >= 3) build_polygon(pad, kAsphalt.r / 255.0f, kAsphalt.g / 255.0f, kAsphalt.b / 255.0f, 1.0f, surface_mesh_);
+
+        usize with = 0, against = 0;
+        for (const SeamLane& l : lanes) (l.with_axis ? with : against)++;
+        const usize per_side = std::max(with, against);
+
+        // Lanes that are not for cars keep their own surface across the seam.
+        for (const SeamLane& l : lanes) {
+            if (l.kind == LaneKind::Driving || l.kind == LaneKind::LeftTurn || l.kind == LaneKind::RightTurn) continue;
+            StrokeStyle strip;
+            strip.width = l.width - 0.1f;
+            set_color(strip, l.kind == LaneKind::Cycle    ? kCycleSurface
+                             : l.kind == LaneKind::Bus    ? kBusSurface
+                             : l.kind == LaneKind::Parking ? kParkingSurface
+                                                           : kShoulderSurface);
+            add_line(boundary(l, 0.0f, 0.0f), strip);
+        }
+
+        StrokeStyle kerb;
+        kerb.width = kKerbBand;
+        set_color(kerb, kKerbTop);
+        StrokeStyle shadow;
+        shadow.width = kKerbShadowBand;
+        set_color(shadow, kKerbShadow);
+        StrokeStyle solid;
+        solid.width = marking_width(kNarrowLine);
+        set_color(solid, kMarkingWhite);
+        for (int end = 0; end < 2; ++end) {
+            const SeamLane& l = end == 0 ? lanes.front() : lanes.back();
+            const float side = end == 0 ? -1.0f : 1.0f;
+            add_line(boundary(l, side, kKerbBand * 0.5f), kerb);
+            add_line(boundary(l, side, kKerbBand + kKerbShadowBand * 0.5f), shadow);
+            add_line(boundary(l, side, -kEdgeLineInset), solid);
+        }
+
+        StrokeStyle lane_line = solid;
+        lane_line.dash = dash_mark(per_side);
+        lane_line.gap = dash_gap(per_side);
+        for (usize i = 0; i + 1 < lanes.size(); ++i) {
+            const SeamLane& a = lanes[i];
+            const SeamLane& b = lanes[i + 1];
+            const std::vector<Vec2> ab = boundary(a, 1.0f, 0.0f);
+            const std::vector<Vec2> ba = boundary(b, -1.0f, 0.0f);
+            if (a.with_axis != b.with_axis) {
+                // Between the directions: solid on both sides, so whatever
+                // opens in the wedge between them is bounded. A wide road
+                // has its two lines here, the same as along the body.
+                const float inset = per_side > 1 ? -kNarrowLine : 0.0f;
+                add_line(boundary(a, 1.0f, inset), solid);
+                add_line(boundary(b, -1.0f, inset), solid);
+                continue;
+            }
+            add_line(ab, lane_line);
+            // The same direction, but the lanes part company: something opens
+            // or closes between them, and its edge is drawn solid.
+            if (ab.size() >= 2 && ba.size() >= 2 &&
+                (distance(ab.front(), ba.front()) > 0.3f || distance(ab.back(), ba.back()) > 0.3f))
+                add_line(ba, solid);
+        }
     }
 
     /// European markings, all in real metres: kerb bands, edge lines, a centre
@@ -2133,7 +2446,8 @@ private:
         if (body.empty()) return;
         const PathSampler along(body, 0.25f);
         if (along.empty()) return;
-        const float half = e.width * 0.5f;
+        float left = 0, right = 0;
+        section_extent(e, left, right);
 
         std::vector<float> forward, backward;
         for (const Track& t : e.tracks) (t.forward ? forward : backward).push_back(t.offset);
@@ -2145,20 +2459,20 @@ private:
         StrokeStyle kerb;
         kerb.width = kKerbBand;
         set_color(kerb, kKerbTop);
-        add_line(body.offset(half + kKerbBand * 0.5f), kerb);
-        add_line(body.offset(-(half + kKerbBand * 0.5f)), kerb);
+        add_line(body.offset(right + kKerbBand * 0.5f), kerb);
+        add_line(body.offset(left - kKerbBand * 0.5f), kerb);
         StrokeStyle shadow;
         shadow.width = kKerbShadowBand;
         set_color(shadow, kKerbShadow);
-        add_line(body.offset(half + kKerbBand + kKerbShadowBand * 0.5f), shadow);
-        add_line(body.offset(-(half + kKerbBand + kKerbShadowBand * 0.5f)), shadow);
+        add_line(body.offset(right + kKerbBand + kKerbShadowBand * 0.5f), shadow);
+        add_line(body.offset(left - kKerbBand - kKerbShadowBand * 0.5f), shadow);
 
         // Edge lines, set in from the carriageway edge.
         StrokeStyle edge_line;
         edge_line.width = marking_width(kNarrowLine);
         set_color(edge_line, kMarkingWhite);
-        add_line(body.offset(half - kEdgeLineInset), edge_line);
-        add_line(body.offset(-(half - kEdgeLineInset)), edge_line);
+        add_line(body.offset(right - kEdgeLineInset), edge_line);
+        add_line(body.offset(left + kEdgeLineInset), edge_line);
 
         // Between the directions: dashed where overtaking is allowed, two solid
         // lines on anything wider.
@@ -2252,7 +2566,9 @@ private:
         else if (minor) add_teeth(along, stop_at, from - lane_half, to + lane_half, sign);
 
         const float zebra_at = stop_at - sign * (kStopLineWidth + kZebraSetback + kZebraDepth * 0.5f);
-        if (zebra_at > kZebraDepth && zebra_at < length - kZebraDepth) add_zebra(along, zebra_at, e.width);
+        float left = 0, right = 0;
+        section_extent(e, left, right);
+        if (zebra_at > kZebraDepth && zebra_at < length - kZebraDepth) add_zebra(along, zebra_at, left, right);
 
         // One arrow per lane, showing where that lane may go. The turns come
         // from the junction's own connectors, so an arrow cannot lie.
@@ -2261,6 +2577,7 @@ private:
             for (u32 t = 0; t < static_cast<u32>(e.tracks.size()); ++t) {
                 const Track& track = e.tracks[t];
                 if (track.forward != at_end) continue; // only the lanes running into this junction
+                if (!is_carriageway(kind_of(track))) continue;
                 add_arrow(along, arrow_at, track.offset, turns_from(TrackRef{edge_index(e), t}), sign);
             }
         }
@@ -2295,7 +2612,8 @@ private:
         const PathPoint p = along.at(at);
         const Vec2 forward = p.direction * sign;
         const Vec2 side = perp(p.direction) * sign;
-        const Vec2 base = p.position + side * offset - forward * (kArrowLength * 0.5f);
+        // Offsets are measured along the edge, not along the lane's travel.
+        const Vec2 base = p.position + perp(p.direction) * offset - forward * (kArrowLength * 0.5f);
         const Vec2 tip = base + forward * kArrowLength;
         const bool straight = (turns & 2) != 0;
 
@@ -2345,9 +2663,9 @@ private:
     }
 
     /// Bars along the road axis, the way a European zebra is painted.
-    void add_zebra(const PathSampler& along, float at, float width) {
-        const float half = width * 0.5f - kZebraInset;
-        for (float x = -half; x + kZebraBar <= half; x += kZebraBar + kZebraGap) {
+    void add_zebra(const PathSampler& along, float at, float left, float right) {
+        const float lo = left + kZebraInset, hi = right - kZebraInset;
+        for (float x = lo; x + kZebraBar <= hi; x += kZebraBar + kZebraGap) {
             const float centre = x + kZebraBar * 0.5f;
             add_strip(along, at - kZebraDepth * 0.5f, at + kZebraDepth * 0.5f, centre, kZebraBar, kMarkingWhite);
         }
@@ -2414,8 +2732,10 @@ private:
     /// pieces of the same road eats almost nothing, so the markings run on.
     float end_clearance(u32 node, const NetEdge& e) const {
         if (!net_.valid_node(node)) return 0;
-        if (net_.edges_at(node).size() < 3) return 0.0f;
-        return std::max(net_.node(node).radius, e.width * 0.55f);
+        const usize arms = net_.edges_at(node).size();
+        if (arms >= 3) return arm_cut(node, edge_index(e));
+        if (arms == 2 && seam_shift(node)) return net_.node(node).radius;
+        return 0;
     }
 
     /// Dash rhythms: shorter in town, longer the faster the road.
@@ -2433,8 +2753,10 @@ private:
             if (!is_carriageway(kind_of(lane))) continue;
             const TrackRef ref{index, t};
             // A forward lane runs from the start of the edge to its end.
-            if (!traffic::lane_is_fed(net_, ref)) add_taper(e, along, lane, lane.forward ? 0.0f : length, true);
-            if (!traffic::lane_continues(net_, ref)) add_taper(e, along, lane, lane.forward ? length : 0.0f, false);
+            if (!traffic::lane_is_fed(net_, ref) && !seam_shift(lane.forward ? e.a : e.b))
+                add_taper(e, along, lane, lane.forward ? 0.0f : length, true);
+            if (!traffic::lane_continues(net_, ref) && !seam_shift(lane.forward ? e.b : e.a))
+                add_taper(e, along, lane, lane.forward ? length : 0.0f, false);
         }
     }
 
@@ -2492,7 +2814,8 @@ private:
 
         struct Movement {
             u32 connector;
-            u32 rank; ///< from the kerb, so the group sorts kerb to centre
+            u32 rank;    ///< of the lane it leaves, from the kerb, so the group sorts kerb to centre
+            u32 to_rank; ///< of the lane it arrives in
         };
         struct Key {
             u32 from_edge, to_edge;
@@ -2509,7 +2832,8 @@ private:
             if (c.path.empty() || c.length < 3 || net_.edges_at(c.node).size() < 3) continue;
             const int sense = turn_sense(net_, c.from, c.to);
             groups[Key{c.from.edge, c.to.edge, sense}].push_back(
-                Movement{i, traffic::rank_from_kerb(net_.edge(c.from.edge), c.from.track)});
+                Movement{i, traffic::rank_from_kerb(net_.edge(c.from.edge), c.from.track),
+                         traffic::rank_from_kerb(net_.edge(c.to.edge), c.to.track)});
         }
 
         for (auto& [key, movements] : groups) {
@@ -2518,6 +2842,16 @@ private:
             // its inner side; two lanes turning together get their edges and
             // the boundary between them, so they stay two lanes all the way.
             if (key.sense == 0) continue;
+            // One lane may be allowed into several exit lanes; that is still one
+            // lane, guided along its natural exit: the inner lane for a left
+            // turn, the kerb lane for a right.
+            std::sort(movements.begin(), movements.end(), [&](const Movement& a, const Movement& b) {
+                if (a.rank != b.rank) return a.rank < b.rank;
+                return key.sense < 0 ? a.to_rank > b.to_rank : a.to_rank < b.to_rank;
+            });
+            movements.erase(std::unique(movements.begin(), movements.end(),
+                                        [](const Movement& a, const Movement& b) { return a.rank == b.rank; }),
+                            movements.end());
             const auto lane_width_of = [&](const Movement& m) {
                 const Connector& c = net_.connectors()[m.connector];
                 return net_.edge(c.from.edge).tracks[c.from.track].width;
@@ -2706,9 +3040,10 @@ private:
                 StrokeStyle s;
                 s.width = std::max(0.25f, px(1.5f));
                 set_color(s, rgba(255, 214, 90, 160));
-                const float half = net_.edge(hover_edge_).width * 0.5f;
-                r.draw_polyline(net_.edge(hover_edge_).path.offset(half), s);
-                r.draw_polyline(net_.edge(hover_edge_).path.offset(-half), s);
+                float left = 0, right = 0;
+                section_extent(net_.edge(hover_edge_), left, right);
+                r.draw_polyline(net_.edge(hover_edge_).path.offset(right), s);
+                r.draw_polyline(net_.edge(hover_edge_).path.offset(left), s);
             }
         } else if (tool_ == kToolBuild) {
             const RoadType* type = road_type_.get(roads_);
@@ -2833,7 +3168,7 @@ private:
         r.set_layer(4);
         for (usize i = 0; i < towns_.size(); ++i) {
             const Town& t = towns_.at(i);
-            const Vec2 screen = view(cam_center_, zoom_).to_screen(t.pos());
+            const Vec2 screen = view(view_center(), zoom_).to_screen(t.pos());
             const Vec2 size = ui_.measure(t.name);
             const Rect plate{screen.x - size.x * 0.5f - 8, screen.y - 46, size.x + 16, size.y + 8};
             if (plate.right() < 0 || plate.x > kWidth || plate.bottom() < 0 || plate.y > kHeight) continue;
@@ -2997,7 +3332,7 @@ private:
             const RoadType* type = road_type_.get(roads_);
             const float price = drawn * (type ? type->cost_per_m : 0);
             const Vec2 tip = shape_ == kShapeFree && !stroke_.empty() ? stroke_.back() : snap_point(mouse_world_);
-            const Vec2 at = view(cam_center_, zoom_).to_screen(tip);
+            const Vec2 at = view(view_center(), zoom_).to_screen(tip);
             const bool tight = radius > 0 && radius < comfortable_radius(type);
             if (radius > 0) std::snprintf(line, sizeof line, "%.0f m   R %.0f m   %.0f EUR", drawn, radius, price);
             else std::snprintf(line, sizeof line, "%.0f m   %.0f EUR", drawn, price);
@@ -3204,6 +3539,7 @@ private:
     Vec2 cam_target_{0, 0};
     float zoom_ = 2.2f;
     float zoom_target_ = 2.2f;
+    Vec2 zoom_anchor_{kWidth * 0.5f, kHeight * 0.5f};
     std::vector<Island> islands_;
     std::vector<BeforeImage> history_; ///< what to put back, newest last
     std::vector<u32> pockets_; ///< edges that carry a turn pocket, for the taper marking
@@ -3238,7 +3574,7 @@ private:
     Vec2 mouse_world_{};
     const char* refusal_ = "";
     float start_zoom_ = 2.2f;
-    bool demo_ = false;
+    int demo_ = 0;
     bool start_flow_ = false;
     Vec2 start_at_{};
     bool has_start_at_ = false;
@@ -3253,6 +3589,7 @@ private:
     App* app_ = nullptr;
     Material* ground_material_ = nullptr;
     Mesh surface_mesh_; ///< asphalt and junction pads, rebuilt when the network changes
+    std::vector<u8> seam_shift_; ///< per node: a seam whose lanes shift, rebuilt with the meshes
     Mesh marking_mesh_;
     u64 road_version_ = ~0ull;
     int road_zoom_bucket_ = -9999;
