@@ -30,17 +30,45 @@ using rw::Vec2;
 
 constexpr u32 kNoIndex = ~0u;
 
-/// What kind of road to lay.
+/// What kind of road to lay. Either a count each way, or an explicit list of
+/// lanes when the road is not symmetrical: a bus lane one way, a cycle lane
+/// on one side, a turn pocket, lanes of different widths.
 struct RoadSpec {
     u32 lanes_forward = 1;
     u32 lanes_backward = 1;
     float lane_width = 3.5f;
     u32 tag = 0; ///< stamped onto every edge, so the game can find its road type again
+    std::vector<rw::Track> lanes; ///< left to right; when set, used instead of the counts
 
-    float width() const { return static_cast<float>(lanes_forward + lanes_backward) * lane_width; }
+    float width() const {
+        if (lanes.empty()) return static_cast<float>(lanes_forward + lanes_backward) * lane_width;
+        float total = 0;
+        for (const rw::Track& t : lanes) total += t.width;
+        return total;
+    }
     /// A junction has to be at least as big as the widest road meeting it,
     /// or the lanes would end outside the paved area.
     float junction_radius() const { return std::max(width() * 0.6f, 3.0f); }
+
+    /// Lay these lanes onto an edge. The offsets in `lanes` are recomputed
+    /// here, so a caller only has to get their order, width and direction right.
+    void apply(CurveNetwork& net, u32 edge) const {
+        if (!net.valid_edge(edge)) return;
+        if (lanes.empty()) {
+            net.set_tracks(edge, lanes_forward, lanes_backward, lane_width);
+            net.edge(edge).tag = tag;
+            return;
+        }
+        NetEdge& e = net.edge(edge);
+        e.tracks = lanes;
+        e.width = width();
+        float at = -e.width * 0.5f;
+        for (rw::Track& t : e.tracks) {
+            t.offset = at + t.width * 0.5f;
+            at += t.width;
+        }
+        e.tag = tag;
+    }
 };
 
 /// Where a new road meets an existing one.
@@ -239,8 +267,7 @@ inline BuildResult build_road(CurveNetwork& net, const Path& path, const RoadSpe
         if (piece.empty()) continue;
         const u32 edge = net.add_edge(a, b, &piece);
         if (edge == kNoIndex) continue;
-        net.set_tracks(edge, spec.lanes_forward, spec.lanes_backward, spec.lane_width);
-        net.edge(edge).tag = spec.tag;
+        spec.apply(net, edge);
         result.edges.push_back(edge);
         if (result.junctions.empty()) result.junctions.push_back(a);
         result.junctions.push_back(b);

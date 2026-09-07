@@ -6,7 +6,19 @@
       "lanes_backward": 1,
       "lane_width": 3.0,
       "speed_kmh": 50,
-      "cost_per_m": 2
+      "cost_per_m": 2,
+      "lanes": [
+        {
+          "kind": "driving",
+          "width": 3.0,
+          "forward": false
+        },
+        {
+          "kind": "driving",
+          "width": 3.0,
+          "forward": true
+        }
+      ]
     },
     {
       "id": "avenue",
@@ -14,7 +26,39 @@
       "lanes_backward": 2,
       "lane_width": 3.25,
       "speed_kmh": 70,
-      "cost_per_m": 6
+      "cost_per_m": 6,
+      "lanes": [
+        {
+          "kind": "cycle",
+          "width": 1.6,
+          "forward": false
+        },
+        {
+          "kind": "driving",
+          "width": 3.25,
+          "forward": false
+        },
+        {
+          "kind": "driving",
+          "width": 3.25,
+          "forward": false
+        },
+        {
+          "kind": "driving",
+          "width": 3.25,
+          "forward": true
+        },
+        {
+          "kind": "driving",
+          "width": 3.25,
+          "forward": true
+        },
+        {
+          "kind": "cycle",
+          "width": 1.6,
+          "forward": true
+        }
+      ]
     },
     {
       "id": "oneway",
@@ -22,7 +66,24 @@
       "lanes_backward": 0,
       "lane_width": 3.25,
       "speed_kmh": 50,
-      "cost_per_m": 3
+      "cost_per_m": 3,
+      "lanes": [
+        {
+          "kind": "parking",
+          "width": 2.2,
+          "forward": true
+        },
+        {
+          "kind": "driving",
+          "width": 3.25,
+          "forward": true
+        },
+        {
+          "kind": "driving",
+          "width": 3.25,
+          "forward": true
+        }
+      ]
     },
     {
       "id": "highway",
@@ -30,7 +91,49 @@
       "lanes_backward": 3,
       "lane_width": 3.75,
       "speed_kmh": 120,
-      "cost_per_m": 9
+      "cost_per_m": 9,
+      "lanes": [
+        {
+          "kind": "shoulder",
+          "width": 2.5,
+          "forward": false
+        },
+        {
+          "kind": "driving",
+          "width": 3.75,
+          "forward": false
+        },
+        {
+          "kind": "driving",
+          "width": 3.75,
+          "forward": false
+        },
+        {
+          "kind": "driving",
+          "width": 3.75,
+          "forward": false
+        },
+        {
+          "kind": "driving",
+          "width": 3.75,
+          "forward": true
+        },
+        {
+          "kind": "driving",
+          "width": 3.75,
+          "forward": true
+        },
+        {
+          "kind": "driving",
+          "width": 3.75,
+          "forward": true
+        },
+        {
+          "kind": "shoulder",
+          "width": 2.5,
+          "forward": true
+        }
+      ]
     },
     {
       "id": "lane",
@@ -38,7 +141,14 @@
       "lanes_backward": 0,
       "lane_width": 2.75,
       "speed_kmh": 30,
-      "cost_per_m": 1
+      "cost_per_m": 1,
+      "lanes": [
+        {
+          "kind": "driving",
+          "width": 2.75,
+          "forward": true
+        }
+      ]
     },
     {
       "id": "roundabout",
@@ -46,7 +156,44 @@
       "lanes_backward": 0,
       "lane_width": 6.0,
       "speed_kmh": 30,
-      "cost_per_m": 8
+      "cost_per_m": 8,
+      "lanes": [
+        {
+          "kind": "driving",
+          "width": 6.0,
+          "forward": true
+        }
+      ]
+    },
+    {
+      "id": "busstreet",
+      "lanes_forward": 2,
+      "lanes_backward": 2,
+      "lane_width": 3.1,
+      "speed_kmh": 50,
+      "cost_per_m": 7,
+      "lanes": [
+        {
+          "kind": "bus",
+          "width": 3.25,
+          "forward": false
+        },
+        {
+          "kind": "driving",
+          "width": 3.0,
+          "forward": false
+        },
+        {
+          "kind": "driving",
+          "width": 3.0,
+          "forward": true
+        },
+        {
+          "kind": "bus",
+          "width": 3.25,
+          "forward": true
+        }
+      ]
     }
   ]
 }

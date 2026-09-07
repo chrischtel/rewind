@@ -59,6 +59,14 @@ const Color kAsphalt = rgb(58, 57, 57);
 /// metres so they stay right at every zoom.
 const Color kMarkingWhite = rgba(232, 232, 226, 235);
 constexpr float kNarrowLine = 0.12f;      ///< Schmalstrich
+constexpr float kWideLine = 0.25f;        ///< Breitstrich
+constexpr float kGuideDash = 0.5f;        ///< the dotted line through a junction
+constexpr float kGuideGap = 0.5f;
+const Color kGuideWhite = rgba(226, 226, 220, 180);
+const Color kCycleSurface = rgb(150, 66, 52);
+const Color kBusSurface = rgb(96, 74, 66);
+const Color kParkingSurface = rgb(72, 71, 70);
+const Color kShoulderSurface = rgb(78, 76, 72);
 constexpr float kEdgeLineInset = 0.20f;   ///< edge lines sit this far inside the carriageway
 constexpr float kStopLineWidth = 0.50f;   ///< Haltlinie
 constexpr float kStopLineSetback = 0.80f; ///< back from the junction
@@ -182,6 +190,51 @@ struct VehicleType {
     }
 };
 
+/// What a lane is for. Kept in the engine's free per-track tag, so the
+/// network carries it without knowing what it means.
+enum class LaneKind : u32 {
+    Driving = 0,
+    LeftTurn,  ///< a pocket only left turners may use
+    RightTurn,
+    Bus,
+    Cycle,
+    Parking,
+    Shoulder,
+    Count
+};
+
+constexpr const char* kLaneKindNames[] = {"driving", "left", "right", "bus", "cycle", "parking", "shoulder"};
+
+inline LaneKind lane_kind_from(const std::string& name) {
+    for (u32 i = 0; i < static_cast<u32>(LaneKind::Count); ++i)
+        if (name == kLaneKindNames[i]) return static_cast<LaneKind>(i);
+    return LaneKind::Driving;
+}
+
+inline LaneKind kind_of(const Track& t) {
+    return t.tag < static_cast<u32>(LaneKind::Count) ? static_cast<LaneKind>(t.tag) : LaneKind::Driving;
+}
+
+/// Can a vehicle drive here at all?
+inline bool is_carriageway(LaneKind kind) {
+    return kind == LaneKind::Driving || kind == LaneKind::LeftTurn || kind == LaneKind::RightTurn ||
+           kind == LaneKind::Bus;
+}
+
+/// One lane of a road type, in assets/road_types.json. Lanes are listed from
+/// the left kerb to the right kerb, the way you would see them from above.
+struct LaneSpec {
+    std::string kind = "driving";
+    float width = 3.25f;
+    bool forward = true;
+
+    void reflect(Visitor& v) {
+        v.field("kind", kind);
+        v.field("width", width, {.min = 0.8f, .max = 8});
+        v.field("forward", forward);
+    }
+};
+
 /// A kind of road, from assets/road_types.json.
 struct RoadType {
     std::string id;
@@ -189,9 +242,29 @@ struct RoadType {
     u32 lanes_backward = 1;
     float lane_width = 3.5f;
     float speed_kmh = 50;
-    float cost_per_m = 2;  ///< what a metre of it costs to build
+    float cost_per_m = 2;         ///< what a metre of it costs to build
+    std::vector<LaneSpec> lanes;  ///< when given, the road is exactly these lanes
 
-    float width() const { return static_cast<float>(lanes_forward + lanes_backward) * lane_width; }
+    float width() const {
+        if (lanes.empty()) return static_cast<float>(lanes_forward + lanes_backward) * lane_width;
+        float total = 0;
+        for (const LaneSpec& l : lanes) total += l.width;
+        return total;
+    }
+
+    /// The lanes as the engine wants them: order and direction matter, the
+    /// offsets are worked out when they are laid.
+    std::vector<Track> tracks() const {
+        std::vector<Track> out;
+        if (lanes.empty()) {
+            for (u32 i = 0; i < lanes_backward; ++i) out.push_back(Track{0, false, lane_width, 0});
+            for (u32 i = 0; i < lanes_forward; ++i) out.push_back(Track{0, true, lane_width, 0});
+            return out;
+        }
+        for (const LaneSpec& l : lanes)
+            out.push_back(Track{0, l.forward, l.width, static_cast<u32>(lane_kind_from(l.kind))});
+        return out;
+    }
 
     void reflect(Visitor& v) {
         v.field("id", id);
@@ -200,6 +273,7 @@ struct RoadType {
         v.field("lane_width", lane_width, {.min = 1.5f, .max = 8});
         v.field("speed_kmh", speed_kmh, {.min = 10, .max = 160});
         v.field("cost_per_m", cost_per_m, {.min = 0, .max = 1000});
+        v.field("lanes", lanes);
     }
 };
 
@@ -356,8 +430,68 @@ public:
         }
     }
 
+    /// Which way a movement turns: -1 left, 0 straight on, 1 right.
+    static int turn_sense(const CurveNetwork& net, TrackRef from, TrackRef to) {
+        const Path& in = net.track_path(from);
+        const Path& out = net.track_path(to);
+        if (in.empty() || out.empty()) return 0;
+        const float turn = cross(in.segments.back().direction(1), out.segments.front().direction(0));
+        return std::fabs(turn) < 0.34f ? 0 : (turn > 0 ? 1 : -1);
+    }
+
+    /// Lane discipline at a junction: turn pockets take their own turn, the
+    /// lane by the centre line turns left, the lane by the kerb turns right,
+    /// and everyone may go straight on. A road with a pocket keeps its
+    /// through lanes clear of that turn.
+    static bool may_connect(const CurveNetwork& net, u32 /*node*/, TrackRef from, TrackRef to) {
+        const NetEdge& in = net.edge(from.edge);
+        const NetEdge& out = net.edge(to.edge);
+        if (from.track >= in.tracks.size() || to.track >= out.tracks.size()) return false;
+        const Track& lane = in.tracks[from.track];
+        const Track& next = out.tracks[to.track];
+        const LaneKind kind = kind_of(lane);
+        const LaneKind target = kind_of(next);
+        if (!is_carriageway(kind) || !is_carriageway(target)) return false;
+        if (kind == LaneKind::Bus && target != LaneKind::Bus && target != LaneKind::Driving) return false;
+        if (from.edge == to.edge) return false; // no turning back down the same road
+
+        const int sense = turn_sense(net, from, to);
+        if (kind == LaneKind::LeftTurn) return sense < 0;
+        if (kind == LaneKind::RightTurn) return sense > 0;
+        if (sense == 0) return true;
+
+        // A plain lane may turn only from the side it is on, and only if the
+        // road has no pocket for that turn.
+        bool has_pocket = false;
+        for (const Track& t : in.tracks) {
+            if (t.forward != lane.forward) continue;
+            const LaneKind other = kind_of(t);
+            if ((sense < 0 && other == LaneKind::LeftTurn) || (sense > 0 && other == LaneKind::RightTurn)) has_pocket = true;
+        }
+        if (has_pocket) return false;
+
+        float centre_most = lane.offset, kerb_most = lane.offset;
+        for (const Track& t : in.tracks) {
+            if (t.forward != lane.forward || !is_carriageway(kind_of(t))) continue;
+            // Forward lanes run to the right of the centre line, so the lane
+            // nearest the centre has the smallest offset; backward is mirrored.
+            if (lane.forward) {
+                centre_most = std::min(centre_most, t.offset);
+                kerb_most = std::max(kerb_most, t.offset);
+            } else {
+                centre_most = std::max(centre_most, t.offset);
+                kerb_most = std::min(kerb_most, t.offset);
+            }
+        }
+        // With one lane it is both the centre lane and the kerb lane.
+        if (sense < 0) return std::fabs(lane.offset - centre_most) < 0.01f;
+        return std::fabs(lane.offset - kerb_most) < 0.01f;
+    }
+
     void start(App& app) override {
         app_ = &app;
+        net_.set_connect_filter(
+            [](const CurveNetwork& net, u32 node, TrackRef from, TrackRef to) { return may_connect(net, node, from, to); });
         cars_.set_entry_rule([this](const NetworkAgents& agents, u32 agent, u32 connector) {
             return may_enter(agents, agent, connector);
         });
@@ -694,8 +828,7 @@ private:
             refusal_ = "not enough money";
             return false;
         }
-        traffic::RoadSpec spec{type->lanes_forward, type->lanes_backward, type->lane_width};
-        spec.tag = static_cast<u32>(roads_.index_of(road_type_.id) < 0 ? 0 : roads_.index_of(road_type_.id));
+        const traffic::RoadSpec spec = spec_for(*type);
         auto standing = capture_cars(); // build_road rebuilds, which invalidates every route
         const traffic::BuildResult built = traffic::build_road(net_, path, spec, snap_range());
         if (!built.ok) {
@@ -1026,6 +1159,18 @@ private:
 
     // ---- speed limits ---------------------------------------------------------
 
+    /// Everything the builder needs to lay this kind of road.
+    traffic::RoadSpec spec_for(const RoadType& type) const {
+        traffic::RoadSpec spec;
+        spec.lanes_forward = type.lanes_forward;
+        spec.lanes_backward = type.lanes_backward;
+        spec.lane_width = type.lane_width;
+        spec.lanes = type.tracks();
+        const i32 index = roads_.index_of(type.id);
+        spec.tag = index < 0 ? 0 : static_cast<u32>(index);
+        return spec;
+    }
+
     const RoadType* road_of(u32 edge) const {
         if (!net_.valid_edge(edge)) return nullptr;
         const u32 tag = net_.edge(edge).tag;
@@ -1111,8 +1256,7 @@ private:
             refusal_ = "not enough money";
             return;
         }
-        traffic::RoadSpec spec{ring->lanes_forward, ring->lanes_backward, ring->lane_width};
-        spec.tag = static_cast<u32>(std::max(0, roads_.index_of(ring->id)));
+        const traffic::RoadSpec spec = spec_for(*ring);
         auto standing = capture_cars();
         const traffic::BuildResult built = traffic::build_roundabout(net_, at, kRoundaboutRadius, spec, snap_range());
         if (!built.ok) {
@@ -1199,8 +1343,8 @@ private:
             const u32 a = net_.add_node(at + inward * 26.0f, 0, 0, radius);
             const u32 b = net_.add_node(at + inward * 90.0f, 0, 0, radius);
             const u32 edge = net_.add_edge(a, b);
-            net_.set_tracks(edge, lanes_f, lanes_b, lane_w);
-            net_.edge(edge).tag = static_cast<u32>(std::max(0, roads_.index_of(road_type_.id)));
+            if (type) spec_for(*type).apply(net_, edge);
+            else net_.set_tracks(edge, lanes_f, lanes_b, lane_w);
         }
         net_.rebuild();
         if (demo_) build_demo_roads();
@@ -1213,16 +1357,7 @@ private:
         const RoadType* street = roads_.find("street");
         const RoadType* avenue = roads_.find("avenue");
         const RoadType* motorway = roads_.find("highway");
-        const auto spec_of = [this](const RoadType* t) {
-            traffic::RoadSpec spec;
-            if (!t) return spec;
-            spec.lanes_forward = t->lanes_forward;
-            spec.lanes_backward = t->lanes_backward;
-            spec.lane_width = t->lane_width;
-            const i32 index = roads_.index_of(t->id);
-            spec.tag = index < 0 ? 0 : static_cast<u32>(index);
-            return spec;
-        };
+        const auto spec_of = [this](const RoadType* t) { return t ? spec_for(*t) : traffic::RoadSpec{}; };
         const auto lay = [&](std::vector<Vec2> points, const RoadType* type) {
             traffic::build_road(net_, Path::from_catmull_rom(points), spec_of(type), 10.0f);
         };
@@ -1430,6 +1565,7 @@ private:
         }
         for (usize i = 0; i < net_.nodes().size(); ++i)
             if (net_.node(static_cast<u32>(i)).alive) build_junction(static_cast<u32>(i));
+        build_junction_guides();
     }
 
     void build_edge_surface(const NetEdge& e) {
@@ -1554,6 +1690,30 @@ private:
         set_color(lane, kMarkingWhite);
         for (const std::vector<float>* side : {&forward, &backward})
             for (usize i = 1; i < side->size(); ++i) add_line(body.offset(((*side)[i - 1] + (*side)[i]) * 0.5f), lane);
+
+        // Lanes that are not for cars get their own surface, the way a bus
+        // lane or a cycle track reads differently from the carriageway.
+        for (const Track& t : e.tracks) {
+            const LaneKind kind = kind_of(t);
+            if (kind == LaneKind::Driving || kind == LaneKind::LeftTurn || kind == LaneKind::RightTurn) continue;
+            const Color surface = kind == LaneKind::Cycle    ? kCycleSurface
+                                  : kind == LaneKind::Bus    ? kBusSurface
+                                  : kind == LaneKind::Parking ? kParkingSurface
+                                                              : kShoulderSurface;
+            StrokeStyle strip;
+            strip.width = t.width - 0.1f;
+            set_color(strip, surface);
+            add_line(body.offset(t.offset), strip);
+            // A wide dashed line separates a bus lane from the traffic.
+            if (kind == LaneKind::Bus) {
+                StrokeStyle border;
+                border.width = marking_width(kWideLine);
+                border.dash = 3.0f;
+                border.gap = 3.0f;
+                set_color(border, kMarkingWhite);
+                add_line(body.offset(t.offset - (t.forward ? t.width * 0.5f : -t.width * 0.5f)), border);
+            }
+        }
 
         if (zoom_ < 3.0f) return; // the rest is detail nobody can see from up there
         build_approach(e, along, e.a, false, forward, backward);
@@ -1763,6 +1923,27 @@ private:
     /// Dash rhythms: shorter in town, longer the faster the road.
     static float dash_mark(usize lanes_per_side) { return lanes_per_side >= 3 ? 6.0f : lanes_per_side >= 2 ? 4.0f : 3.0f; }
     static float dash_gap(usize lanes_per_side) { return lanes_per_side >= 3 ? 12.0f : lanes_per_side >= 2 ? 8.0f : 3.0f; }
+
+    /// The dotted guide lines that carry a lane across a junction, so a
+    /// turning driver can see where they are meant to come out.
+    void build_junction_guides() {
+        if (zoom_ < 5.0f) return;
+        StrokeStyle guide;
+        guide.width = marking_width(kNarrowLine);
+        guide.dash = kGuideDash;
+        guide.gap = kGuideGap;
+        set_color(guide, kGuideWhite);
+        for (const Connector& c : net_.connectors()) {
+            if (c.path.empty() || c.length < 4) continue;
+            // Only the left turn is guided across the junction: it is the
+            // movement that crosses oncoming traffic and the one drivers get
+            // wrong. Guiding everything turns a junction into spaghetti.
+            if (turn_sense(net_, c.from, c.to) >= 0) continue;
+            std::vector<Vec2> line;
+            c.path.flatten(0.3f, line);
+            add_line(line, guide);
+        }
+    }
 
     void add_line(const std::vector<Vec2>& points, const StrokeStyle& style) {
         if (points.size() >= 2) build_polyline(points, style, marking_mesh_);
@@ -2033,7 +2214,7 @@ private:
                 const Vec2 at = n.pos + dir * (n.radius + 1.6f) - side * (e.width * 0.5f + 1.4f);
                 const u8 state = sig.state_of(i);
                 const Color lit = state == 2 ? kLightGreen : state == 1 ? kLightAmber : kLightRed;
-                const float head = std::max(0.9f, px(3));
+                const float head = std::max(0.55f, px(2.5f));
                 r.fill_circle(at.x + 0.5f, at.y + 0.7f, head * 1.15f, rgba(20, 22, 20, 90), 10);
                 r.fill_circle(at.x, at.y, head * 1.15f, kSignalPost, 10);
                 r.fill_circle(at.x, at.y, head * 0.72f, lit, 10);
