@@ -175,7 +175,7 @@ const Color kSignalPost = rgb(48, 50, 54);
 // these rectangles are constants and the simulation can decide by itself
 // whether a click belonged to the HUD or to the world.
 const Rect kMoneyPanel{kWidth * 0.5f - 150, 10, 300, 56};
-const Rect kGoalPanel{kWidth - 372, 10, 360, 120};
+const Rect kGoalPanel{kWidth - 420, 10, 408, 120};
 const Rect kBuildPanel{kWidth * 0.5f - 448, kHeight - 132, 896, 120};
 const Rect kMiniMap{12, kHeight - 184, 172, 172};
 const Rect kToolStrip{kBuildPanel.x + 10, kBuildPanel.y + 22, 112, 92};
