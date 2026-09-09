@@ -1,0 +1,5 @@
+{
+  "rows": [
+    {"id": "gravel", "name": "Gravel", "rate_per_t": 4.80, "tonnes_per_minute": 9.0, "daily_tonnes": 260}
+  ]
+}

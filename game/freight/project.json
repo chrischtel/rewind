@@ -1,0 +1,6 @@
+{
+  "name": "Spedition",
+  "module": "../../build/bin/Release/freight_hot.dll",
+  "startup_scene": "",
+  "format_version": 1
+}

@@ -1,0 +1,11 @@
+{
+  "rows": [
+    {"id": "l608d", "name": "Mercedes L 608 D", "rail": 0,
+     "length_m": 6.1, "width_m": 2.2, "tare_t": 3.4, "capacity_t": 7.5,
+     "top_speed_kmh": 85, "accel": 0.9, "decel": 2.2, "cost_per_km": 0.72, "price": 18000},
+
+    {"id": "v60", "name": "V 60 and four hoppers", "rail": 1,
+     "length_m": 58.0, "width_m": 3.0, "tare_t": 96.0, "capacity_t": 90.0,
+     "top_speed_kmh": 60, "accel": 0.28, "decel": 0.6, "cost_per_km": 2.30, "price": 96000}
+  ]
+}

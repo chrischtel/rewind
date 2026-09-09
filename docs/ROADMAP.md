@@ -206,16 +206,61 @@ knows what a car is. Decided 2026-09-06.
 
 All seven items of this list are done.
 
-## Active: the traffic game
+## Parked: the traffic game
 
-The engine has what a traffic sim needs, so the open list is now the game's,
-in [game/traffic/README.md](../game/traffic/README.md): junctions that form
-themselves where roads cross, traffic lights and priority, sources and sinks
-instead of random trips, speed limits and congestion in the routing, the
-look (textures, crossings, bridges), and the game around it.
+The engine has what a traffic sim needs, so its open list was the game's own,
+in [game/traffic/README.md](../game/traffic/README.md): elevation, a better
+following model, congestion in the routing, the record of the city, and more
+of the look.
 
-Engine work from here follows what the game turns out to need, and lands as
-generic features: nothing in `engine/` knows about cars.
+**This list is parked in a stable state (2026-09-09).** The game runs, builds
+roads, forms junctions and moves traffic that means something; nothing is
+half-finished. Its remaining five items keep their order for whenever it is
+picked up again.
+
+## Active: the freight game
+
+Decided 2026-09-09: the next game is a small rail and road freight company
+inherited from a grandfather, with a filling station at the yard gate. The
+plan is three documents in [game/freight/](../game/freight/README.md):
+`README.md` (the pitch and the phases), `DESIGN.md` (the simulation) and
+`STYLE.md` (the look, as numbers).
+
+It is chosen because it sits directly on top of what the last two lists
+built — curve networks with elevation, network agents, dynamic routing, data
+tables and the game UI — and because its content is generated and its look is
+geometry, which suits a solo developer who programs.
+
+Engine work follows what the game turns out to need, and lands as generic
+features: nothing in `engine/` knows about lorries. Expected, in phase order:
+
+1. ~~**`core/ease.h`** — easing functions and a reflected `Tweened<T>` that
+   moves toward a target over a duration.~~ Done: fourteen curves with names
+   for the inspector, `ease()`, `approach()` for follows with no duration,
+   `Tweened<T>` with `snap`/`set`/`tick`, `ease_test`. Header-only.
+2. ~~**`sim/clock.h`** — a game calendar derived from the tick.~~ Done:
+   `constexpr` civil date arithmetic (`days_from_civil`, `civil_from_days`,
+   `weekday_from_days` with Monday as 0), `Date`, `Clock` with a configurable
+   `hour_seconds`, and `ClockEdge` reporting hour, day, month and year
+   rollovers from `tick()`. `clock_test`. Header-only.
+3. **`grade_at(edge, t)`** on `CurveNetwork` — the derivative of the
+   elevation the network already stores. *(freight phase 2)*
+4. **A resistance hook on `NetworkAgents`** — an agent asks the game for
+   available and resisting force and integrates that, instead of a fixed
+   acceleration. Trains, lorries, boats, belts. *(freight phase 2)*
+5. **Game UI II** in `render/ui.h` — scrolling lists, tables with sortable
+   columns, tabs, text and number fields, a line chart. *(freight phase 3)*
+6. **Formatting** in `core/localization.h` — currency, dates and units.
+   *(freight phase 3)*
+7. **2D lighting and post-processing** — pulled forward from "Later".
+   *(freight phase 5)*
+8. **Per-class routing costs** on `CurveNetwork` — a track penalty is a
+   property of the network, so an edge cannot be priced differently for a
+   lorry and a train, and rail and road have to be separate networks. Found
+   in freight phase 1; wanted around phase 6.
+
+Freight phase 1 is done: `game/freight/` builds and runs, both engine items
+above landed header-only, and the 35 test suites pass.
 
 ## Later
 

@@ -36,6 +36,8 @@ rewind_add_test(ui_test)
 rewind_add_test(data_table_test)
 rewind_add_test(particles_test)
 rewind_add_test(roads_test)
+rewind_add_test(ease_test)
+rewind_add_test(clock_test)
 rewind_add_test(shader_test)
 target_include_directories(shader_test PRIVATE ${CMAKE_BINARY_DIR}/generated)
 
