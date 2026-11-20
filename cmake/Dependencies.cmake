@@ -46,9 +46,33 @@ FetchContent_Declare(spirv_cross
     GIT_TAG        vulkan-sdk-1.4.357.0
     GIT_SHALLOW    TRUE)
 
-FetchContent_MakeAvailable(SDL3 imgui stb spirv_cross)
+# ---- Clipper2 (polygon booleans and offsets on an integer grid) -------------
+# Only its three sources are compiled, straight into the engine like ImGui;
+# the repository's own CMake project lives in CPP/ and is not used.
+FetchContent_Declare(clipper2
+    GIT_REPOSITORY https://github.com/AngusJohnson/Clipper2.git
+    GIT_TAG        Clipper2_1.5.4
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  none)
+
+# ---- earcut (triangulating polygons with holes; header only) ----------------
+FetchContent_Declare(earcut
+    GIT_REPOSITORY https://github.com/mapbox/earcut.hpp.git
+    GIT_TAG        v2.2.4
+    GIT_SUBMODULES ""
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  none)
+
+FetchContent_MakeAvailable(SDL3 imgui stb spirv_cross clipper2 earcut)
 
 set(REWIND_STB_INCLUDE_DIR ${stb_SOURCE_DIR})
+
+set(REWIND_CLIPPER2_INCLUDE_DIR ${clipper2_SOURCE_DIR}/CPP/Clipper2Lib/include)
+set(REWIND_CLIPPER2_SOURCES
+    ${clipper2_SOURCE_DIR}/CPP/Clipper2Lib/src/clipper.engine.cpp
+    ${clipper2_SOURCE_DIR}/CPP/Clipper2Lib/src/clipper.offset.cpp
+    ${clipper2_SOURCE_DIR}/CPP/Clipper2Lib/src/clipper.rectclip.cpp)
+set(REWIND_EARCUT_INCLUDE_DIR ${earcut_SOURCE_DIR}/include)
 
 # ImGui ships no build system. Its sources are compiled straight into the
 # engine's shared library so that there is exactly one ImGui (and one SDL)

@@ -8,6 +8,7 @@
 namespace rw {
 
 struct Color;
+struct PolygonSet;
 
 /// One vertex of anything the renderer draws: position (z for 3D and for
 /// depth-sorted 2D), texture coordinates, and a color the shader multiplies in.
@@ -61,6 +62,13 @@ void build_polyline(const std::vector<Vec2>& points, const StrokeStyle& style, M
 /// by ear clipping, with uv = position * uv_scale. Appends to `out`.
 void build_polygon(const std::vector<Vec2>& points, float r, float g, float b, float a, Mesh& out,
                    float uv_scale = 0);
+
+/// Filled regions with holes (core/polygon.h): what the area operations
+/// return, as triangles. uv = position * uv_scale. Appends to `out`.
+void build_polygon_set(const PolygonSet& set, float r, float g, float b, float a, Mesh& out, float uv_scale = 0);
+
+/// Every boundary of a set, outers and holes, as closed thick lines.
+void build_polygon_outline(const PolygonSet& set, const StrokeStyle& style, Mesh& out);
 
 /// Filled circle or ring. `inner_radius` 0 gives a disc.
 void build_circle(Vec2 center, float radius, float inner_radius, int segments, float r, float g, float b, float a,

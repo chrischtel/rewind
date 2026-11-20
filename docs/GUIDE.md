@@ -233,6 +233,56 @@ polygons), `simplify_polyline` (Douglas-Peucker), `resample_polyline`,
 `from_angle` and `angle_of`. Paths reflect, so they save, load, diff and
 show up in the inspector.
 
+### Areas
+
+`core/polygon.h` is for filled regions with holes, and for turning a pile
+of overlapping shapes into one clean partition. A `PolygonSet` is any number
+of regions that do not overlap; each `Polygon` is a boundary plus its holes.
+
+```cpp
+PolygonSet lane_a = polyline_band(points_a, 3.5f);          // what a line of that width sweeps
+PolygonSet lane_b = polyline_band(points_b, 3.5f);
+PolygonSet road   = polygon_close(polygon_union(lane_a, lane_b), 1.5f); // one outline, corners rounded
+PolygonSet kerb   = polygon_border(road, 0.3f);             // the ring just outside it
+PolygonSet island = polygon_holes(road);                    // what the lanes enclose
+PolygonSet stripes = polygon_hatch(island, 0.785f, 1.3f, 0.4f, 0.3f);
+
+Mesh mesh;
+build_polygon_set(road, 0.2f, 0.2f, 0.22f, 1, mesh);       // triangles, holes left open
+```
+
+- **Combining:** `polygon_union` (of raw rings wound either way, of two
+  sets, or of many sets at once), `polygon_difference`,
+  `polygon_intersection`, `polygon_xor`.
+- **Growing and shrinking:** `polygon_offset` with round, mitered or
+  bevelled corners; `polygon_close` (grow then shrink: fills gaps, rounds
+  inward corners), `polygon_open` (shrink then grow: removes spikes and
+  necks), `polygon_border` (the ring outside a set).
+- **Lines:** `polyline_band` (butt, square or round ends; closed lines give
+  rings), `clip_polyline` (the pieces of a line inside or outside a set, in
+  order along the line: this is how a marking is trimmed).
+- **Hatching:** `polygon_hatch` returns stripes as area, cut exactly to the
+  boundary; `polygon_hatch_lines` returns their centre lines.
+- **Tidying and asking:** `polygon_simplify`, `polygon_remove_small`,
+  `polygon_holes`, `polygon_fill_holes`, `polygon_inner_circle` (the widest
+  place in a region: where a label goes, and how wide a gap really is),
+  `polygon_signed_distance`, and `area()`, `contains()`, `bounds()` on a set.
+
+Results always have boundaries with positive `polygon_area()` and holes
+negative. Everything runs on an integer grid of 1/1024 of a unit inside
+(Clipper2), so the same shapes give the same points on every machine and the
+functions are safe in `tick()`. `build_polygon_set` (ear cutting with holes)
+and `build_polygon_outline` in `render/mesh.h` turn a set into a mesh.
+
+### Anti-aliasing
+
+`AppConfig::msaa` is the number of samples per pixel: 1 (off, the default,
+right for pixel art), 2, 4 or 8. With more than one, every edge of every
+mesh, polygon and line is smoothed, in the window and in render targets; the
+nearest count the driver supports is used and `Renderer2D::msaa()` says
+which. A game drawn from vector shapes wants `cfg.msaa = 4`. `--msaa N` on
+the command line overrides it, and the overlay is always drawn sharp on top.
+
 ### Camera
 
 `Camera` (x, y, zoom) is what the renderer uses: `to_screen`, `to_world`,
@@ -344,6 +394,139 @@ derived data rebuilds on load. `draw_network()` in `render/network_draw.h`
 shows surfaces, tracks with arrows, connectors, links, conflicts and nodes
 for tools and prototypes.
 
+### Lanes that begin and end
+
+A track need not run the whole edge. `Track::begin` and `Track::end` cut it
+short of node a and node b, and `taper` is the length over which that open
+end widens from nothing:
+
+```cpp
+Track pocket{2.5f * lane, true, lane, kLeftTurn};
+pocket.begin = edge_length - 60;   // only the last sixty before the junction
+pocket.taper = 20;
+net.edge(e).tracks.push_back(pocket);
+
+net.edge(e).tracks[1].end = 150;   // or: this lane is dropped 150 before the far node
+net.rebuild();
+```
+
+A track that stops short of a node has no connectors there; it is entered
+and left sideways, and the route says so with a change step. Links join
+only tracks that run side by side somewhere. `track_start(track)` is where
+a track begins along its edge and `beside(from, distance, to, out)` finds
+the same place on the track next to it. `split_edge` hands a partial track
+to the piece it lies on, or to both, measured afresh. The surface draws the
+taper as an S that keeps the side with a neighbouring lane straight and
+swings the other out, and `track_edge` follows it, so a line along the
+outside of a pocket follows the pocket.
+
+### Rebuilding after an edit
+
+`rebuild()` works out again only what an edit could have changed: the
+tracks of edges that changed or meet a node that did, and the connectors
+and conflicts of the nodes at their ends. It finds the changes itself, by
+comparing every node and edge with what it was last time, so it does not
+matter whether an edit went through the network's calls, was written
+straight into `node(i)` or `edge(i)`, or came from loading a save; a rewind
+that restores the same network costs next to nothing. On a grid of 3120
+streets a full rebuild takes about 19 ms here and an edit about 2.6 ms.
+`last_rebuild()` reports the counts.
+
+The connect filter and the track trim are trusted to look only at the node
+they are asked about and the edges meeting there. Setting either one makes
+the next rebuild complete, and `invalidate()` does the same by hand.
+`edges_at(node)` is a table, remade when an edge may have been rewired.
+
+### Authored junctions
+
+By default a node connects every arriving track to every leaving one the
+connect filter lets through. A node can instead carry its own list of turns:
+
+```cpp
+net.author_node(n);                          // what is derived there now becomes its turns
+net.allow_turn(n, from, to, false);          // forbid one movement (authors the node if needed)
+net.allow_turn(n, from, u_turn_target);      // or add one no filter would have made
+if (Turn* t = net.find_turn(n, from, to)) {  // group, tag and priority are the game's
+    t->group = 3;
+    t->priority = 1;
+}
+net.rebuild();                               // as after any edit
+net.release_node(n);                         // hand it back: derived again
+```
+
+Turns are reflected state on the node, so a junction the player has edited
+saves, rewinds and survives a hot reload; a callback could not. Each
+connector carries its turn's `group`, `tag` and `priority`. Turns follow a
+road through `split_edge`, and turns whose road or lane is gone are dropped
+at the next `rebuild()`.
+
+Lookups are tables made by `rebuild()`: `connectors_at(node)`,
+`connectors_from(track)`, `connectors_into(track)`, `find_connector(from,
+to)` and `conflicts_of(connector)`. A `Conflict` says how far along each of
+its two connectors the meeting point lies (`at_a`, `at_b`), enough to hold a
+vehicle short of the point rather than short of the junction, and
+`merge_conflicts = true` also lists connectors that end on the same track
+(`ConflictKind::Merge`).
+
+### Signals
+
+`sim/signal.h` is plans and their timing, header-only and deterministic. A
+`SignalPlan` is phases in order, each a set of groups with a green time,
+plus the amber, all-red and red-amber times and an offset; a `SignalState`
+is where a controller is in it.
+
+```cpp
+assign_turn_groups(net, node, TurnGrouping::Approach); // one group per arriving road
+net.rebuild();
+SignalPlan plan = signal_plan_for(net, node, 20);      // fewest phases the conflicts allow
+
+signal_tick(plan, state, ctx.dt, demand);              // in tick(); state is reflected
+if (signal_aspect(plan, state, connector.group) != Aspect::Green) hold_the_vehicle();
+```
+
+`conflicting_groups(net, node)` lists the pairs that must never be green
+together and `signal_plan_clash(plan, pairs)` finds the first phase that
+breaks that, which is what an editor paints red. A phase with `max_green`
+above `green` is actuated: it holds its green while `demand` is true.
+`signal_state_at(plan, clock)` puts a fixed plan where it belongs at a clock
+time, so junctions sharing a cycle stay in step and `offset` makes a green
+wave. `signal_time_to_green` and `signal_green_left` are for countdowns and
+for drivers who look ahead. A group in two phases running one after the
+other keeps its green across the change-over.
+
+### Network surfaces
+
+`sim/network_surface.h` turns a network into the ground it occupies, with
+no special cases: every track and connector sweeps a band, the bands are
+united and closed up by a corner radius.
+
+```cpp
+SurfaceOptions o;
+o.corner_radius = 2.5f;
+NetworkSurface s = network_surface(net, o);
+// s.lanes       exactly what tracks and connectors sweep
+// s.paved       one outline, inward corners rounded, small gaps filled
+// s.islands     gaps the lanes enclose that are big enough to stand on (not paved)
+// s.keep_clear  paving no lane sweeps, wide enough to mark: hatch it
+build_polygon_set(polygon_border(s.paved, 0.3f), kerb..., mesh); // rings every island too
+build_polygon_set(s.paved, asphalt..., mesh);
+```
+
+A crossroads, a five-way at odd angles, a slip lane and a roundabout all
+come out of the same call; the middle of a roundabout is an island without
+anyone saying so. `SurfaceOptions::include` leaves tracks out (pave the
+carriageway and the cycle path separately), `widen` adds a verge, and the
+optional region builds only what reaches into a rectangle, for tiling a big
+map. `node_surface(net, node, reach)` is one junction on its own, for an
+editor preview. `track_edge` and `connector_edge` give a lane's left edge,
+right edge or centre as a line, which is where its markings go.
+`game/roads` (run `roads --demo 1`) draws four awkward junctions this way, a
+rural T with a left-turn lane, an island and a slip lane among them, and
+paints them from the same data: edge lines from the outline, centre lines through the
+junction, give-way lines only on the road that has to wait, guide lines for
+turns. A network measured in metres wants `net.track_tolerance` at a few
+centimetres so that tight bends are drawn round.
+
 ### Network agents
 
 `sim/network_agents.h` moves things along a network's routes:
@@ -359,16 +542,39 @@ PathPoint pose = agents.pose(net, car);   // position and heading for drawing
 ```
 
 Each agent follows its route piece by piece (track, connector, sideways
-change), never faster than it can stop within the gap to whoever is ahead
-on its piece or the next ones, keeping `headway` seconds behind a leader
-and `min_gap` when standing. Sideways changes blend between the two
-tracks over `change_length`. Before a connector that crosses another, the
-entry rule decides; the default refuses while a crossing connector has
-someone on it. `NetAgentParams` holds length, speeds, acceleration,
-braking and gaps per agent. Parked agents (`done`) still take up room
-until removed. `on_track` and `on_connector` list who is where,
-`reroute` swaps the plan of an agent that is on the new route's first
-track, `stop_distance` parks it short of the end.
+change), keeping `headway` seconds behind a leader and `min_gap` when
+standing. Before a connector that crosses another, the entry rule decides;
+the default refuses while a crossing connector has someone on it.
+`NetAgentParams` holds length, speeds, acceleration, braking and gaps per
+agent. Parked agents (`done`) still take up room until removed. `on_track`
+and `on_connector` list who is where, `lead_of` says who an agent is
+following and how far ahead, `reroute` swaps the plan of an agent that is
+on the new route's first track, `stop_distance` parks it short of the end.
+
+How an agent picks its speed is `NetAgentParams::model`:
+
+- `FollowModel::Simple` (the default) accelerates and brakes at fixed rates
+  and is never faster than it can stop within the gap in front. Exact and
+  cheap: trains, belts, anything on rails.
+- `FollowModel::Idm` is the Intelligent Driver Model. Acceleration fades
+  smoothly towards `max_speed`, braking grows smoothly with how fast the
+  gap is closing, so a queue eases to a stand, pulls away one car after
+  another, and a busy road makes its own stop-and-go waves. It reads the
+  same parameters (`accel` is the most it accelerates, `decel` what it
+  finds comfortable, `min_gap` and `headway` what it keeps) plus
+  `exponent` and `max_brake`. Give drivers different parameters and the
+  traffic has character.
+
+`NetAgent::accel` is what the agent did this tick (negative is braking: the
+brake lights). The motion rule works with both models.
+
+A change of track happens along the track, not at its end. As soon as the
+track beside exists there and has a gap (bigger the faster somebody is
+closing on it), the agent moves over across `change_length` while it keeps
+driving, and takes up room in both tracks until it has arrived. One that
+finds no gap carries on to the last place from which the change still
+fits, holds there with `waiting` set, and whoever comes up behind in the
+other track stops short and lets it in: lanes that merge take turns.
 
 ### Editor tools
 
@@ -509,6 +715,88 @@ quarter, half, double or quadruple speed: more or fewer fixed ticks per
 second, never a different tick, so the timeline and the fingerprints stay
 exactly what they would be at 1x. The overlay's timeline panel and the
 editor status bar show it.
+
+#### Lists, fields, tables and charts
+
+The same `Ui` has the pieces an editor or an analysis panel is made of.
+Widgets that keep something between frames (a scroll offset, the keyboard,
+an open list, a sort column) take an `id` that must be unique in the `Ui`;
+the others are identified by their text like a button.
+
+```cpp
+ui_.heading("Junction 12");               // title colour, a little room above
+if (ui_.tabs("view", {"Phases", "Flow"}, tab_)) { /* tab_ changed */ }
+ui_.separator();
+
+ui_.begin_scroll("phases", 140);          // 140 px tall, wheel or bar
+for (int i = 0; i < phase_count; ++i)
+    if (ui_.selectable(phase_name(i), i == selected_)) selected_ = i;
+ui_.end_scroll();
+```
+
+`heading` and `separator` structure a panel, `tabs` is a row of buttons
+with the current one in the accent colour. `selectable` is a list row across
+the panel, lit when selected or under the mouse; consecutive rows touch.
+`begin_scroll`/`end_scroll` make a region whose content scrolls and remember
+the offset per id. The renderer has no scissor, so a widget inside shows and
+reacts only while the whole of it is in view: rows appear and disappear
+whole at the edges instead of being cut.
+
+```cpp
+ui_.text_field("name", name_);                            // std::string, 160 px
+if (ui_.number_field("green", green_s_, 1, 5, 120))       // step 1, 5..120
+    app.push_command(kCmdSetGreen, static_cast<i32>(green_s_));
+if (ui_.dropdown("mode", {"Fixed", "Actuated", "Off"}, mode_)) { /* picked */ }
+if (ui_.wants_keyboard()) { /* typing is text, not game keys */ }
+```
+
+A click gives a field the keyboard; a click elsewhere, Enter or Escape
+takes it away, and `wants_keyboard()` says so meanwhile. `text_field` edits
+the string in place and returns true when it changed. `number_field` has
+`-` and `+` beside it and takes typed text as the value on Enter or when it
+loses the keyboard (Escape drops it), rounded to its `decimals` and clamped.
+`App::ui_input()` carries the typed text and the editing keys in `UiInput`
+(`text`, `key_backspace`, `key_enter`, ...). `dropdown` shows the current
+option; its list opens below, is drawn at `end()` over everything else and
+owns the mouse (`wants_mouse()`) until an option or anything else is clicked.
+
+```cpp
+ui_.begin_table("links", {{"Link", 120, true}, {"Flow", 70, true}, {"Note"}});
+const int column = ui_.table_sort_column();               // -1: as it comes
+sort_rows(rows_, column, ui_.table_sort_descending());    // your data, your sort
+for (const Row& row : rows_) {
+    ui_.table_cell(row.name);
+    ui_.table_cell(row.flow_text);
+    ui_.table_cell(row.note);
+}
+ui_.end_table();
+```
+
+A table is a header and cells handed over one by one, wrapping into rows
+with every other one shaded; a `UiColumn` without a width shares what the
+fixed ones leave, and text too long for its cell is cut. A click on a
+sortable header picks that column, a second one flips the direction. The
+table only remembers the choice: the caller sorts.
+
+```cpp
+const UiSeries series[] = {
+    {flow_.data(), flow_.size(), rgb(86, 156, 214), "flow"},
+    {queue_.data(), queue_.size(), rgb(214, 120, 86), "queue"},
+};
+ui_.line_chart(series, 2, 0, 120);        // panel width, 120 px plot, range from the data
+```
+
+`line_chart` draws each series across the full width over a shared value
+axis with grid lines, value labels and a legend row for the named ones;
+pass `y_min` and `y_max` for a fixed range. Under the mouse a marker snaps
+to the nearest sample and a tooltip lists every series' value there.
+
+`UiStyle` has the colours these use: `field` (fields, scroll areas, the
+plot), `selection`, `row_alt` and `grid`.
+
+While a field has the keyboard, tell the engine: `app.set_ui_keyboard(ui.wants_keyboard())`
+once a frame. Keys then stop reaching the simulation as buttons, and Escape
+leaves the field instead of the game.
 
 ### Particles
 

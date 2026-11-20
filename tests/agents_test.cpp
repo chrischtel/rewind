@@ -218,6 +218,83 @@ void test_determinism_and_reflection() {
     for (u32 i = 0; i < 8; ++i) CHECK(a.agent(i).distance == c.agent(i).distance && a.agent(i).speed == c.agent(i).speed);
 }
 
+/// A motion rule is how a game makes the piece under an agent matter. These
+/// check the three answers it can give: less, none, and not enough.
+void test_motion_rule() {
+    const CurveNetwork net = make_line();
+    NetAgentParams p;
+    p.max_speed = 100;
+    p.accel = 60;
+    const Route r = net.route(TrackRef{0, 0}, TrackRef{1, 0});
+
+    // No rule: the params are the limits, and this is the baseline.
+    NetworkAgents plain;
+    const u32 pa = plain.spawn(r, 0, p);
+    run(plain, net, 180); // three seconds: long enough to be at its top speed
+    const float free_speed = plain.agent(pa).speed;
+    CHECK(free_speed > 95);
+
+    // A rule that halves the top speed is obeyed.
+    NetworkAgents capped;
+    capped.set_motion_rule([](const NetworkAgents&, const CurveNetwork&, u32, MotionLimits l) {
+        l.max_speed *= 0.5f;
+        return l;
+    });
+    const u32 ca = capped.spawn(r, 0, p);
+    run(capped, net, 180);
+    CHECK(capped.agent(ca).speed < free_speed);
+    CHECK(std::fabs(capped.agent(ca).speed - 50.0f) < 1.0f);
+
+    // A rule that hands back what it was given changes nothing at all.
+    NetworkAgents same;
+    same.set_motion_rule([](const NetworkAgents&, const CurveNetwork&, u32, MotionLimits l) { return l; });
+    const u32 sa = same.spawn(r, 0, p);
+    run(same, net, 180);
+    CHECK(same.agent(sa).speed == free_speed);
+    CHECK(same.agent(sa).distance == plain.agent(pa).distance);
+
+    // A negative accel is "it cannot hold its speed here": the agent slows to
+    // a stand and stays there, rather than running backwards.
+    NetworkAgents stalled;
+    bool pulling = true;
+    stalled.set_motion_rule([&pulling](const NetworkAgents&, const CurveNetwork&, u32, MotionLimits l) {
+        if (!pulling) l.accel = -20;
+        return l;
+    });
+    const u32 st = stalled.spawn(r, 0, p);
+    run(stalled, net, 180);
+    CHECK(stalled.agent(st).speed > 95);
+    // It is now sitting exactly at its target speed, which is the case that
+    // matters: "cannot hold this" has to bite even when nothing is asking it
+    // to go faster.
+    pulling = false;
+    run(stalled, net, 600);
+    CHECK(stalled.agent(st).speed == 0);
+    const float stopped_at = stalled.agent(st).distance;
+    run(stalled, net, 120);
+    CHECK(stalled.agent(st).distance == stopped_at); // and it does not creep
+
+    // Give it something to pull with again and it gets going.
+    pulling = true;
+    run(stalled, net, 60);
+    CHECK(stalled.agent(st).speed > 0 && stalled.agent(st).distance > stopped_at);
+
+    // Taking the brakes away does not divide the stopping arithmetic by zero.
+    NetworkAgents brakeless;
+    brakeless.set_motion_rule([](const NetworkAgents&, const CurveNetwork&, u32, MotionLimits l) {
+        l.decel = 0;
+        return l;
+    });
+    const u32 ba = brakeless.spawn(r, 0, p);
+    run(brakeless, net, 900);
+    const NetAgent& b = brakeless.agent(ba);
+    CHECK(b.done && b.speed == 0);
+    CHECK(b.distance >= 0 && b.distance < 1e9f); // i.e. finite
+
+    // Grade comes off the network the game already has.
+    CHECK(net.grade(0) == 0.0f);
+}
+
 } // namespace
 
 int main() {
@@ -226,6 +303,7 @@ int main() {
     test_conflicts();
     test_change();
     test_determinism_and_reflection();
+    test_motion_rule();
     if (failures == 0) std::printf("agents_test: all passed\n");
     return failures == 0 ? 0 : 1;
 }

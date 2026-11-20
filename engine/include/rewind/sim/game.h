@@ -70,6 +70,15 @@ public:
     /// attach a network session or anything else that needs the App.
     virtual void start(App&) {}
 
+    /// Called instead of start() and init() when a hot reload kept the state:
+    /// this object is brand new but is about to be handed the old one's
+    /// state, and it has never seen start(). Everything that is NOT reflected
+    /// state has to be attached again here -- the App pointer, callbacks the
+    /// game handed to the engine (connect filters, entry rules, motion
+    /// rules), cached lookups. Anything that must not happen twice, such as
+    /// opening a socket, belongs in start() and not here.
+    virtual void reloaded(App&) {}
+
     /// Called once the renderer and audio device exist, and again after every
     /// hot reload. Load textures, sprite sheets and sounds here. Both caches
     /// are keyed by path or name, so repeated calls are cheap. Nothing loaded

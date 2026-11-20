@@ -36,6 +36,7 @@ endif()
 if(REWIND_BUILD_GAME)
     add_subdirectory(game/traffic)
     add_subdirectory(game/freight)
+    add_subdirectory(game/roads)
 endif()
 
 if(REWIND_BUILD_TESTS)

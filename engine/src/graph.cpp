@@ -29,8 +29,10 @@ Item heap_pop(std::vector<Item>& h) {
 
 u32 Graph::add_node(Vec2 pos, u32 tag) {
     nodes_.push_back(GraphNode{pos, true, tag});
-    out_.emplace_back();
-    in_.emplace_back();
+    if (out_.size() < nodes_.size()) { // after reset() the lists are still there, emptied
+        out_.emplace_back();
+        in_.emplace_back();
+    }
     ++version_;
     return static_cast<u32>(nodes_.size() - 1);
 }
@@ -98,6 +100,15 @@ void Graph::clear() {
     out_.clear();
     in_.clear();
     penalties_.clear();
+    ++version_;
+}
+
+void Graph::reset() {
+    nodes_.clear();
+    edges_.clear();
+    penalties_.clear();
+    for (std::vector<u32>& l : out_) l.clear();
+    for (std::vector<u32>& l : in_) l.clear();
     ++version_;
 }
 

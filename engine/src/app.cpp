@@ -43,6 +43,7 @@ void App::parse_engine_args() {
         else if (s == "--speed" && has_next) time_.time_scale = std::max(0.0f, static_cast<float>(std::atof(a[++i].c_str())));
         else if (s == "--overlay") time_.show_overlay = true;
         else if (s == "--no-vsync") cfg_.vsync = false;
+        else if (s == "--msaa" && has_next) cfg_.msaa = std::max(1, std::atoi(a[++i].c_str()));
         else if (s == "--no-overlay") time_.show_overlay = false;
         else if (s == "--mouse" && i + 2 < a.size()) {
             scripted_mouse_ = true;
@@ -126,7 +127,7 @@ bool App::init_platform() {
     SDL_SetGPUSwapchainParameters(device_, window_, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, present);
     RW_LOG_INFO("app", "gpu: %s (device ready after %.0f ms)", SDL_GetGPUDeviceDriver(device_), ms_since());
 
-    renderer_ = std::make_unique<Renderer2D>(device_, window_);
+    renderer_ = std::make_unique<Renderer2D>(device_, window_, cfg_.msaa);
     if (!renderer_->ok()) {
         RW_LOG_ERROR("app", "the renderer could not be set up");
         return false;
@@ -218,19 +219,49 @@ void App::shutdown_platform() {
     window_ = nullptr;
 }
 
+namespace {
+// Editing keys of one frame for the game UI's fields (ui_keys_, App::ui_input()).
+enum : u32 { kUiBackspace = 1, kUiEnter = 2, kUiEscape = 4, kUiLeft = 8, kUiRight = 16, kUiDelete = 32 };
+
+u32 ui_key_bit(SDL_Scancode code) {
+    switch (code) {
+    case SDL_SCANCODE_BACKSPACE: return kUiBackspace;
+    case SDL_SCANCODE_RETURN:
+    case SDL_SCANCODE_KP_ENTER: return kUiEnter;
+    case SDL_SCANCODE_ESCAPE: return kUiEscape;
+    case SDL_SCANCODE_LEFT: return kUiLeft;
+    case SDL_SCANCODE_RIGHT: return kUiRight;
+    case SDL_SCANCODE_DELETE: return kUiDelete;
+    default: return 0;
+    }
+}
+} // namespace
+
 void App::handle_events() {
     wheel_frame_ = 0;
+    ui_text_.clear();
+    ui_keys_ = 0;
+    // The game UI's fields need text events. SDL only sends them while text
+    // input is on, and ImGui turns it off whenever its own fields let go.
+    if (window_ && !SDL_TextInputActive(window_)) SDL_StartTextInput(window_);
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         ImGui_ImplSDL3_ProcessEvent(&e);
         switch (e.type) {
         case SDL_EVENT_QUIT: running_ = false; break;
 
+        case SDL_EVENT_TEXT_INPUT:
+            if (e.text.text) ui_text_ += e.text.text;
+            break;
+
         case SDL_EVENT_KEY_DOWN:
+            ui_keys_ |= ui_key_bit(e.key.scancode); // repeats too: a held Backspace keeps deleting
             if (e.key.repeat) break;
             pressed_key_ = key_name(e.key.scancode);
             switch (e.key.scancode) {
-            case SDL_SCANCODE_ESCAPE: running_ = false; break;
+            case SDL_SCANCODE_ESCAPE:
+                if (!ui_keyboard_) running_ = false; // in a field, Escape only leaves the field
+                break;
             case SDL_SCANCODE_F1: time_.show_overlay = !time_.show_overlay; break;
             case SDL_SCANCODE_F2:
                 time_.mode = time_.mode == TimeMode::Playing ? TimeMode::Paused : TimeMode::Playing;
@@ -241,6 +272,7 @@ void App::handle_events() {
                 break;
             case SDL_SCANCODE_F4: time_.mode = TimeMode::Rewinding; break;
             case SDL_SCANCODE_F5: time_.replay_request = true; break;
+            case SDL_SCANCODE_F11: set_fullscreen(!fullscreen()); break;
             case SDL_SCANCODE_F12: screenshot(); break;
             default: break;
             }
@@ -285,7 +317,7 @@ void App::handle_events() {
 
 InputFrame App::sample_input() const {
     InputFrame in;
-    const bool keyboard = cfg_.embedded ? input_focus_ : !ImGui::GetIO().WantCaptureKeyboard;
+    const bool keyboard = (cfg_.embedded ? input_focus_ : !ImGui::GetIO().WantCaptureKeyboard) && !ui_keyboard_;
 
     // Bindings: every held key or pad button contributes its Button bits.
     u32 buttons = 0;
@@ -374,6 +406,10 @@ void App::poll_hot_reload() {
         hot_.history_reset = !reload.state_compatible;
         game_->load_assets(*renderer_, audio_);
         if (reload.state_compatible) {
+            // This game object has never seen start(), but it is about to be
+            // handed the old one's state. Let it re-attach whatever is not
+            // reflected: the App, its callbacks, its cached lookups.
+            game_->reloaded(*this);
             RW_LOG_INFO("app", "hot reload #%u: new code took over at tick %llu, history kept", hot_.generation,
                     static_cast<unsigned long long>(timeline_.head()));
         } else {
@@ -609,6 +645,16 @@ UiInput App::ui_input() const {
     ui.pressed = ui_down_ && !ui_prev_down_;
     ui.released = !ui_down_ && ui_prev_down_;
     ui.wheel = wheel_frame_;
+    // Typed text and editing keys for the UI's fields, unless the overlay has the keyboard.
+    if (cfg_.embedded ? input_focus_ : !ImGui::GetIO().WantCaptureKeyboard) {
+        ui.text = ui_text_;
+        ui.key_backspace = (ui_keys_ & kUiBackspace) != 0;
+        ui.key_enter = (ui_keys_ & kUiEnter) != 0;
+        ui.key_escape = (ui_keys_ & kUiEscape) != 0;
+        ui.key_left = (ui_keys_ & kUiLeft) != 0;
+        ui.key_right = (ui_keys_ & kUiRight) != 0;
+        ui.key_delete = (ui_keys_ & kUiDelete) != 0;
+    }
     return ui;
 }
 

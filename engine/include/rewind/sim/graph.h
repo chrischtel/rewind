@@ -64,6 +64,9 @@ public:
     void remove_edge(u32 edge);
     void set_edge_cost(u32 edge, float cost);
     void clear();
+    /// Empty the graph but keep its memory, for one that is filled again
+    /// straight away with about as much as it held: no allocation per node.
+    void reset();
 
     /// Runtime extra on top of the authored cost (congestion, closures,
     /// wear). Not reflected: derived from the simulation, set it again on

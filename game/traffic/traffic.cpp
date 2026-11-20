@@ -479,6 +479,11 @@ public:
         }
     }
 
+    /// A hot reload that kept the state builds a new game object that never
+    /// saw start(), so everything start() attaches has to be attached again.
+    /// Everything it does is idempotent, so running it again is the whole job.
+    void reloaded(App& app) override { start(app); }
+
     void start(App& app) override {
         app_ = &app;
         net_.set_connect_filter(

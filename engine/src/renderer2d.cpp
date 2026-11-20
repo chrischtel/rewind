@@ -153,6 +153,15 @@ struct Renderer2D::Impl {
         SDL_GPUTexture* texture;
     };
     std::vector<DepthBuffer> depth_buffers; ///< one per target size, made on demand
+    /// Multisampling: everything is drawn into a buffer with several samples
+    /// per pixel and resolved into the real target at the end of each pass.
+    SDL_GPUSampleCount samples = SDL_GPU_SAMPLECOUNT_1;
+    struct MsaaBuffer {
+        const Texture* target; ///< nullptr = the window
+        u32 w, h;
+        SDL_GPUTexture* texture;
+    };
+    std::vector<MsaaBuffer> msaa_buffers; ///< one per target, made on demand
     SDL_GPUSampler* sampler_nearest = nullptr;
     SDL_GPUSampler* sampler_linear = nullptr;
 
@@ -291,7 +300,7 @@ struct Renderer2D::Impl {
         info.height = h;
         info.layer_count_or_depth = 1;
         info.num_levels = 1;
-        info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+        info.sample_count = samples;
         SDL_GPUTexture* t = SDL_CreateGPUTexture(device, &info);
         if (!t) {
             RW_LOG_ERROR("gpu", "depth buffer %ux%u: %s", w, h, SDL_GetError());
@@ -299,6 +308,68 @@ struct Renderer2D::Impl {
         }
         SDL_SetGPUTextureName(device, t, "__depth");
         depth_buffers.push_back({w, h, t});
+        return t;
+    }
+
+    /// The highest sample count at or below `wanted` that the driver can do
+    /// for both the colour and the depth format.
+    void choose_samples(int wanted) {
+        const SDL_GPUSampleCount steps[] = {SDL_GPU_SAMPLECOUNT_8, SDL_GPU_SAMPLECOUNT_4, SDL_GPU_SAMPLECOUNT_2};
+        const int counts[] = {8, 4, 2};
+        samples = SDL_GPU_SAMPLECOUNT_1;
+        for (int i = 0; i < 3; ++i) {
+            if (wanted < counts[i]) continue;
+            if (!SDL_GPUTextureSupportsSampleCount(device, target_format, steps[i])) continue;
+            if (depth_format != SDL_GPU_TEXTUREFORMAT_INVALID &&
+                !SDL_GPUTextureSupportsSampleCount(device, depth_format, steps[i]))
+                continue;
+            samples = steps[i];
+            return;
+        }
+    }
+
+    int sample_count() const {
+        switch (samples) {
+        case SDL_GPU_SAMPLECOUNT_8: return 8;
+        case SDL_GPU_SAMPLECOUNT_4: return 4;
+        case SDL_GPU_SAMPLECOUNT_2: return 2;
+        default: return 1;
+        }
+    }
+
+    /// The multisampled twin of a target. It keeps its contents between the
+    /// passes of a frame, so a pass that loads continues where the last one
+    /// stopped, exactly as it would on the target itself.
+    SDL_GPUTexture* msaa_buffer_for(const Texture* target, u32 w, u32 h) {
+        for (MsaaBuffer& m : msaa_buffers) {
+            if (m.target != target) continue;
+            if (m.w == w && m.h == h) return m.texture;
+            SDL_ReleaseGPUTexture(device, m.texture); // the target changed size
+            m.texture = nullptr;
+        }
+        SDL_GPUTextureCreateInfo info{};
+        info.type = SDL_GPU_TEXTURETYPE_2D;
+        info.format = target_format;
+        info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+        info.width = w;
+        info.height = h;
+        info.layer_count_or_depth = 1;
+        info.num_levels = 1;
+        info.sample_count = samples;
+        SDL_GPUTexture* t = SDL_CreateGPUTexture(device, &info);
+        if (!t) {
+            RW_LOG_ERROR("gpu", "multisample buffer %ux%u: %s", w, h, SDL_GetError());
+            return nullptr;
+        }
+        SDL_SetGPUTextureName(device, t, "__msaa");
+        for (MsaaBuffer& m : msaa_buffers)
+            if (m.target == target) {
+                m.w = w;
+                m.h = h;
+                m.texture = t;
+                return t;
+            }
+        msaa_buffers.push_back({target, w, h, t});
         return t;
     }
 
@@ -335,6 +406,7 @@ struct Renderer2D::Impl {
         info.vertex_input_state.num_vertex_attributes = 3;
         info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
         info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+        info.multisample_state.sample_count = samples;
         info.target_info.color_target_descriptions = &color;
         info.target_info.num_color_targets = 1;
         if (depth) {
@@ -655,6 +727,7 @@ struct Renderer2D::Impl {
     }
 
     void record_passes(ImDrawData* overlay) {
+        const bool multisampled = samples != SDL_GPU_SAMPLECOUNT_1;
         std::vector<SDL_GPUTexture*> cleared;
         for (usize si = 0; si < segments.size(); ++si) {
             const Segment& seg = segments[si];
@@ -665,11 +738,20 @@ struct Renderer2D::Impl {
 
             const bool first_use = std::find(cleared.begin(), cleared.end(), texture) == cleared.end();
             const bool last = si + 1 == segments.size();
-            if (seg.batch_count == 0 && !seg.has_clear && !first_use && !(last && overlay)) continue;
+            // With multisampling the overlay gets a pass of its own, below.
+            const bool overlay_here = last && overlay && !multisampled;
+            if (seg.batch_count == 0 && !seg.has_clear && !first_use && !overlay_here) continue;
 
             SDL_GPUColorTargetInfo target{};
             target.texture = texture;
             target.store_op = SDL_GPU_STOREOP_STORE;
+            if (multisampled) {
+                SDL_GPUTexture* buffer = msaa_buffer_for(seg.target, w, h);
+                if (!buffer) continue;
+                target.texture = buffer;
+                target.resolve_texture = texture;
+                target.store_op = SDL_GPU_STOREOP_RESOLVE_AND_STORE;
+            }
             if (seg.has_clear || first_use) {
                 const Color c = seg.has_clear ? seg.clear_color : Color{0, 0, 0, 255};
                 target.load_op = SDL_GPU_LOADOP_CLEAR;
@@ -726,7 +808,21 @@ struct Renderer2D::Impl {
                     ++stat_draw_calls;
                 }
             }
-            if (last && overlay) ImGui_ImplSDLGPU3_RenderDrawData(overlay, cmd, pass);
+            if (overlay_here) ImGui_ImplSDLGPU3_RenderDrawData(overlay, cmd, pass);
+            SDL_EndGPURenderPass(pass);
+        }
+
+        // The overlay's own pipeline has one sample per pixel, so it is drawn
+        // straight onto the window after everything else has been resolved.
+        if (multisampled && overlay && swapchain) {
+            SDL_GPUColorTargetInfo target{};
+            target.texture = swapchain;
+            target.store_op = SDL_GPU_STOREOP_STORE;
+            const bool drawn = std::find(cleared.begin(), cleared.end(), swapchain) != cleared.end();
+            target.load_op = drawn ? SDL_GPU_LOADOP_LOAD : SDL_GPU_LOADOP_CLEAR;
+            target.clear_color = SDL_FColor{0, 0, 0, 1};
+            SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &target, 1, nullptr);
+            ImGui_ImplSDLGPU3_RenderDrawData(overlay, cmd, pass);
             SDL_EndGPURenderPass(pass);
         }
     }
@@ -828,13 +924,19 @@ struct Renderer2D::Impl {
 
 // ---- construction -------------------------------------------------------------
 
-Renderer2D::Renderer2D(SDL_GPUDevice* device, SDL_Window* window) : impl_(std::make_unique<Impl>()) {
+Renderer2D::Renderer2D(SDL_GPUDevice* device, SDL_Window* window, int msaa) : impl_(std::make_unique<Impl>()) {
     impl_->device = device;
     impl_->window = window;
     impl_->target_format = SDL_GetGPUSwapchainTextureFormat(device, window);
     impl_->choose_depth_format();
     if (impl_->depth_format == SDL_GPU_TEXTUREFORMAT_INVALID)
         RW_LOG_WARN("gpu", "no depth format supported; set_depth_test() will be ignored");
+    if (msaa > 1) {
+        impl_->choose_samples(msaa);
+        if (impl_->sample_count() != msaa)
+            RW_LOG_WARN("gpu", "%dx multisampling is not available here, using %dx", msaa, impl_->sample_count());
+        else RW_LOG_INFO("gpu", "%dx multisampling", msaa);
+    }
 
     if (!impl_->create_samplers() || !impl_->create_sprite_pipeline()) return;
 
@@ -859,6 +961,8 @@ Renderer2D::~Renderer2D() {
         if (m->pipeline_depth) SDL_ReleaseGPUGraphicsPipeline(im.device, m->pipeline_depth);
     }
     for (const Impl::DepthBuffer& d : im.depth_buffers) SDL_ReleaseGPUTexture(im.device, d.texture);
+    for (const Impl::MsaaBuffer& m : im.msaa_buffers)
+        if (m.texture) SDL_ReleaseGPUTexture(im.device, m.texture);
     if (im.vertex_buffer) SDL_ReleaseGPUBuffer(im.device, im.vertex_buffer);
     if (im.index_buffer) SDL_ReleaseGPUBuffer(im.device, im.index_buffer);
     if (im.transfer) SDL_ReleaseGPUTransferBuffer(im.device, im.transfer);
@@ -872,6 +976,7 @@ Renderer2D::~Renderer2D() {
 bool Renderer2D::ok() const { return impl_->ok; }
 SDL_GPUDevice* Renderer2D::device() const { return impl_->device; }
 const char* Renderer2D::driver_name() const { return SDL_GetGPUDeviceDriver(impl_->device); }
+int Renderer2D::msaa() const { return impl_->sample_count(); }
 int Renderer2D::draw_calls_last_frame() const { return impl_->last_draw_calls; }
 int Renderer2D::vertices_last_frame() const { return impl_->last_vertices; }
 

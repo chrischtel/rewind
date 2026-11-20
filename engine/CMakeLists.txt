@@ -35,8 +35,8 @@ if(REWIND_GLSLC)
             "-DINPUTS=${spv_outputs}"
             "-DNAMES=${spv_names}"
             -DDEFINE=REWIND_HAVE_SPIRV
-            -P ${CMAKE_SOURCE_DIR}/cmake/EmbedFiles.cmake
-        DEPENDS ${spv_outputs} ${CMAKE_SOURCE_DIR}/cmake/EmbedFiles.cmake
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/../cmake/EmbedFiles.cmake
+        DEPENDS ${spv_outputs} ${CMAKE_CURRENT_SOURCE_DIR}/../cmake/EmbedFiles.cmake
         COMMENT "embedding SPIR-V shaders"
         VERBATIM)
 else()
@@ -76,6 +76,7 @@ add_library(rewind SHARED
     src/network.cpp
     src/network_agents.cpp
     src/network_draw.cpp
+    src/network_surface.cpp
     src/particles.cpp
     src/net_loopback.cpp
     src/net_session.cpp
@@ -85,6 +86,8 @@ add_library(rewind SHARED
     src/paths.cpp
     src/player_settings.cpp
     src/png.cpp
+    src/polygon.cpp
+    src/polygon_mesh.cpp
     src/profiler.cpp
     src/project.cpp
     src/reflect.cpp
@@ -100,13 +103,15 @@ add_library(rewind SHARED
     src/timeline.cpp
     src/ui.cpp
     ${REWIND_SHADER_HEADER}
-    ${REWIND_IMGUI_SOURCES})
+    ${REWIND_IMGUI_SOURCES}
+    ${REWIND_CLIPPER2_SOURCES})
 
 add_library(rewind::rewind ALIAS rewind)
 
 target_include_directories(rewind
     PUBLIC include ${REWIND_IMGUI_INCLUDE_DIRS}
-    PRIVATE ${REWIND_STB_INCLUDE_DIR} ${REWIND_GENERATED_DIR})
+    PRIVATE ${REWIND_STB_INCLUDE_DIR} ${REWIND_GENERATED_DIR}
+            ${REWIND_CLIPPER2_INCLUDE_DIR} ${REWIND_EARCUT_INCLUDE_DIR})
 target_link_libraries(rewind PRIVATE SDL3::SDL3 spirv-cross-core spirv-cross-glsl spirv-cross-hlsl)
 target_compile_features(rewind PUBLIC cxx_std_20)
 

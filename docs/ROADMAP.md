@@ -262,6 +262,46 @@ features: nothing in `engine/` knows about lorries. Expected, in phase order:
 Freight phase 1 is done: `game/freight/` builds and runs, both engine items
 above landed header-only, and the 35 test suites pass.
 
+## Done: road foundations
+
+Decided 2026-11-20: before a road and traffic builder is started on the
+engine, the engine gets what the parked traffic game showed was missing.
+Generic throughout; nothing in `engine/` knows what a car is.
+
+1. ~~Areas: polygon booleans, offsets with round corners, holes, bands,
+   line clipping, hatching, triangulation with holes.~~ Done:
+   `core/polygon.h` on Clipper2 and earcut, `build_polygon_set`,
+   `polygon_test`.
+2. ~~Anti-aliasing.~~ Done: `AppConfig::msaa` (2, 4 or 8 samples), resolved
+   per pass, overlay drawn sharp on top, `--msaa`.
+3. ~~Junctions a player can edit: authored turns per node with groups and
+   priorities, as reflected state; lookup tables instead of scans; conflict
+   positions and merge conflicts.~~ Done: `Turn`, `author_node`,
+   `allow_turn`, `find_turn`, `connectors_into`, `find_connector`,
+   `conflicts_of`, `junction_test`.
+4. ~~Signals: plans, phases, change-over times, offsets, actuation, and a
+   first plan derived from a node's conflicts.~~ Done: `sim/signal.h`.
+5. ~~The surface of a network as one partition: paved outline, islands,
+   keep-clear.~~ Done: `sim/network_surface.h`, `surface_test`; shown in
+   `game/roads`.
+6. ~~Game UI II (pulled forward from the freight list): scroll areas, list
+   rows, tabs, text and number fields, dropdowns, sortable tables, line
+   charts.~~ Done: `render/ui.h`, `App::set_ui_keyboard`, `ui_test`.
+
+7. ~~Rebuilding only what an edit changed.~~ Done: `rebuild()` compares
+   every node and edge with what it was, carries the rest over,
+   `invalidate()`, `last_rebuild()`, `Graph::reset`, `rebuild_test`.
+8. ~~Lanes that begin and end along an edge.~~ Done: `Track::begin`, `end`,
+   `taper`, `track_start`, `beside`, tapered surfaces and edges.
+9. ~~A driver model, and track changes that happen in traffic.~~ Done:
+   `FollowModel::Idm`, changes along the track with gap acceptance and
+   taking turns at a merge, `NetAgent::accel`, `lead_of`, `flow_test`.
+
+Not done, on purpose: a line shader that cuts dashes on the GPU belongs to
+the game, as a material. Lane changes are only the ones a route asks for;
+changing lanes to overtake (MOBIL) is the game's next step on top. A rebuild
+still bumps the version, so every route is planned again after an edit.
+
 ## Later
 
 **3D and isometric 3D tools** (a stated goal): 3D camera and projection,

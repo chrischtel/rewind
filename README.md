@@ -60,6 +60,18 @@ It is not for 3D games, and not for people who want a no-code workflow.
   positional audio with distance volume and panning, per-draw sort keys
   for y-sorted scenes, and curve fitting that turns a drawn stroke into
   Beziers (the network tool draws roads freehand).
+- Areas: polygon union, difference and intersection, growing and shrinking
+  with round corners, bands swept by lines, lines clipped to areas,
+  hatching, and triangulation with holes, all on an integer grid so results
+  are the same everywhere. Multisample anti-aliasing for every edge.
+- Networks as ground: the paved outline of any junction from the bands its
+  lanes sweep, with islands and keep-clear areas found rather than drawn;
+  junctions with authored, saved lane connections; signal plans with
+  phases, offsets and actuation; lanes that open and close along a road
+  with a taper; rebuilds that only touch what an edit changed.
+- Traffic that behaves: the Intelligent Driver Model for following, lane
+  changes made in traffic with a gap to move into, and merges that take
+  turns.
 - Curves: Bezier paths, arcs and Catmull-Rom splines with arc-length
   sampling, closest point, split, join, offset and flattening; polygon
   offset, simplification, hull and intersection helpers.
@@ -111,7 +123,7 @@ It is not for 3D games, and not for people who want a no-code workflow.
   links, enums by name, curve previews, asset pickers.
 - Always-on profiler, engine log with an in-game console, gamepad, mouse
   (with wheel) and keyboard input as part of the deterministic input record.
-- Thirty-two headless test suites and a CI workflow for Windows and Ubuntu.
+- Forty-one headless test suites and a CI workflow for Windows and Ubuntu.
 
 Four samples show all of it: `bounce`, `pixels`, `duel` (a four-player netcode arena with a lobby) and
 `towerdefense`, a complete small game.
@@ -187,6 +199,10 @@ the state, `reflect` lists the whole state, and side effects go through
 - [docs/GUIDE.md](docs/GUIDE.md): the full reference. Every system, the
   hotkeys, the layout of the source tree, and how to use each feature.
 - `samples/`: read `bounce` first, then `towerdefense`.
+- `game/roads/`: a road builder sandbox. Lay roads by hand, junctions,
+  islands and markings make themselves, and cars drive on the result.
+  Priority, lane discipline and markings (after the German RMS) are
+  derived in `lanes.h` and `paint.h`; the building limits are in `build.h`.
 - `game/traffic/`: a traffic management sim built on the engine, the
   largest thing using it. The engine itself knows nothing about it.
 - `tests/`: the clearest documentation of what each system guarantees.

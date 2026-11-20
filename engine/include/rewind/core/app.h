@@ -43,6 +43,7 @@ struct AppConfig {
     ///   --speed X             simulation time scale
     ///   --overlay / --no-overlay
     ///   --no-vsync
+    ///   --msaa N              samples per pixel: 1 (off), 2, 4 or 8
     ///   --command ID[:VALUE]@FRAME   push a command at that frame
     ///   --mouse X Y           the mouse sits at these render pixels instead of the real one
     ///   --press X Y@FRAME[-FRAME]   hold the left button there from one frame to another
@@ -71,6 +72,10 @@ struct AppConfig {
     int render_height = 0;
     bool integer_scale = true; ///< Pixel mode only: whole-number scale, letterbox the rest.
     bool pixel_art = true;     ///< Nearest-neighbour sampling for textures and the target.
+    /// Multisample anti-aliasing: samples per pixel, 1 (off), 2, 4 or 8.
+    /// Smooths the edge of every mesh, polygon and line. Vector-drawn games
+    /// want 4; pixel art wants 1, which is the default.
+    int msaa = 1;
 
     /// Embedded mode, used by the editor: the game always renders into a
     /// texture that the host shows wherever it likes (see App::view_texture),
@@ -112,6 +117,7 @@ struct AppConfig {
         v.field("render_height", render_height, {.min = 0, .max = 4096});
         v.field("integer_scale", integer_scale);
         v.field("pixel_art", pixel_art);
+        v.field("msaa", msaa, {.min = 1, .max = 8, .tooltip = "samples per pixel: 1 (off), 2, 4 or 8"});
         v.field("ui_font", ui_font, {.tooltip = "TrueType file for the overlay and editor, empty = built-in"});
         v.field("ui_font_size", ui_font_size, {.min = 8, .max = 40});
         v.field("timeline", timeline);
@@ -218,8 +224,15 @@ public:
     // ---- game UI ------------------------------------------------------------
     /// This frame's mouse for the game's own UI (render/ui.h), in render
     /// pixels, with press and release edges; disabled while the mouse
-    /// belongs to the overlay or another editor panel.
+    /// belongs to the overlay or another editor panel. Also the text typed
+    /// and the editing keys pressed this frame, for its fields.
     UiInput ui_input() const;
+    /// Tell the engine the game UI is typing: pass Ui::wants_keyboard() once
+    /// a frame. While it is true the keyboard belongs to the field: no
+    /// Button bits reach the simulation from keys, and Escape leaves the
+    /// field instead of the game.
+    void set_ui_keyboard(bool typing) { ui_keyboard_ = typing; }
+    bool ui_keyboard() const { return ui_keyboard_; }
     /// Queue a command for the simulation: it rides in the next tick's
     /// InputFrame (`command`, `command_value`), one per tick, so a UI click
     /// becomes deterministic input.
@@ -307,6 +320,9 @@ private:
     mutable bool ui_prev_down_ = false;
     mutable bool ui_down_ = false;
     i32 wheel_frame_ = 0;
+    std::string ui_text_; ///< UTF-8 typed this frame, for the game UI's fields
+    u32 ui_keys_ = 0;     ///< editing keys pressed this frame, repeats included (bits in app.cpp)
+    bool ui_keyboard_ = false; ///< a game UI field has the keyboard (set_ui_keyboard)
     bool screenshot_pending_ = false;
     std::string screenshot_file_;
     Texture* screenshot_target_ = nullptr;

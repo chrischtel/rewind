@@ -268,6 +268,43 @@ void test_save_does_not_rebuild() {
     CHECK(!loaded.connectors().empty());
 }
 
+/// Grade is rise over run, dimensionless, and it knows which way a track
+/// is travelled.
+void test_grade() {
+    CurveNetwork net;
+    const u32 a = net.add_node({0, 0}, 0);
+    const u32 b = net.add_node({100, 0}, 5);   // a 5% climb
+    const u32 c = net.add_node({200, 0}, 5);   // then level
+    const u32 up = net.add_edge(a, b);
+    const u32 flat = net.add_edge(b, c);
+    net.set_tracks(up, 1, 1, 4);
+    net.set_tracks(flat, 1, 1, 4);
+    net.rebuild();
+
+    CHECK(std::fabs(net.grade(up) - 0.05f) < 1e-4f);
+    CHECK(net.grade(flat) == 0.0f);
+
+    // The forward track climbs it; the backward track comes down it.
+    u32 fwd = 0, back = 0;
+    for (usize i = 0; i < net.edge(up).tracks.size(); ++i) {
+        if (net.edge(up).tracks[i].forward) fwd = static_cast<u32>(i);
+        else back = static_cast<u32>(i);
+    }
+    CHECK(std::fabs(net.grade_along(TrackRef{up, fwd}) - 0.05f) < 1e-4f);
+    CHECK(std::fabs(net.grade_along(TrackRef{up, back}) + 0.05f) < 1e-4f);
+
+    // Nonsense in, zero out: no divide by a zero-length edge, no bad index.
+    const u32 same = net.add_edge(a, a);
+    net.rebuild();
+    CHECK(net.grade(same) == 0.0f);
+    CHECK(net.grade(9999) == 0.0f);
+    CHECK(net.grade_along(TrackRef{9999, 0}) == 0.0f);
+
+    // It agrees with the elevation it is derived from.
+    CHECK(std::fabs(net.elevation_at(up, 1.0f) - net.elevation_at(up, 0.0f)
+                    - net.grade(up) * net.edge(up).path.length()) < 1e-3f);
+}
+
 int main() {
     test_save_does_not_rebuild();
     test_penalties_and_staleness();
@@ -276,6 +313,7 @@ int main() {
     test_links_and_changes();
     test_geometry_and_edits();
     test_reflection();
+    test_grade();
     if (failures == 0) std::printf("network_test: all passed\n");
     return failures == 0 ? 0 : 1;
 }

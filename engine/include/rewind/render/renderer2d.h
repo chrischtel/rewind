@@ -77,7 +77,10 @@ struct SpriteOptions {
 /// as few draw calls as texture changes allow.
 class Renderer2D {
 public:
-    Renderer2D(SDL_GPUDevice* device, SDL_Window* window);
+    /// `msaa` is the number of samples per pixel: 1 (off), 2, 4 or 8. With
+    /// more than one, every edge of every shape is smoothed, in the window and
+    /// in render targets alike; the nearest count the driver supports is used.
+    Renderer2D(SDL_GPUDevice* device, SDL_Window* window, int msaa = 1);
     ~Renderer2D();
 
     Renderer2D(const Renderer2D&) = delete;
@@ -281,6 +284,8 @@ public:
     }
 
     // ---- stats and raw access -----------------------------------------------
+    /// Samples per pixel actually in use (1 = no multisampling).
+    int msaa() const;
     int draw_calls_last_frame() const;
     int vertices_last_frame() const;
     const char* driver_name() const;
